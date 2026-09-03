@@ -1,0 +1,3 @@
+# DTAP itself currently allows fastmcp>=2.0, but M1 uses HTTP bearer auth/header
+# helpers that require newer FastMCP behavior.
+fastmcp>=2.6
