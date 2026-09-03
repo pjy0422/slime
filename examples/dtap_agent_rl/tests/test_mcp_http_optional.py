@@ -60,7 +60,7 @@ async def test_fastmcp_http_bearer_round_trip_and_wrong_token_rejection():
 
         async with Client(url, auth=TOKEN) as client:
             tools = await client.list_tools()
-            assert sorted(t.name for t in tools) == ["get_attack_surface", "get_task_spec"]
+            assert sorted(t.name for t in tools) == ["get_attack_surface", "get_task_spec", "validate_attack_step"]
 
             task_result = await client.call_tool("get_task_spec", {})
             assert task_result.data["malicious_goal"] == sample_task_spec().malicious_goal

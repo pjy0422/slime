@@ -29,4 +29,4 @@ async def test_fastmcp_exposes_exactly_two_read_only_tools():
     # deployed HTTP smoke test because auth deliberately depends on HTTP headers.
     async with Client(mcp) as client:
         tools = await client.list_tools()
-    assert sorted(tool.name for tool in tools) == ["get_attack_surface", "get_task_spec"]
+    assert sorted(tool.name for tool in tools) == ["get_attack_surface", "get_task_spec", "validate_attack_step"]

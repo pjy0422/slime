@@ -1,23 +1,20 @@
-"""Read-only, host-side FastMCP surface for M1.
+"""Host-side FastMCP surface for M0-M2.
 
-The policy sees exactly two tools:
-  - get_task_spec()
-  - get_attack_surface()
-
-Episode identity is carried in the HTTP Authorization header by Claude Code's
-MCP transport. It is intentionally absent from tool schemas and arguments.
+M2 remains read-only with respect to DTAP state. validate_attack_step() validates
+only the already-sanitized immutable EpisodeView; it performs no Docker, MCP,
+filesystem, config, victim-agent, or judge mutation.
 """
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Any, Mapping
 
-from .service import EpisodeAccessError, EpisodeRegistry, EpisodeView
+from .actions import candidate_attack_step_schema
+from .service import EpisodeAccessError, EpisodeRegistry
+from .validation import ValidationContext, validate_attack_step as validate_candidate_step
 
 
 def parse_bearer_token(headers: Mapping[str, str]) -> str:
-    """Parse one opaque bearer capability without exposing parsing detail."""
-
     value = headers.get("authorization") or headers.get("Authorization") or ""
     scheme, sep, token = value.partition(" ")
     if not sep or scheme.lower() != "bearer" or len(token.strip()) < 16:
@@ -26,8 +23,6 @@ def parse_bearer_token(headers: Mapping[str, str]) -> str:
 
 
 class ReadOnlyEpisodeService:
-    """Framework-independent service used by both MCP tools and unit tests."""
-
     def __init__(self, registry: EpisodeRegistry):
         self.registry = registry
 
@@ -35,37 +30,43 @@ class ReadOnlyEpisodeService:
         return self.registry.resolve(token).task.to_dict()
 
     def get_attack_surface(self, token: str) -> dict:
-        return self.registry.resolve(token).attack_surface.to_dict()
+        view = self.registry.resolve(token)
+        result = view.attack_surface.to_dict()
+        result["candidate_step_schema"] = candidate_attack_step_schema()
+        return result
+
+    def validate_attack_step(self, token: str, step: dict[str, Any]) -> dict:
+        view = self.registry.resolve(token)
+        ctx = ValidationContext.from_view(view)
+        return validate_candidate_step(step, ctx).to_dict()
 
 
 def create_mcp_server(registry: EpisodeRegistry):
-    """Create a stateless HTTP FastMCP server bound to an EpisodeRegistry."""
-
     try:
         from fastmcp import FastMCP
         from fastmcp.server.dependencies import get_http_headers
-    except ImportError as exc:  # pragma: no cover - depends on DTAP runtime env
-        raise RuntimeError(
-            "FastMCP >= 2.6 is required for M1 HTTP bearer episode routing."
-        ) from exc
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("FastMCP >= 2.6 is required for M1/M2 HTTP bearer routing") from exc
 
     service = ReadOnlyEpisodeService(registry)
     mcp = FastMCP(name="DTAP RL Harness", stateless_http=True)
 
     def current_token() -> str:
-        headers = get_http_headers() or {}
-        return parse_bearer_token(headers)
+        return parse_bearer_token(get_http_headers() or {})
 
     @mcp.tool
     def get_task_spec() -> dict:
         """Return the sanitized DTAP task goal/context for this RL episode."""
-
         return service.get_task_spec(current_token())
 
     @mcp.tool
     def get_attack_surface() -> dict:
-        """Return task-authorized injection mechanisms and MCP input schemas."""
-
+        """Return allowed attack mechanisms, targets, schemas, and M2 action contract."""
         return service.get_attack_surface(current_token())
+
+    @mcp.tool
+    def validate_attack_step(step: dict[str, Any]) -> dict:
+        """Strictly validate one candidate attack step without applying it."""
+        return service.validate_attack_step(current_token(), step)
 
     return mcp
