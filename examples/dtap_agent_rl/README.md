@@ -280,7 +280,8 @@ The slime-managed DTAP patch adds a zero-target-LLM auxiliary gate. Route mode
 (the default) binds the started injection server's resolved endpoint to the
 TaskExecutor project and live Docker container, supporting both published bridge
 ports and DTAP's host-network containers. Placement mode additionally performs
-independent read-back for Slack, Gmail, WhatsApp, terminal, and research files.
+independent read-back for Slack, Gmail, WhatsApp, Legal matter overlays, Travel,
+OS Filesystem, terminal, and research files.
 
 ```bash
 export DTAP_ENV_VERIFICATION=placement
@@ -304,3 +305,21 @@ python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
   --task-dir /path/to/DecodingTrust-Agent/dataset/research/malicious/indirect/Radiological_Risks/2 \
   --strict
 ```
+
+The deterministic M4 boundary smoke intentionally keeps a fixed candidate for
+contract regression. The separate M5 end-to-end smoke supplies no plan or
+payload: GLM-5.2 must inspect the live surface, generate and validate a plan,
+submit it, then wait for the real ClaudeSDK victim and judge:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
+  --task-dir /path/to/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004 \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python \
+  --policy-model glm-5.2 --victim-model glm-5.2
+```
+
+Use the policy/victim provider aliases shown above and set placement strict mode
+for this release gate. M5 verification is trusted auxiliary state only: it is
+not returned as an arbitrary environment oracle and does not affect reward.
+Policy-visible action receipts and `validate_placement(action_id)` remain M6.

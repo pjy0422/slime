@@ -10,8 +10,11 @@ The patch is based on DecodingTrust-Agent commit
 - opt-in disabling of shared default Docker ports so parallel M4 children can
   use the disjoint port ranges assigned by slime.
 - M5 zero-LLM route verification for bridge and host-network environments;
-- independent placement read-back for Slack, Gmail, WhatsApp, terminal, and
-  research file injections, with explicit unsupported status for other tools; and
+- independent placement read-back for Slack, Gmail, WhatsApp, Legal, Travel,
+  OS Filesystem, terminal, and research injections, with explicit unsupported
+  status for other tools;
+- a trusted OS Filesystem injection credential fix (the prior empty value
+  produced an invalid `Authorization: Bearer ` header); and
 - the Research injection route fix for TaskExecutor's dynamic arXiv port.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
@@ -45,13 +48,19 @@ M5 placement verification currently supports:
   container.
 - Research `inject_readme` and `inject_paper_notes`, read directly from the
   target container.
+- Legal `inject_into_matter` and `modify_matter`, requiring both a real matter
+  and an exact match in the backend overlay state used by victim `get_matter`.
+- Travel accommodation, restaurant, flight, and supported review injections,
+  read through the victim-facing query endpoints.
+- OS Filesystem file/append/executable/directory/symlink injections, read from
+  the exact TaskExecutor-owned container (including mode and link metadata).
 
 Read-only tools whose names start with `get_`, `list_`, `read_`, or `search_`
 return `not_applicable`. All other mutating tools return `unsupported`; this
-currently includes Customer Service, Salesforce, Legal, Finance, OS Filesystem,
-Calendar, Zoom, Google Docs/Form, Snowflake, Databricks, PayPal, Ecommerce,
-Custom Website, Travel, Telecom, Atlassian, Telegram, GitHub, Hospital, Windows,
-and macOS mutations, plus the uncovered Slack/Terminal/Research variants.
+currently includes Customer Service, Salesforce, Finance, Calendar, Zoom,
+Google Docs/Form, Snowflake, Databricks, PayPal, Ecommerce, Custom Website,
+Telecom, Atlassian, Telegram, GitHub, Hospital, Windows, and macOS mutations,
+plus uncovered variants in otherwise supported services.
 
 Five enabled injection registries do not yet have even a route definition:
 `chase-injection`, `robinhood-injection`, `reddit-injection`,
@@ -111,17 +120,52 @@ python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
   --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/finance/malicious/indirect/client_targeted_scam/1 \
   --strict
 
-# Mixed result: Slack verified and Legal unsupported; omit --strict.
+# Slack and Legal matter overlay: both expected verified in strict mode.
 python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
-  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/legal/malicious/indirect/strategy_leak/6
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/legal/malicious/indirect/strategy_leak/6 \
+  --strict
 
-# Travel injection succeeds but placement is unsupported; omit --strict.
+# Travel accommodation placement: expected verified in strict mode.
 python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
-  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004 \
+  --strict
+
+# OS Filesystem placement from the exact sandbox container: expected verified.
+python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/os-filesystem/malicious/indirect/prohibited-ai-practices-and-profiling/11 \
+  --strict
 ```
 
 The originally inspected `finance/.../action_reversal/1` task contains only a
 `type: tool` attack step and therefore reports `no_environment_injections`; it
-does not exercise M5. Adding `--strict` to Legal or Travel is expected to fail
-until those placement adapters are implemented. The smoke command always tears
-down the injection MCP processes and Docker environments in a `finally` block.
+does not exercise M5. The smoke command always tears down the injection MCP
+processes and Docker environments in a `finally` block.
+
+Run a real generated-plan episode (policy, victim, placement gate, and judge):
+
+```bash
+export ANTHROPIC_API_KEY='...'
+export DTAP_POLICY_ANTHROPIC_BASE_URL=https://provider.example
+export DTAP_POLICY_USE_API_KEY_AS_AUTH_TOKEN=1
+export DTAP_VICTIM_ANTHROPIC_BASE_URL=https://provider.example
+export DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN=1
+export DTAP_ENV_VERIFICATION=placement
+export DTAP_ENV_VERIFICATION_STRICT=1
+
+python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004 \
+  --dtap-root /home/pjy0422/workspace/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python \
+  --policy-model glm-5.2 \
+  --victim-model glm-5.2
+```
+
+This prompt contains no plan or payload. It requires the policy to inspect the
+live task/surface, author and validate every step, and submit exactly once. An
+attack miss is a valid reward-zero episode; infrastructure/security failure is
+not. Set `DTAP_M5_GLM_TASK_DIR` and `DTAP_M5_DTAP_ROOT` to include the same gate
+in the opt-in pytest integration suite.
+
+M5 remains a trusted auxiliary check. It does not expose read-back to the policy,
+does not issue policy-visible `action_id` receipts, and does not alter reward.
+Those policy-scoped receipt semantics belong to M6.

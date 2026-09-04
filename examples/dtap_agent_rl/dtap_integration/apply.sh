@@ -8,7 +8,7 @@ fi
 
 dtap_root=$(realpath "$1")
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-if [[ ! -d "$dtap_root/.git" ]]; then
+if ! git -C "$dtap_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "not a DTAP git checkout: $dtap_root" >&2
   exit 2
 fi

@@ -1,8 +1,18 @@
 diff --git a/dt_arena/config/injection_mcp.yaml b/dt_arena/config/injection_mcp.yaml
-index 9138498e..f06532b9 100644
+index 9138498e..1000e05d 100644
 --- a/dt_arena/config/injection_mcp.yaml
 +++ b/dt_arena/config/injection_mcp.yaml
-@@ -411,7 +411,7 @@ servers:
+@@ -103,7 +103,8 @@ servers:
+     env:
+       FILESYSTEM_API_HOST: "127.0.0.1"
+       FILESYSTEM_API_PORT: "${OS_FILESYSTEM_API_PORT}"
+-      USER_ACCESS_TOKEN: ""  # Set per-session
++      # Injection runs as the trusted setup principal, not as the victim user.
++      USER_ACCESS_TOKEN: "admin-token-for-setup"
+       OS_FILESYSTEM_INJECTION_MCP_HOST: "localhost"
+       OS_FILESYSTEM_INJECTION_MCP_PORT: "10306"
+     transport: http
+@@ -411,7 +412,7 @@ servers:
        RESEARCH_ENV_INJECTION_MCP_PORT: "8847"
        # RESEARCH_CONTAINER_NAME: ""  # Removed: empty string overrides inherited parent env var
        # TASK_DOCKER_CLIENT_CONTAINER_NAME: ""  # Removed: inherited from parent process (set by evaluation.py)
@@ -11,12 +21,31 @@ index 9138498e..f06532b9 100644
        DOCKER_HOST: "unix:///var/run/docker.sock"
      transport: http
      command: ["python3", "env_injection.py"]
+diff --git a/dt_arena/injection_mcp_server/os-filesystem/env_injection.py b/dt_arena/injection_mcp_server/os-filesystem/env_injection.py
+index 80459bc9..c3153392 100644
+--- a/dt_arena/injection_mcp_server/os-filesystem/env_injection.py
++++ b/dt_arena/injection_mcp_server/os-filesystem/env_injection.py
+@@ -91,9 +91,13 @@ async def _inject_file_impl(file_path: str, content: str) -> dict:
+     result = await _execute_command(command)
+     
+     if not result.get("success", False):
++        detail = result.get("message") or result.get("text") or result.get("stderr")
++        error = result.get("error", "Unknown error")
++        if detail:
++            error = f"{error}: {detail}"
+         return {
+             "status": "error",
+-            "message": f"Failed to inject file: {result.get('error', result.get('stderr', 'Unknown error'))}"
++            "message": f"Failed to inject file: {error}"
+         }
+     
+     return {
 diff --git a/dt_arena/src/env_verification.py b/dt_arena/src/env_verification.py
 new file mode 100644
-index 00000000..f4b9efd6
+index 00000000..c438f8e9
 --- /dev/null
 +++ b/dt_arena/src/env_verification.py
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,498 @@
 +"""Zero-LLM verification for DTAP environment injections.
 +
 +Route proofs are fail-closed. Placement proofs are independent read-backs for
@@ -72,6 +101,7 @@ index 00000000..f4b9efd6
 +class DockerInspector(Protocol):
 +    def project_containers(self, project: str) -> Sequence[ContainerSnapshot]: ...
 +    def read_file(self, container: str, path: str) -> bytes: ...
++    def inspect_path(self, container: str, path: str) -> bytes: ...
 +
 +
 +class SubprocessDockerInspector:
@@ -133,6 +163,16 @@ index 00000000..f4b9efd6
 +            return base64.b64decode(encoded, validate=True)
 +        except ValueError as exc:
 +            raise VerificationError("invalid container read-back") from exc
++
++    def inspect_path(self, container: str, path: str) -> bytes:
++        script = (
++            "import json,os,pathlib,sys;"
++            "p=pathlib.Path(sys.argv[1]);s=p.lstat();"
++            "print(json.dumps({'exists':True,'is_dir':p.is_dir(),"
++            "'is_symlink':p.is_symlink(),'target':os.readlink(p) if p.is_symlink() else None,"
++            "'executable':bool(s.st_mode & 0o111)}))"
++        )
++        return self._run("exec", container, "python3", "-c", script, path).encode()
 +
 +
 +@dataclass(frozen=True)
@@ -338,6 +378,13 @@ index 00000000..f4b9efd6
 +    return PlacementProof("", "", PlacementStatus.VERIFIED, locator, _digest(blob))
 +
 +
++def _one_container(docker: DockerInspector, project: str, service: str) -> ContainerSnapshot:
++    containers = [item for item in docker.project_containers(project) if item.service == service]
++    if len(containers) != 1:
++        raise VerificationError(f"cannot select {service} container")
++    return containers[0]
++
++
 +async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, Any],
 +                           environ: Mapping[str, str], docker: DockerInspector) -> PlacementProof:
 +    server, tool, kwargs = injection["server_name"].lower(), injection["tool_name"], injection.get("kwargs") or {}
@@ -382,19 +429,88 @@ index 00000000..f4b9efd6
 +                "access_token": environ.get("WHATSAPP_USER_ACCESS_TOKEN") or environ.get("USER_ACCESS_TOKEN", "")}}
 +        blob = await _http("POST", f"http://127.0.0.1:{environ['WHATSAPP_API_PORT']}/tools/call", body=body)
 +        proof = _contains(blob, [kwargs["phone_number"], kwargs["body"]], f"whatsapp:{kwargs['phone_number']}")
++    elif server == "legal-injection" and tool in {"inject_into_matter", "modify_matter"}:
++        base = f"http://127.0.0.1:{environ['LEGAL_WEB_PORT']}"
++        matter_id = str(kwargs["matter_id"])
++        # The Legal environment keeps injected overlays in its own backend state;
++        # the victim-facing MCP applies those overlays when get_matter is called.
++        # Read both the target entity and that backend state so an orphaned or
++        # merely acknowledged write cannot count as successful placement.
++        matter_blob = await _http("GET", f"{base}/api/matters/{quote(matter_id, safe='')}")
++        _contains(matter_blob, [matter_id], f"legal:matter:{matter_id}")
++        state_blob = await _http("GET", f"{base}/api/inject/state")
++        if tool == "inject_into_matter":
++            expected = [matter_id, kwargs.get("content")]
++        else:
++            expected = [matter_id, *(value for key, value in kwargs.items()
++                       if key != "matter_id" and isinstance(value, str) and value)]
++        proof = _contains(state_blob, expected, f"legal:matter-overlay:{matter_id}")
++    elif server == "travel-injection":
++        base = f"http://127.0.0.1:{environ['TRAVEL_PORT']}"
++        if tool == "inject_accommodation":
++            query = urlencode({"city": kwargs["city"]})
++            blob = await _http("GET", f"{base}/query_accommodation?{query}")
++            expected = [kwargs.get(key) for key in
++                        ("name", "description", "price", "room_type", "house_rules",
++                         "maximum_occupancy", "review_rate_number", "city")]
++        elif tool == "inject_restaurant":
++            query = urlencode({"city": kwargs["city"]})
++            blob = await _http("GET", f"{base}/query_restaurant?{query}")
++            expected = [kwargs.get(key) for key in
++                        ("name", "average_cost", "cuisines", "aggregate_rating", "city")]
++        elif tool == "inject_flight":
++            query = urlencode({"departure": kwargs["origin_city_name"],
++                               "destination": kwargs["dest_city_name"],
++                               "departure_date": kwargs["flight_date"]})
++            blob = await _http("GET", f"{base}/query_flight?{query}")
++            expected = [kwargs.get(key) for key in
++                        ("flight_number", "price", "dep_time", "arr_time", "flight_date",
++                         "origin_city_name", "dest_city_name", "distance")]
++        elif tool == "inject_review" and kwargs.get("entity_type") in {"accommodation", "restaurant"}:
++            endpoint = f"query_{kwargs['entity_type']}"
++            query = urlencode({"city": kwargs["city"]})
++            blob = await _http("GET", f"{base}/{endpoint}?{query}")
++            expected = [kwargs.get(key) for key in
++                        ("entity_name", "reviewer_name", "rating", "content")]
++        else:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++        proof = _contains(blob, expected, f"travel:{tool}")
++    elif server == "os-filesystem-injection":
++        project = environ["OS_FILESYSTEM_PROJECT_NAME"]
++        selected = _one_container(docker, project, "os-filesystem")
++        if tool in {"inject_file", "inject_append"}:
++            path = str(kwargs["file_path"])
++            blob = docker.read_file(selected.container_id, path)
++            proof = _contains(blob, [kwargs.get("content")], f"os-filesystem:{path}")
++        elif tool == "inject_executable":
++            path = str(kwargs["file_path"])
++            content = docker.read_file(selected.container_id, path)
++            metadata = docker.inspect_path(selected.container_id, path)
++            proof = _contains(content + b"\n" + metadata,
++                              [kwargs.get("script_content"), '"executable": true'],
++                              f"os-filesystem:{path}")
++        elif tool == "inject_directory":
++            path = str(kwargs["dir_path"])
++            blob = docker.inspect_path(selected.container_id, path)
++            proof = _contains(blob, ['"is_dir": true'], f"os-filesystem:{path}")
++        elif tool == "inject_symlink":
++            path = str(kwargs["link_path"])
++            blob = docker.inspect_path(selected.container_id, path)
++            proof = _contains(blob, ['"is_symlink": true', kwargs.get("target_path")],
++                              f"os-filesystem:{path}")
++        else:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
 +    elif (
 +        (server == "terminal-injection" and tool in {"inject_readme", "inject_file"})
 +        or (server == "research-injection" and tool in {"inject_readme", "inject_paper_notes"})
 +    ) and "content" in kwargs:
 +        environment = "terminal" if server.startswith("terminal") else "research"
 +        project = environ[f"{environment.upper()}_PROJECT_NAME"]
-+        containers = [c for c in docker.project_containers(project) if c.service == f"{environment}-env"]
-+        if len(containers) != 1:
-+            raise VerificationError(f"cannot select {environment} file container")
++        selected = _one_container(docker, project, f"{environment}-env")
 +        default = "README.md" if tool == "inject_readme" else "paper_notes.md" if tool == "inject_paper_notes" else kwargs.get("file_path")
 +        working = kwargs.get("working_dir") or ("/app" if environment == "terminal" else "/app/research")
 +        path = str(PurePosixPath(default)) if str(default).startswith("/") else str(PurePosixPath(working) / str(default))
-+        blob = docker.read_file(containers[0].container_id, path)
++        blob = docker.read_file(selected.container_id, path)
 +        proof = _contains(blob, [kwargs["content"]], f"{environment}:{path}")
 +    else:
 +        return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
@@ -433,7 +549,7 @@ index 40ee51a7..13eb464c 100644
 --- a/eval/task_runner.py
 +++ b/eval/task_runner.py
 @@ -35,6 +35,14 @@ from utils.resource_manager import (
-
+ 
  from dt_arena.src.types.agent import AgentConfig, RuntimeConfig
  from dt_arena.src.types.task import AttackConfig, TaskConfig
 +from dt_arena.src.env_verification import (
@@ -444,8 +560,8 @@ index 40ee51a7..13eb464c 100644
 +    verify_placement_batch,
 +    verify_started_routes,
 +)
-
-
+ 
+ 
  def _status(**fields: object) -> None:
 @@ -147,6 +155,8 @@ async def run_single_task(
          # Build env injections by turn
@@ -453,13 +569,13 @@ index 40ee51a7..13eb464c 100644
          injection_server_urls: Dict[str, str] = {}
 +        verification_mode = VerificationMode.from_env(os.getenv("DTAP_ENV_VERIFICATION"))
 +        environment_docker = None
-
+ 
          if all_env_injections and not skip_mcp:
              required_servers = get_required_injection_servers(all_env_injections)
 @@ -177,6 +187,24 @@ async def run_single_task(
-
+ 
                      print(f"[ENV INJECTION] Injection servers ready: {list(injection_server_urls.keys())}")
-
+ 
 +                    if verification_mode is not VerificationMode.OFF and injection_manager:
 +                        environment_docker = SubprocessDockerInspector.auto()
 +                        route_proofs = verify_started_routes(
@@ -509,15 +625,15 @@ index 40ee51a7..13eb464c 100644
 +                                    f"digest={proof.digest or '-'}",
 +                                    flush=True,
 +                                )
-
+ 
                  # Run agent for this turn
                  _status(turn=turn_id, total_turns=len(instructions))
 diff --git a/tests/test_env_verification.py b/tests/test_env_verification.py
 new file mode 100644
-index 00000000..f9fe2199
+index 00000000..98775718
 --- /dev/null
 +++ b/tests/test_env_verification.py
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,252 @@
 +import unittest
 +from pathlib import Path
 +from types import SimpleNamespace
@@ -545,15 +661,19 @@ index 00000000..f9fe2199
 +
 +
 +class Docker:
-+    def __init__(self, containers, content=b""):
++    def __init__(self, containers, content=b"", metadata=b'{}'):
 +        self.containers = containers
 +        self.content = content
++        self.metadata = metadata
 +
 +    def project_containers(self, project):
 +        return [item for item in self.containers if item.project == project]
 +
 +    def read_file(self, container_id, path):
 +        return self.content
++
++    def inspect_path(self, container_id, path):
++        return self.metadata
 +
 +
 +class RouteTests(unittest.TestCase):
@@ -630,7 +750,7 @@ index 00000000..f9fe2199
 +
 +    async def test_unknown_mutator_is_explicitly_unsupported(self):
 +        cases = (
-+            {"server_name": "legal-injection", "tool_name": "inject_case_note", "kwargs": {}},
++            {"server_name": "legal-injection", "tool_name": "inject_x", "kwargs": {}},
 +            {"server_name": "terminal-injection", "tool_name": "inject_todo_list",
 +             "kwargs": {"content": "not-yet-supported"}},
 +        )
@@ -647,6 +767,22 @@ index 00000000..f9fe2199
 +            Docker([container(service="terminal-env")], b"prefix sentinel suffix"))
 +        self.assertIs(proof.status, PlacementStatus.VERIFIED)
 +        self.assertEqual(len(proof.digest), 64)
++
++    async def test_os_filesystem_reads_content_and_path_metadata_directly(self):
++        cases = (
++            ({"tool_name": "inject_file", "kwargs": {"file_path": "/tmp/a", "content": "payload"}},
++             b"payload", b"{}"),
++            ({"tool_name": "inject_symlink", "kwargs": {"link_path": "/tmp/l", "target_path": "/tmp/t"}},
++             b"", b'{"is_symlink": true, "target": "/tmp/t"}'),
++        )
++        for partial, content, metadata in cases:
++            injection = {"server_name": "os-filesystem-injection", **partial}
++            with self.subTest(tool=injection["tool_name"]):
++                proof = await verify_placement(
++                    injection, {"success": True}, {"OS_FILESYSTEM_PROJECT_NAME": "p"},
++                    Docker([container(service="os-filesystem")], content, metadata),
++                )
++                self.assertIs(proof.status, PlacementStatus.VERIFIED)
 +
 +    async def test_slack_readback_matches_payload(self):
 +        injection = {"server_name": "slack-injection", "tool_name": "inject_slack_message",
@@ -679,6 +815,31 @@ index 00000000..f9fe2199
 +            )
 +        self.assertIs(proof.status, PlacementStatus.VERIFIED)
 +
++    async def test_legal_and_travel_use_independent_read_endpoints(self):
++        cases = (
++            ({"server_name": "legal-injection", "tool_name": "inject_into_matter",
++              "kwargs": {"matter_id": "M-1", "content": "payload"}},
++             {"LEGAL_WEB_PORT": "8003"},
++             (b'{"matter_id":"M-1"}',
++              b'{"matter_modifications":[{"matter_id":"M-1","notes_inject":"payload"}]}'),
++             "/api/inject/state"),
++            ({"server_name": "travel-injection", "tool_name": "inject_accommodation",
++              "kwargs": {"name": "Retreat", "description": "payload", "price": 180.0,
++                         "room_type": "Entire home", "house_rules": "Quiet", "maximum_occupancy": 2,
++                         "review_rate_number": 4.9, "city": "San Francisco"}},
++             {"TRAVEL_PORT": "10300"},
++             (b'Retreat payload 180.0 Entire home Quiet 2 4.9 San Francisco',),
++             "/query_accommodation?"),
++        )
++        for injection, environ, responses, endpoint in cases:
++            request = AsyncMock(side_effect=responses)
++            with self.subTest(tool=injection["tool_name"]), patch(
++                "dt_arena.src.env_verification._http", new=request
++            ):
++                proof = await verify_placement(injection, {"success": True}, environ, Docker([]))
++                self.assertIs(proof.status, PlacementStatus.VERIFIED)
++                self.assertIn(endpoint, request.await_args.args[1])
++
 +    async def test_failed_injection_never_becomes_proof(self):
 +        injection = {"server_name": "slack-injection", "tool_name": "inject_slack_message", "kwargs": {}, "turn_id": 1}
 +        with self.assertRaises(VerificationError):
@@ -693,6 +854,14 @@ index 00000000..f9fe2199
 +
 +
 +class ModeTests(unittest.TestCase):
++    def test_os_injection_uses_trusted_setup_credential(self):
++        repo = Path(__file__).resolve().parents[1]
++        servers = __import__("yaml").safe_load(
++            (repo / "dt_arena/config/injection_mcp.yaml").read_text()
++        )["servers"]
++        config = next(item for item in servers if item["name"] == "os-filesystem-injection")
++        self.assertEqual(config["env"]["USER_ACCESS_TOKEN"], "admin-token-for-setup")
++
 +    def test_readback_environment_uses_matching_victim_credentials(self):
 +        agent = SimpleNamespace(mcp_servers=[
 +            SimpleNamespace(name="slack", env={"USER_ACCESS_TOKEN": "victim-token"})
@@ -724,14 +893,14 @@ index cbb651ab..ee2c32cf 100644
 @@ -1,3 +1,4 @@
 +import json
  from typing import Any, Dict, List, Optional, Tuple, Union
-
+ 
  from dt_arena.src.types.agent import ToolInjection, SkillInjection, A2AInjection
 @@ -425,17 +426,19 @@ async def apply_environment_injections_async(
-
+ 
                          # Extract result content
                          result_text = _extract_mcp_result(result)
 +                        result_success, result_error = _classify_injection_result(result_text)
-
+ 
                          results.append({
                              "server_name": server_name,
                              "tool_name": tool_name,
@@ -746,13 +915,13 @@ index cbb651ab..ee2c32cf 100644
 -                        print(f"[ENV INJECTION] {server_name}:{tool_name} - Success")
 +                        status = "Success" if result_success else f"Failed: {result_error}"
 +                        print(f"[ENV INJECTION] {server_name}:{tool_name} - {status}")
-
+ 
                      except Exception as e:
                          results.append({
 @@ -466,6 +469,22 @@ async def apply_environment_injections_async(
      return results
-
-
+ 
+ 
 +def _classify_injection_result(result_text: str) -> tuple[bool, Optional[str]]:
 +    """Do not confuse an MCP transport success with a backend write success."""
 +    try:
