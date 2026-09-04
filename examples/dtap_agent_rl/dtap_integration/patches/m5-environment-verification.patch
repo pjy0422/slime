@@ -1,0 +1,774 @@
+diff --git a/dt_arena/config/injection_mcp.yaml b/dt_arena/config/injection_mcp.yaml
+index 9138498e..f06532b9 100644
+--- a/dt_arena/config/injection_mcp.yaml
++++ b/dt_arena/config/injection_mcp.yaml
+@@ -411,7 +411,7 @@ servers:
+       RESEARCH_ENV_INJECTION_MCP_PORT: "8847"
+       # RESEARCH_CONTAINER_NAME: ""  # Removed: empty string overrides inherited parent env var
+       # TASK_DOCKER_CLIENT_CONTAINER_NAME: ""  # Removed: inherited from parent process (set by evaluation.py)
+-      ARXIV_API_URL: "http://localhost:8034"
++      ARXIV_API_URL: "http://127.0.0.1:${ARXIV_API_PORT}"
+       DOCKER_HOST: "unix:///var/run/docker.sock"
+     transport: http
+     command: ["python3", "env_injection.py"]
+diff --git a/dt_arena/src/env_verification.py b/dt_arena/src/env_verification.py
+new file mode 100644
+index 00000000..f4b9efd6
+--- /dev/null
++++ b/dt_arena/src/env_verification.py
+@@ -0,0 +1,411 @@
++"""Zero-LLM verification for DTAP environment injections.
++
++Route proofs are fail-closed. Placement proofs are independent read-backs for
++supported services and explicitly UNSUPPORTED otherwise; they never affect reward.
++"""
++from __future__ import annotations
++
++import asyncio
++import base64
++import hashlib
++import json
++import os
++import subprocess
++from dataclasses import dataclass, field
++from enum import Enum
++from pathlib import Path, PurePosixPath
++from typing import Any, Mapping, Protocol, Sequence
++from urllib.parse import quote, urlencode, urlparse
++from urllib.request import Request, urlopen
++
++import yaml
++
++
++class VerificationError(RuntimeError):
++    pass
++
++
++class VerificationMode(str, Enum):
++    OFF = "off"
++    ROUTE = "route"
++    PLACEMENT = "placement"
++
++    @classmethod
++    def from_env(cls, value: str | None) -> "VerificationMode":
++        raw = (value or "route").strip().lower()
++        try:
++            return cls(raw)
++        except ValueError as exc:
++            raise VerificationError(f"invalid DTAP_ENV_VERIFICATION mode: {raw!r}") from exc
++
++
++@dataclass(frozen=True)
++class ContainerSnapshot:
++    container_id: str
++    name: str
++    project: str
++    service: str
++    network_mode: str
++    environment: tuple[str, ...] = ()
++    published_ports: Mapping[tuple[int, str], frozenset[int]] = field(default_factory=dict)
++
++
++class DockerInspector(Protocol):
++    def project_containers(self, project: str) -> Sequence[ContainerSnapshot]: ...
++    def read_file(self, container: str, path: str) -> bytes: ...
++
++
++class SubprocessDockerInspector:
++    def __init__(self, prefix: Sequence[str] = ("docker",)):
++        self.prefix = tuple(prefix)
++
++    @classmethod
++    def auto(cls) -> "SubprocessDockerInspector":
++        for prefix in (("docker",), ("sudo", "-n", "docker")):
++            try:
++                if subprocess.run([*prefix, "ps"], capture_output=True, timeout=5).returncode == 0:
++                    return cls(prefix)
++            except (OSError, subprocess.SubprocessError):
++                pass
++        raise VerificationError("Docker is unavailable for DTAP environment verification")
++
++    def _run(self, *args: str, text: bool = True) -> Any:
++        try:
++            return subprocess.run(
++                [*self.prefix, *args], check=True, capture_output=True,
++                text=text, timeout=30,
++            ).stdout
++        except (OSError, subprocess.SubprocessError) as exc:
++            raise VerificationError(f"Docker inspection failed: {args[0]}") from exc
++
++    def project_containers(self, project: str) -> Sequence[ContainerSnapshot]:
++        ids = self._run(
++            "ps", "--filter", f"label=com.docker.compose.project={project}",
++            "--format", "{{.ID}}",
++        ).splitlines()
++        out = []
++        for container_id in filter(None, map(str.strip, ids)):
++            obj = json.loads(self._run("inspect", container_id))[0]
++            labels = (obj.get("Config") or {}).get("Labels") or {}
++            ports = {}
++            for key, bindings in ((obj.get("NetworkSettings") or {}).get("Ports") or {}).items():
++                port, proto = key.split("/", 1)
++                ports[(int(port), proto)] = frozenset(
++                    int(item["HostPort"]) for item in (bindings or []) if item.get("HostPort")
++                )
++            out.append(ContainerSnapshot(
++                container_id=str(obj.get("Id", container_id)),
++                name=str(obj.get("Name", "")).lstrip("/"),
++                project=str(labels.get("com.docker.compose.project", "")),
++                service=str(labels.get("com.docker.compose.service", "")),
++                network_mode=str((obj.get("HostConfig") or {}).get("NetworkMode", "")),
++                environment=tuple((obj.get("Config") or {}).get("Env") or ()),
++                published_ports=ports,
++            ))
++        return out
++
++    def read_file(self, container: str, path: str) -> bytes:
++        encoded = self._run(
++            "exec", container, "python3", "-c",
++            "import base64,pathlib,sys;print(base64.b64encode(pathlib.Path(sys.argv[1]).read_bytes()).decode())",
++            path,
++        ).strip()
++        try:
++            return base64.b64decode(encoded, validate=True)
++        except ValueError as exc:
++            raise VerificationError("invalid container read-back") from exc
++
++
++@dataclass(frozen=True)
++class RouteProof:
++    environment: str
++    project: str
++    ports: tuple[str, ...]
++    modes: tuple[str, ...]
++
++
++def _env_has_port(snapshot: ContainerSnapshot, port: int) -> bool:
++    for item in snapshot.environment:
++        if "=" in item and item.split("=", 1)[1].strip() == str(port):
++            return True
++        if str(port) in item.split("=", 1)[-1].replace(":", " ").split():
++            return True
++    return False
++
++
++def verify_docker_route(environment: str, project: str, ports: Mapping[str, int],
++                        definition: Mapping[str, Any], docker: DockerInspector) -> RouteProof:
++    containers = list(docker.project_containers(project))
++    if not containers or any(c.project != project for c in containers):
++        raise VerificationError(f"no trustworthy containers for project {project!r}")
++    verified = []
++    for name, meta in (definition.get("ports") or {}).items():
++        if name not in ports:
++            raise VerificationError(f"missing allocated port {name}")
++        host, target = int(ports[name]), int(meta["container_port"])
++        bridge = any(host in c.published_ports.get((target, "tcp"), ()) for c in containers)
++        hostnet = any(c.network_mode == "host" and _env_has_port(c, host) for c in containers)
++        if not bridge and not hostnet:
++            raise VerificationError(f"{project}: cannot bind {name}={host} to a project container")
++        verified.append(str(name))
++    return RouteProof(environment, project, tuple(sorted(verified)),
++                      tuple(sorted({c.network_mode for c in containers})))
++
++
++ROUTES: Mapping[str, tuple[tuple[str, str], ...]] = {
++    "customer-service-injection": (("CS_API_BASE", "CUSTOMER_SERVICE_API_PORT"), ("DATABASE_URL", "CUSTOMER_SERVICE_DB_PORT")),
++    "salesforce-injection": (("SALESFORCE_BASE_URL", "SALESFORCE_API_PORT"),),
++    "legal-injection": (("LEGAL_PORT", "LEGAL_WEB_PORT"),),
++    "finance-injection": (("FINANCE_WEB_URL", "FINANCE_WEB_PORT"),),
++    "os-filesystem-injection": (("FILESYSTEM_API_PORT", "OS_FILESYSTEM_API_PORT"),),
++    "gmail-injection": (("GMAIL_SMTP_PORT", "GMAIL_SMTP_PORT"),),
++    "slack-injection": (("SLACK_API_URL", "SLACK_API_PORT"),),
++    "calendar-injection": (("CALENDAR_API_URL", "CALENDAR_API_PORT"),),
++    "zoom-injection": (("ZOOM_API_URL", "ZOOM_API_PORT"),),
++    "googledocs-injection": (("GOOGLEDOCS_API_URL", "GOOGLEDOCS_API_PORT"),),
++    "whatsapp-injection": (("WHATSAPP_API_URL", "WHATSAPP_API_PORT"),),
++    "google-form-injection": (("FORM_API_URL", "GOOGLE_FORM_API_PORT"),),
++    "snowflake-injection": (("SNOWFLAKE_PG_PORT", "SNOWFLAKE_PG_PORT"),),
++    "databricks-injection": (("DATABRICKS_PG_PORT", "DATABRICKS_PG_PORT"),),
++    "paypal-injection": (("PAYPAL_API_URL", "PAYPAL_API_PORT"),),
++    "ecommerce-injection": (("ECOMMERCE_UI_URL", "ECOMMERCE_UI_PORT"),),
++    "custom-website-injection": (("CUSTOM_WEBSITE_UI_URL", "CUSTOM_WEBSITE_UI_PORT"),),
++    "travel-injection": (("TRAVEL_PORT", "TRAVEL_PORT"),),
++    "telecom-injection": (("TELECOM_PORT", "TELECOM_PORT"),),
++    "atlassian-injection": (("ATLASSIAN_API_URL", "ATLASSIAN_API_PORT"),),
++    "terminal-injection": (), "research-injection": (("ARXIV_API_URL", "ARXIV_API_PORT"),),
++    "telegram-injection": (("TELEGRAM_API_URL", "TELEGRAM_API_PORT"),),
++    "github-injection": (("GITHUB_API_URL", "GITHUB_API_PORT"),),
++    "windows-injection": (("WINDOWS_API_PORT", "MCP_SERVICE_PORT"), ("OFFICE_API_PORT", "OFFICE_SERVICE_PORT")),
++    "macos-injection": (("MACOS_API_PORT", "MCP_SERVICE_PORT"),),
++    "hospital-env-injection": (("HOSPITAL_PORT", "HOSPITAL_PORT"),),
++}
++
++TARGETS = {name: (name.removesuffix("-env-injection").removesuffix("-injection").replace("customer-service", "customer_service"),) for name in ROUTES}
++TARGETS.update({"google-form-injection": ("google-form",), "hospital-env-injection": ("hospital",),
++                "research-injection": ("research", "arxiv")})
++
++
++def build_readback_environments(agent_config: Any, manager: Any,
++                                injection_servers: Sequence[str]) -> Mapping[str, Mapping[str, Any]]:
++    """Merge injection routing with the matching victim MCP's read-only credentials."""
++    victim_environments: dict[str, Mapping[str, Any]] = {}
++
++    def collect(agent: Any) -> None:
++        for server in getattr(agent, "mcp_servers", ()):
++            name = str(getattr(server, "name", "")).lower().replace("_", "-")
++            victim_environments[name] = getattr(server, "env", None) or {}
++        for child in getattr(agent, "sub_agents", ()):
++            collect(child)
++
++    collect(agent_config)
++    result = {}
++    for raw in injection_servers:
++        name = raw.lower()
++        merged = dict((manager.get_server_config(raw) or {}).get("env", {}))
++        for target in TARGETS.get(name, ()):
++            victim = victim_environments.get(target.replace("_", "-"))
++            if victim is not None:
++                merged.update(victim)
++                break
++        result[raw] = merged
++    return result
++
++
++def _port(value: Any) -> int:
++    text = str(value)
++    if "${" in text:
++        raise VerificationError(f"unresolved route: {text}")
++    if text.isdigit():
++        return int(text)
++    parsed = urlparse(text)
++    if parsed.port:
++        return parsed.port
++    raise VerificationError(f"route has no port: {text!r}")
++
++
++def _load(path: Path) -> Mapping[str, Any]:
++    value = yaml.safe_load(path.read_text()) or {}
++    if not isinstance(value, Mapping):
++        raise VerificationError(f"invalid DTAP config: {path}")
++    return value
++
++
++def verify_started_routes(repo: Path, manager: Any, server_names: Sequence[str],
++                          environ: Mapping[str, str], docker: DockerInspector) -> Mapping[str, tuple[RouteProof, ...]]:
++    definitions = _load(repo / "dt_arena/config/env.yaml").get("environments", {})
++    out = {}
++    for raw in server_names:
++        name = raw.lower()
++        cfg = manager.get_server_config(raw) or manager.get_server_config(name)
++        if name not in ROUTES or not isinstance(cfg, Mapping):
++            raise VerificationError(f"unregistered or unstarted injection server: {raw}")
++        child = cfg.get("env") or {}
++        for key, variable in ROUTES[name]:
++            if key not in child or variable not in environ or _port(child[key]) != int(environ[variable]):
++                raise VerificationError(f"{name}: resolved {key} does not match {variable}")
++        proofs = []
++        for environment in TARGETS[name]:
++            definition = definitions.get(environment)
++            project_key = f"{environment.upper().replace('-', '_')}_PROJECT_NAME"
++            if not definition or not environ.get(project_key):
++                raise VerificationError(f"{name}: missing DTAP environment {environment}")
++            allocated = {key: int(environ[key]) for key in (definition.get("ports") or {}) if key in environ}
++            proofs.append(verify_docker_route(environment, environ[project_key], allocated, definition, docker))
++        out[name] = tuple(proofs)
++    return out
++
++
++class PlacementStatus(str, Enum):
++    VERIFIED = "verified"
++    NOT_APPLICABLE = "not_applicable"
++    UNSUPPORTED = "unsupported"
++
++
++@dataclass(frozen=True)
++class PlacementProof:
++    server: str
++    tool: str
++    status: PlacementStatus
++    locator: str = ""
++    digest: str = ""
++
++
++def _digest(data: bytes) -> str:
++    return hashlib.sha256(data).hexdigest()
++
++
++async def _http(method: str, url: str, *, body: Mapping[str, Any] | None = None,
++                headers: Mapping[str, str] | None = None) -> bytes:
++    def call() -> bytes:
++        request = Request(url, method=method, headers=dict(headers or {}),
++                          data=json.dumps(body).encode() if body is not None else None)
++        if body is not None:
++            request.add_header("Content-Type", "application/json")
++        with urlopen(request, timeout=20) as response:
++            return response.read()
++    try:
++        return await asyncio.to_thread(call)
++    except Exception as exc:
++        raise VerificationError(f"placement read-back failed: {urlparse(url).path}") from exc
++
++
++def _contains(blob: bytes, values: Sequence[Any], locator: str) -> PlacementProof:
++    text = blob.decode("utf-8", errors="replace")
++    searchable = [text]
++    try:
++        value = json.loads(text)
++
++        def strings(item: Any) -> None:
++            if isinstance(item, str):
++                searchable.append(item)
++            elif isinstance(item, Mapping):
++                for key, child in item.items():
++                    searchable.append(str(key))
++                    strings(child)
++            elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
++                for child in item:
++                    strings(child)
++            elif item is not None:
++                searchable.append(str(item))
++
++        strings(value)
++    except json.JSONDecodeError:
++        pass
++    haystack = "\n".join(searchable)
++    expected = [str(v) for v in values if v not in (None, "")]
++    if not expected or any(value not in haystack for value in expected):
++        raise VerificationError(f"placement mismatch at {locator}")
++    return PlacementProof("", "", PlacementStatus.VERIFIED, locator, _digest(blob))
++
++
++async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, Any],
++                           environ: Mapping[str, str], docker: DockerInspector) -> PlacementProof:
++    server, tool, kwargs = injection["server_name"].lower(), injection["tool_name"], injection.get("kwargs") or {}
++    if tool.startswith(("get_", "list_", "read_", "search_")):
++        return PlacementProof(server, tool, PlacementStatus.NOT_APPLICABLE)
++    proof: PlacementProof
++    if server == "slack-injection" and "channel_name" in kwargs:
++        params = urlencode({"channel": kwargs["channel_name"], "workspace_id": kwargs.get("workspace_id", "W01")})
++        token = environ.get("USER_ACCESS_TOKEN") or environ.get("SLACK_ADMIN_TOKEN", "tok_Slack_Admin_v1")
++        headers = {"Authorization": f"Bearer {token}"}
++        blob = await _http("GET", f"http://127.0.0.1:{environ['SLACK_API_PORT']}/api/v1/channels.history?{params}", headers=headers)
++        values = [kwargs.get("message") or kwargs.get("injection_payload"), kwargs.get("announcement_body"), kwargs.get("malicious_link")]
++        proof = _contains(blob, values, f"slack:{kwargs['channel_name']}")
++    elif server == "gmail-injection" and tool == "inject_email":
++        base = f"http://127.0.0.1:{environ['GMAIL_UI_PORT']}"
++        listing = await _http("GET", f"{base}/api/v1/messages?limit=100")
++        try:
++            value = json.loads(listing)
++            messages = value.get("messages", ()) if isinstance(value, Mapping) else value
++        except json.JSONDecodeError as exc:
++            raise VerificationError("invalid Mailpit message listing") from exc
++        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes, bytearray)):
++            raise VerificationError("invalid Mailpit message listing")
++        expected = [kwargs.get("to_email"), kwargs.get("subject"), kwargs.get("body")]
++        proof = None
++        for message in messages:
++            if not isinstance(message, Mapping):
++                continue
++            message_id = message.get("ID") or message.get("id")
++            if not message_id:
++                continue
++            detail = await _http("GET", f"{base}/api/v1/message/{quote(str(message_id), safe='')}")
++            try:
++                proof = _contains(detail, expected, f"gmail:mailpit:{message_id}")
++                break
++            except VerificationError:
++                continue
++        if proof is None:
++            raise VerificationError("placement mismatch at gmail:mailpit")
++    elif server == "whatsapp-injection" and tool == "send_whatsapp_message":
++        body = {"name": "get_conversation", "arguments": {"phone_number": kwargs["phone_number"], "limit": 100,
++                "access_token": environ.get("WHATSAPP_USER_ACCESS_TOKEN") or environ.get("USER_ACCESS_TOKEN", "")}}
++        blob = await _http("POST", f"http://127.0.0.1:{environ['WHATSAPP_API_PORT']}/tools/call", body=body)
++        proof = _contains(blob, [kwargs["phone_number"], kwargs["body"]], f"whatsapp:{kwargs['phone_number']}")
++    elif (
++        (server == "terminal-injection" and tool in {"inject_readme", "inject_file"})
++        or (server == "research-injection" and tool in {"inject_readme", "inject_paper_notes"})
++    ) and "content" in kwargs:
++        environment = "terminal" if server.startswith("terminal") else "research"
++        project = environ[f"{environment.upper()}_PROJECT_NAME"]
++        containers = [c for c in docker.project_containers(project) if c.service == f"{environment}-env"]
++        if len(containers) != 1:
++            raise VerificationError(f"cannot select {environment} file container")
++        default = "README.md" if tool == "inject_readme" else "paper_notes.md" if tool == "inject_paper_notes" else kwargs.get("file_path")
++        working = kwargs.get("working_dir") or ("/app" if environment == "terminal" else "/app/research")
++        path = str(PurePosixPath(default)) if str(default).startswith("/") else str(PurePosixPath(working) / str(default))
++        blob = docker.read_file(containers[0].container_id, path)
++        proof = _contains(blob, [kwargs["content"]], f"{environment}:{path}")
++    else:
++        return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++    return PlacementProof(server, tool, proof.status, proof.locator, proof.digest)
++
++
++async def verify_placement_batch(injections: Sequence[Mapping[str, Any]], results: Sequence[Mapping[str, Any]],
++                                 environ: Mapping[str, str], docker: DockerInspector,
++                                 *, strict: bool = False,
++                                 server_environments: Mapping[str, Mapping[str, Any]] | None = None) -> tuple[PlacementProof, ...]:
++    if len(injections) != len(results):
++        raise VerificationError("injection/result cardinality mismatch")
++    remaining = list(results)
++    proofs = []
++    for injection in injections:
++        match = next((item for item in remaining if
++                      item.get("server_name") == injection.get("server_name") and
++                      item.get("tool_name") == injection.get("tool_name") and
++                      item.get("turn_id") == injection.get("turn_id") and
++                      item.get("kwargs") == injection.get("kwargs")), None)
++        if match is None:
++            raise VerificationError("injection result identity mismatch")
++        remaining.remove(match)
++        result = match
++        if not result.get("success"):
++            raise VerificationError(f"injection failed: {injection['server_name']}:{injection['tool_name']}")
++        merged = dict(environ)
++        merged.update((server_environments or {}).get(str(injection["server_name"]), {}))
++        proof = await verify_placement(injection, result, merged, docker)
++        if strict and proof.status is PlacementStatus.UNSUPPORTED:
++            raise VerificationError(f"no placement adapter: {proof.server}:{proof.tool}")
++        proofs.append(proof)
++    return tuple(proofs)
+diff --git a/eval/task_runner.py b/eval/task_runner.py
+index 40ee51a7..13eb464c 100644
+--- a/eval/task_runner.py
++++ b/eval/task_runner.py
+@@ -35,6 +35,14 @@ from utils.resource_manager import (
+
+ from dt_arena.src.types.agent import AgentConfig, RuntimeConfig
+ from dt_arena.src.types.task import AttackConfig, TaskConfig
++from dt_arena.src.env_verification import (
++    SubprocessDockerInspector,
++    VerificationError,
++    VerificationMode,
++    build_readback_environments,
++    verify_placement_batch,
++    verify_started_routes,
++)
+
+
+ def _status(**fields: object) -> None:
+@@ -147,6 +155,8 @@ async def run_single_task(
+         # Build env injections by turn
+         all_env_injections = get_env_injections_from_attack(attack_cfg)
+         injection_server_urls: Dict[str, str] = {}
++        verification_mode = VerificationMode.from_env(os.getenv("DTAP_ENV_VERIFICATION"))
++        environment_docker = None
+
+         if all_env_injections and not skip_mcp:
+             required_servers = get_required_injection_servers(all_env_injections)
+@@ -177,6 +187,24 @@ async def run_single_task(
+
+                     print(f"[ENV INJECTION] Injection servers ready: {list(injection_server_urls.keys())}")
+
++                    if verification_mode is not VerificationMode.OFF and injection_manager:
++                        environment_docker = SubprocessDockerInspector.auto()
++                        route_proofs = verify_started_routes(
++                            PROJECT_ROOT,
++                            injection_manager,
++                            list(required_servers),
++                            os.environ,
++                            environment_docker,
++                        )
++                        for server_name, proofs in route_proofs.items():
++                            for proof in proofs:
++                                print(
++                                    "[DTAP_ENV_VERIFY] route=verified "
++                                    f"server={server_name} environment={proof.environment} "
++                                    f"network={','.join(proof.modes)}",
++                                    flush=True,
++                                )
++
+         # Build runtime config
+         effective_disallowed_tools = disallowed_tools
+         if effective_disallowed_tools is None:
+@@ -305,6 +333,30 @@ async def run_single_task(
+                             print(f"  [{status}] {inj_result['server_name']}:{inj_result['tool_name']}")
+                             if not inj_result["success"]:
+                                 print(f"       Error: {inj_result['error']}")
++                        if verification_mode is not VerificationMode.OFF:
++                            failed = [result for result in injection_results if not result["success"]]
++                            if failed:
++                                raise VerificationError("environment injection failed before target call")
++                        if verification_mode is VerificationMode.PLACEMENT:
++                            if environment_docker is None:
++                                raise VerificationError("environment route proof was not established")
++                            placement_proofs = await verify_placement_batch(
++                                turn_env_injections,
++                                injection_results,
++                                os.environ,
++                                environment_docker,
++                                strict=os.getenv("DTAP_ENV_VERIFICATION_STRICT") == "1",
++                                server_environments=build_readback_environments(
++                                    agent_cfg, injection_manager, list(required_servers)
++                                ),
++                            )
++                            for proof in placement_proofs:
++                                print(
++                                    "[DTAP_ENV_VERIFY] placement=" + proof.status.value + " "
++                                    f"server={proof.server} tool={proof.tool} "
++                                    f"digest={proof.digest or '-'}",
++                                    flush=True,
++                                )
+
+                 # Run agent for this turn
+                 _status(turn=turn_id, total_turns=len(instructions))
+diff --git a/tests/test_env_verification.py b/tests/test_env_verification.py
+new file mode 100644
+index 00000000..f9fe2199
+--- /dev/null
++++ b/tests/test_env_verification.py
+@@ -0,0 +1,199 @@
++import unittest
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, patch
++
++from dt_arena.src.env_verification import (
++    ContainerSnapshot,
++    PlacementStatus,
++    ROUTES,
++    TARGETS,
++    VerificationError,
++    VerificationMode,
++    build_readback_environments,
++    verify_docker_route,
++    verify_placement,
++    verify_placement_batch,
++    verify_started_routes,
++)
++from utils.injection_helpers import _classify_injection_result
++
++
++def container(project="p", *, mode="bridge", port=None, service="api", env=()):
++    ports = {} if port is None else {(8034, "tcp"): frozenset({port})}
++    return ContainerSnapshot("id", "name", project, service, mode, tuple(env), ports)
++
++
++class Docker:
++    def __init__(self, containers, content=b""):
++        self.containers = containers
++        self.content = content
++
++    def project_containers(self, project):
++        return [item for item in self.containers if item.project == project]
++
++    def read_file(self, container_id, path):
++        return self.content
++
++
++class RouteTests(unittest.TestCase):
++    def test_bridge_port_mapping(self):
++        proof = verify_docker_route("slack", "p", {"SLACK_API_PORT": 18123},
++            {"ports": {"SLACK_API_PORT": {"container_port": 8034}}},
++            Docker([container(port=18123)]))
++        self.assertEqual(proof.ports, ("SLACK_API_PORT",))
++
++    def test_host_network_binds_from_container_environment(self):
++        proof = verify_docker_route("slack", "p", {"SLACK_API_PORT": 18123},
++            {"ports": {"SLACK_API_PORT": {"container_port": 8034}}},
++            Docker([container(mode="host", env=("SLACK_API_PORT=18123",))]))
++        self.assertEqual(proof.modes, ("host",))
++
++    def test_wrong_project_or_port_fails(self):
++        with self.assertRaises(VerificationError):
++            verify_docker_route("slack", "p", {"SLACK_API_PORT": 9},
++                {"ports": {"SLACK_API_PORT": {"container_port": 8034}}},
++                Docker([container(mode="host", env=("SLACK_API_PORT=8",))]))
++
++    def test_fourteen_domain_environment_shapes(self):
++        servers = (
++            "ecommerce-injection", "terminal-injection", "salesforce-injection",
++            "customer-service-injection", "finance-injection", "legal-injection",
++            "macos-injection", "hospital-env-injection", "os-filesystem-injection",
++            "research-injection", "telecom-injection", "travel-injection",
++            "windows-injection", "slack-injection",
++        )
++        repo = Path(__file__).resolve().parents[1]
++        definitions = __import__("yaml").safe_load(
++            (repo / "dt_arena/config/env.yaml").read_text()
++        )["environments"]
++        next_port = 21000
++        proof_count = 0
++        for server in servers:
++            environ, containers = {}, []
++            child = {}
++            for child_key, environment_key in ROUTES[server]:
++                next_port += 1
++                environ[environment_key] = str(next_port)
++                child[child_key] = str(next_port)
++            for environment in TARGETS[server]:
++                project = f"m5-{environment}"
++                environ[f"{environment.upper().replace('-', '_')}_PROJECT_NAME"] = project
++                allocated = []
++                for environment_key in definitions[environment].get("ports", {}):
++                    if environment_key not in environ:
++                        next_port += 1
++                        environ[environment_key] = str(next_port)
++                    allocated.append(f"BOUND_{environment_key}={environ[environment_key]}")
++                containers.append(container(project, mode="host", env=allocated))
++
++            class Manager:
++                def get_server_config(self, name):
++                    return {"env": child} if name == server else None
++
++            with self.subTest(server=server):
++                proofs = verify_started_routes(
++                    repo, Manager(), (server,), environ, Docker(containers)
++                )
++                self.assertEqual(set(proofs), {server})
++                proof_count += len(proofs[server])
++        self.assertEqual(len(servers), 14)
++        self.assertEqual(proof_count, 15)  # research verifies both research and arxiv
++
++
++class PlacementTests(unittest.IsolatedAsyncioTestCase):
++    async def test_read_only_is_not_applicable(self):
++        proof = await verify_placement(
++            {"server_name": "whatsapp-injection", "tool_name": "get_whatsapp_chat", "kwargs": {}},
++            {"success": True}, {}, Docker([]))
++        self.assertIs(proof.status, PlacementStatus.NOT_APPLICABLE)
++
++    async def test_unknown_mutator_is_explicitly_unsupported(self):
++        cases = (
++            {"server_name": "legal-injection", "tool_name": "inject_case_note", "kwargs": {}},
++            {"server_name": "terminal-injection", "tool_name": "inject_todo_list",
++             "kwargs": {"content": "not-yet-supported"}},
++        )
++        for injection in cases:
++            with self.subTest(tool=injection["tool_name"]):
++                proof = await verify_placement(injection, {"success": True}, {}, Docker([]))
++                self.assertIs(proof.status, PlacementStatus.UNSUPPORTED)
++
++    async def test_terminal_independent_file_readback(self):
++        proof = await verify_placement(
++            {"server_name": "terminal-injection", "tool_name": "inject_readme",
++             "kwargs": {"content": "sentinel"}},
++            {"success": True}, {"TERMINAL_PROJECT_NAME": "p"},
++            Docker([container(service="terminal-env")], b"prefix sentinel suffix"))
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertEqual(len(proof.digest), 64)
++
++    async def test_slack_readback_matches_payload(self):
++        injection = {"server_name": "slack-injection", "tool_name": "inject_slack_message",
++                     "kwargs": {"channel_name": "general", "message": "line one\nline two"}}
++        request = AsyncMock(return_value=b'{"messages":[{"text":"line one\\nline two"}]}')
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(injection, {"success": True},
++                                           {"SLACK_API_PORT": "8034", "USER_ACCESS_TOKEN": "victim-token"}, Docker([]))
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertEqual(request.await_args.kwargs["headers"]["Authorization"], "Bearer victim-token")
++
++    async def test_gmail_uses_message_detail_for_body_readback(self):
++        injection = {"server_name": "gmail-injection", "tool_name": "inject_email",
++                     "kwargs": {"to_email": "a@b", "subject": "s", "body": "payload"}}
++        request = AsyncMock(side_effect=[b'{"messages":[{"ID":"m1"}]}', b'a@b s payload'])
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection, {"success": True}, {"GMAIL_UI_PORT": "8025"}, Docker([])
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertIn("/api/v1/message/m1", request.await_args_list[1].args[1])
++
++    async def test_whatsapp_has_direct_readback_adapter(self):
++        injection = {"server_name": "whatsapp-injection", "tool_name": "send_whatsapp_message",
++                     "kwargs": {"phone_number": "+1", "body": "payload"}}
++        with patch("dt_arena.src.env_verification._http", new=AsyncMock(return_value=b'+1 payload')):
++            proof = await verify_placement(
++                injection, {"success": True},
++                {"WHATSAPP_API_PORT": "8039", "WHATSAPP_USER_ACCESS_TOKEN": "token"}, Docker([])
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++    async def test_failed_injection_never_becomes_proof(self):
++        injection = {"server_name": "slack-injection", "tool_name": "inject_slack_message", "kwargs": {}, "turn_id": 1}
++        with self.assertRaises(VerificationError):
++            await verify_placement_batch(
++                [injection], [{**injection, "success": False}], {}, Docker([]))
++
++    async def test_strict_mode_rejects_unsupported_adapter(self):
++        injection = {"server_name": "legal-injection", "tool_name": "inject_x", "kwargs": {}, "turn_id": 1}
++        with self.assertRaises(VerificationError):
++            await verify_placement_batch(
++                [injection], [{**injection, "success": True}], {}, Docker([]), strict=True)
++
++
++class ModeTests(unittest.TestCase):
++    def test_readback_environment_uses_matching_victim_credentials(self):
++        agent = SimpleNamespace(mcp_servers=[
++            SimpleNamespace(name="slack", env={"USER_ACCESS_TOKEN": "victim-token"})
++        ], sub_agents=[])
++        manager = SimpleNamespace(get_server_config=lambda name: {
++            "env": {"SLACK_API_PORT": "8034", "USER_ACCESS_TOKEN": "wrong-token"}
++        })
++        merged = build_readback_environments(agent, manager, ("slack-injection",))
++        self.assertEqual(merged["slack-injection"]["USER_ACCESS_TOKEN"], "victim-token")
++
++    def test_modes_and_invalid_value(self):
++        self.assertIs(VerificationMode.from_env(None), VerificationMode.ROUTE)
++        self.assertIs(VerificationMode.from_env("placement"), VerificationMode.PLACEMENT)
++        with self.assertRaises(VerificationError):
++            VerificationMode.from_env("bad")
++
++    def test_backend_error_payload_is_not_transport_success(self):
++        self.assertEqual(_classify_injection_result('{"error":"HTTP 404"}'), (False, "HTTP 404"))
++        self.assertEqual(_classify_injection_result('{"success":false,"message":"bad"}'), (False, "bad"))
++        self.assertEqual(_classify_injection_result('{"success":true}'), (True, None))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/utils/injection_helpers.py b/utils/injection_helpers.py
+index cbb651ab..ee2c32cf 100644
+--- a/utils/injection_helpers.py
++++ b/utils/injection_helpers.py
+@@ -1,3 +1,4 @@
++import json
+ from typing import Any, Dict, List, Optional, Tuple, Union
+
+ from dt_arena.src.types.agent import ToolInjection, SkillInjection, A2AInjection
+@@ -425,17 +426,19 @@ async def apply_environment_injections_async(
+
+                         # Extract result content
+                         result_text = _extract_mcp_result(result)
++                        result_success, result_error = _classify_injection_result(result_text)
+
+                         results.append({
+                             "server_name": server_name,
+                             "tool_name": tool_name,
+                             "kwargs": kwargs,
+                             "turn_id": turn_id,
+-                            "success": True,
++                            "success": result_success,
+                             "result": result_text,
+-                            "error": None,
++                            "error": result_error,
+                         })
+-                        print(f"[ENV INJECTION] {server_name}:{tool_name} - Success")
++                        status = "Success" if result_success else f"Failed: {result_error}"
++                        print(f"[ENV INJECTION] {server_name}:{tool_name} - {status}")
+
+                     except Exception as e:
+                         results.append({
+@@ -466,6 +469,22 @@ async def apply_environment_injections_async(
+     return results
+
+
++def _classify_injection_result(result_text: str) -> tuple[bool, Optional[str]]:
++    """Do not confuse an MCP transport success with a backend write success."""
++    try:
++        value = json.loads(result_text)
++    except (TypeError, json.JSONDecodeError):
++        return True, None
++    while isinstance(value, dict) and set(value) == {"result"}:
++        value = value["result"]
++    if not isinstance(value, dict):
++        return True, None
++    if value.get("success") is False or str(value.get("status", "")).lower() in {"error", "failed"} or value.get("error"):
++        error = value.get("error") or value.get("message") or "backend rejected injection"
++        return False, str(error)
++    return True, None
++
++
+ def apply_environment_injections(
+     env_injections: List[Dict[str, Any]],
+     server_urls: Dict[str, str],

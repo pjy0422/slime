@@ -273,3 +273,34 @@ and slime adapter session credentials remains forbidden.
 
 See `M4_IMPLEMENTATION_PLAN.md`, `M4_IMPLEMENTATION_REPORT.md`, and
 `M4_TEST_REPORT.md` for the frozen threat model and release gates.
+
+## M5: deterministic environment verification
+
+The slime-managed DTAP patch adds a zero-target-LLM auxiliary gate. Route mode
+(the default) binds the started injection server's resolved endpoint to the
+TaskExecutor project and live Docker container, supporting both published bridge
+ports and DTAP's host-network containers. Placement mode additionally performs
+independent read-back for Slack, Gmail, WhatsApp, terminal, and research files.
+
+```bash
+export DTAP_ENV_VERIFICATION=placement
+# Optional rollout gate: reject tools without a placement adapter.
+export DTAP_ENV_VERIFICATION_STRICT=1
+```
+
+Read-only injection tools are marked `not_applicable`; mutating tools without an
+adapter are marked `unsupported`. Proofs stay inside the trusted DTAP process and
+only expose status plus SHA-256 digest in logs. A verification failure is treated
+as infrastructure failure, never as reward zero, so the four-tool M4 policy
+contract and reward semantics are unchanged.
+
+The current support matrix, unsupported-server handoff notes, adapter checklist,
+and M0-M5 deterministic/live reproduction commands are maintained in
+`dtap_integration/README.md`. The live smoke runner starts only DTAP sandbox
+infrastructure and never invokes the victim LLM or judge:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m5_env \
+  --task-dir /path/to/DecodingTrust-Agent/dataset/research/malicious/indirect/Radiological_Risks/2 \
+  --strict
+```
