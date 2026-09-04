@@ -1,0 +1,31 @@
+DTAP RL M1 direct Anthropic API smoke addition
+===============================================
+
+Added:
+- examples/dtap_agent_rl/scripts/smoke_m1_api.py
+- examples/dtap_agent_rl/tests/test_smoke_m1_api.py
+- README direct-API smoke instructions
+
+Smoke contract:
+- real DTAP TaskExecutor + Docker environment for live MCP schema discovery
+- sanitized EpisodeView only survives into policy phase
+- host-side FastMCP with random Bearer episode capability
+- local Claude Code calls Anthropic directly via ANTHROPIC_API_KEY
+- ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN are removed from child env
+- exact allowed MCP tools: get_task_spec + get_attack_surface
+- common Claude native tools explicitly denied
+- requires both MCP tool calls
+- checks config/task-path/example/token leakage and config immutability
+- cleans EpisodeRegistry and FastMCP server on exit
+- does not run victim agent, judge, reward, or RL
+
+Validation in build environment:
+- python -m compileall -q examples/dtap_agent_rl : PASS
+- full tests: 16 passed, 2 skipped
+  (the 2 existing skips are FastMCP-dependent in this build environment)
+- new smoke helper tests: PASS
+
+The real API smoke itself was not executed here because it requires:
+- a DTAP checkout + Docker environment
+- Claude Code CLI
+- ANTHROPIC_API_KEY
