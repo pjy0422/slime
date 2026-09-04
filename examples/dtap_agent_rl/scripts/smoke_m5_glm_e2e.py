@@ -88,15 +88,38 @@ class RecordingRunner:
 
     m4_hardened = True
 
-    def __init__(self, delegate: DtapAttemptRunner) -> None:
+    def __init__(
+        self,
+        delegate: DtapAttemptRunner,
+        *,
+        artifacts_dir: Path | None = None,
+    ) -> None:
         self.delegate = delegate
         self.plans: list[list[dict]] = []
+        self.artifacts_dir = artifacts_dir
+        self.exported_victim_traces = 0
 
     async def run(self, workspace):
         config = yaml.safe_load(workspace.config_path.read_text(encoding="utf-8"))
         turns = config["Attack"]["attack_turns"]
         self.plans.append(turns)
-        return await self.delegate.run(workspace)
+        if self.artifacts_dir is not None:
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(workspace.config_path, self.artifacts_dir / "submitted-config.yaml")
+        result = await self.delegate.run(workspace)
+        if self.artifacts_dir is not None:
+            for candidate in sorted(workspace.output_root.rglob("*.json")):
+                if candidate.name in {"judge_result.json", ".m4-verdict.json"}:
+                    continue
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("trajectory"), list):
+                    shutil.copy2(candidate, self.artifacts_dir / "victim-trajectory.json")
+                    self.exported_victim_traces = 1
+                    break
+        return result
 
 
 def _free_port() -> int:
@@ -147,6 +170,14 @@ async def _main(args) -> None:
         raise RuntimeError("Claude Code CLI not found")
 
     snapshot = load_task_snapshot(args.task_dir)
+    artifacts_dir = args.artifacts_dir.expanduser().resolve() if args.artifacts_dir else None
+    if artifacts_dir is not None:
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snapshot.task_dir / "config.yaml", artifacts_dir / "original-config.yaml")
+        (artifacts_dir / "policy-prompt.txt").write_text(
+            M6_PROMPT if args.m6_placement else PROMPT,
+            encoding="utf-8",
+        )
     view = await live_view(snapshot)
     source_turns = yaml.safe_load(
         (snapshot.task_dir / "config.yaml").read_text(encoding="utf-8")
@@ -176,7 +207,7 @@ async def _main(args) -> None:
         security_policy=policy,
         scheduler=scheduler,
     )
-    runner = RecordingRunner(real_runner)
+    runner = RecordingRunner(real_runner, artifacts_dir=artifacts_dir)
     placement = None
     credentials = EpisodeCredentials.issue("glm-e2e-adapter-session-0123456789")
     runtime = EpisodeRuntimeState(max_submissions=1, max_submit_calls=policy.max_submit_calls)
@@ -280,6 +311,8 @@ async def _main(args) -> None:
                 for secret in (credentials.mcp_bearer_token, str(snapshot.task_dir)):
                     if secret in stdout or secret in stderr:
                         raise RuntimeError("privileged episode value leaked")
+                if artifacts_dir is not None:
+                    (artifacts_dir / "policy.jsonl").write_text(stdout, encoding="utf-8")
 
             if len(runner.plans) != 1 or not runner.plans[0]:
                 raise RuntimeError("GLM did not produce one non-empty accepted plan")
@@ -292,6 +325,8 @@ async def _main(args) -> None:
                 or placement.validated_actions < 1
             ):
                 raise RuntimeError("GLM did not complete a verified M6 placement receipt")
+            if artifacts_dir is not None and runner.exported_victim_traces < 1:
+                raise RuntimeError("artifact export found no DTAP victim trajectory")
             BenchmarkIntegrityGuard.verify(snapshot.task_dir, snapshot.benchmark_manifest)
             print(json.dumps({
                 "status": "passed",
@@ -303,6 +338,7 @@ async def _main(args) -> None:
                 "submissions": runtime.submissions_used,
                 "placement_actions": placement.applied_actions if placement else 0,
                 "placements_verified": placement.verified_actions if placement else 0,
+                "artifacts_dir": str(artifacts_dir) if artifacts_dir else None,
             }, ensure_ascii=False, indent=2, sort_keys=True))
         finally:
             server_task.cancel()
@@ -322,6 +358,14 @@ def main() -> None:
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--m6-placement", action="store_true")
+    parser.add_argument(
+        "--artifacts-dir",
+        type=Path,
+        help=(
+            "opt-in trusted output directory for policy.jsonl, original/submitted "
+            "configs, and victim traces consumable by tools/dtap-trajectory-viewer"
+        ),
+    )
     args = parser.parse_args()
     args.task_dir = args.task_dir.expanduser().resolve()
     args.dtap_root = args.dtap_root.expanduser().resolve()

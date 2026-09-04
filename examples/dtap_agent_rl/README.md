@@ -356,3 +356,21 @@ python -m examples.dtap_agent_rl.scripts.smoke_m6_placement \
 
 Add `--m6-placement` to `smoke_m5_glm_e2e` for a generated-plan run that requires
 GLM-5.2 to validate, apply, read the owned receipt, and then submit the final plan.
+
+## Policy and victim trajectory viewer
+
+`tools/dtap-trajectory-viewer` renders the policy MCP trajectory and the DTAP
+victim trajectory in one self-contained HTML page. It also shows a unified diff
+and the full text of the original and policy-submitted `config.yaml`.
+
+For a viewer-ready real M6 bundle, add an explicit trusted artifact directory:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
+  ... --m6-placement --artifacts-dir /tmp/dtap-run
+
+dtap-traj /tmp/dtap-run -o /tmp/dtap-run/trajectory.html
+```
+
+Export is opt-in and occurs only after the policy stream passes the existing
+token/path leakage check. Normal M4/M6 rollout cleanup remains unchanged.

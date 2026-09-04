@@ -1,0 +1,2 @@
+recursive-include dtap_traj/assets *
+include README.md
