@@ -1,0 +1,30 @@
+diff --git a/utils/judge_helpers.py b/utils/judge_helpers.py
+--- a/utils/judge_helpers.py
++++ b/utils/judge_helpers.py
+@@ -37,6 +37,11 @@ def load_judge_module(task_dir: Path):
+         import dt_arena  # importable as a package regardless of install layout
+         pkg_root = Path(list(dt_arena.__path__)[0]).resolve()  # namespace-package safe (__file__ is None)
+         added_paths.append(str(pkg_root / "src" / "types"))
++        # Workflow judges import domain helpers as top-level packages, e.g.
++        # ``from whatsapp.helpers import ...``.  Candidate task directories may
++        # live outside the source checkout, so their own parent-walking fallback
++        # cannot locate dt_arena/utils.
++        added_paths.append(str(pkg_root / "utils"))
+         added_paths.append(str(pkg_root.parent))                     # project/site-packages root
+     except Exception:
+         pass
+@@ -47,5 +52,6 @@ def load_judge_module(task_dir: Path):
+         root_dir = root_dir.parent
+         if (root_dir / "dt_arena" / "src" / "types").exists():
+             added_paths.append(str(root_dir / "dt_arena" / "src" / "types"))
++            added_paths.append(str(root_dir / "dt_arena" / "utils"))
+             added_paths.append(str(root_dir))
+             break
+diff --git a/utils/resource_manager.py b/utils/resource_manager.py
+--- a/utils/resource_manager.py
++++ b/utils/resource_manager.py
+@@ -221,3 +221,3 @@ class ResourceManager:
+             # Try default port first if specified
+-            if default is not None:
++            if default is not None and os.getenv("DT_DISABLE_DEFAULT_PORTS") != "1":
+                 if self._is_port_available(default):

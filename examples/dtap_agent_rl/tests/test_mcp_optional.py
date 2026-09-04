@@ -14,7 +14,7 @@ TOKEN = "episode-mcp-0123456789abcdef"
 
 
 @pytest.mark.asyncio
-async def test_fastmcp_exposes_exactly_two_read_only_tools():
+async def test_fastmcp_preserves_the_two_m1_read_only_tools():
     if importlib.util.find_spec("fastmcp") is None:
         pytest.skip("fastmcp not installed in this execution environment")
 
@@ -29,4 +29,4 @@ async def test_fastmcp_exposes_exactly_two_read_only_tools():
     # deployed HTTP smoke test because auth deliberately depends on HTTP headers.
     async with Client(mcp) as client:
         tools = await client.list_tools()
-    assert sorted(tool.name for tool in tools) == ["get_attack_surface", "get_task_spec", "validate_attack_step"]
+    assert {"get_attack_surface", "get_task_spec"} <= {tool.name for tool in tools}

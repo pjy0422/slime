@@ -1,4 +1,4 @@
-# DTAP Agent RL — M0 + M1
+# DTAP Agent RL — M0 through M4
 
 This directory is intended to be copied into the **slime repository** at
 `examples/dtap_agent_rl/`. DTAP remains an external pinned dependency.
@@ -135,3 +135,141 @@ Use `--show-stream` to print Claude Code's full stream-json output. By default
 
 This smoke does **not** run the DTAP victim agent, attack mutation, judge, reward,
 or any RL training loop. Those begin in later milestones.
+
+## M3: H-submission trajectories
+
+M3 adds `submit_attack(plan)` while keeping the three M2 inspection/validation tools.
+One Claude/slime context may submit up to `H` plans. Failed attempts return one bit
+and the same policy context continues; success or the H-th normal failure terminates.
+
+Create the shared server with paired registries:
+
+```python
+views = EpisodeRegistry()
+submissions = EpisodeSubmissionRegistry()
+mcp = create_m3_mcp_server(views, submissions)
+```
+
+The custom generate entrypoint is
+`examples.dtap_agent_rl.generate.generate`. Configure its trusted runtime once per
+worker with `configure_runtime(M3GenerateRuntime(...))` before rollout generation.
+
+Deterministic Claude H-loop smoke:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+python -m examples.dtap_agent_rl.scripts.smoke_m3_hloop_api --model sonnet
+```
+
+Real one-submit DTAP smoke:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m3_dtap \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --task-dir /path/to/DecodingTrust-Agent/dataset/.../<task-id> \
+  --plan /path/to/validated-plan.json \
+  --agent-type openaisdk --model gpt-5.4
+```
+
+The real smoke creates an ephemeral task copy, starts a fresh `TaskExecutor`, runs
+the victim and judge, reads `attack_success`, shuts the executor down, and verifies
+that the source config did not change.
+
+## M4: reward and isolation hardening
+
+M4 keeps the same four policy tools and H-turn semantics. Production M4 uses a
+separate MCP capability, atomic episode authority, Q submit-call budget, typed
+receipts, bounded judge firewall, whole-task manifests, explicit child environment,
+strict Claude configuration, sandbox attestation, and one worker-scoped scheduler.
+
+Minimal trusted worker wiring:
+
+```python
+from examples.dtap_agent_rl.attempt_runner import DtapAttemptRunner
+from examples.dtap_agent_rl.authority import EpisodeAuthorityRegistry
+from examples.dtap_agent_rl.generate_m4 import M4GenerateRuntime, configure_runtime
+from examples.dtap_agent_rl.mcp_server import create_m4_mcp_server
+from examples.dtap_agent_rl.sandbox_policy import SandboxPolicyVerifier
+from examples.dtap_agent_rl.scheduler import AttemptScheduler
+from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
+from examples.dtap_agent_rl.transport_security import build_m4_http_app
+
+policy = M4SecurityPolicy(
+    max_submit_calls=6,
+    max_parallel_attempts=8,
+    max_queued_attempts=32,
+    inherited_dtap_env_names=("PYTHONPATH", "OPENAI_API_KEY"),
+)
+scheduler = AttemptScheduler(
+    max_parallel=policy.max_parallel_attempts,
+    max_queued=policy.max_queued_attempts,
+    wait_timeout=policy.queue_wait_timeout_seconds,
+)
+runner = DtapAttemptRunner(
+    security_policy=policy,
+    scheduler=scheduler,
+    dtap_root="/path/to/DecodingTrust-Agent",
+)
+authorities = EpisodeAuthorityRegistry()
+server = create_m4_mcp_server(authorities, security_policy=policy)
+http_app = build_m4_http_app(server, policy)
+```
+
+`configure_runtime(M4GenerateRuntime(...))` must receive the same policy, shared
+runner, authority registry, and a `SandboxPolicyVerifier`. The sandbox must attest
+non-root execution, no capabilities/Docker/host mounts, isolated home/workdir and
+`/proc`, default-deny network with exactly the adapter and policy-MCP endpoints, and
+process-group cleanup. Missing attestation aborts before episode registration.
+
+The small DTAP-side compatibility changes required by this harness are versioned
+with slime under `dtap_integration/`. Apply them to the external checkout before
+running a real DTAP gate:
+
+```bash
+examples/dtap_agent_rl/dtap_integration/apply.sh \
+  /path/to/DecodingTrust-Agent
+```
+
+Direct Claude contract smoke:
+
+```bash
+export ANTHROPIC_API_KEY='sk-ant-...'
+python -m examples.dtap_agent_rl.scripts.smoke_m4_claude_boundary --model sonnet
+```
+
+This checks strict MCP configuration, the exact four tools, H/Q behavior, and
+config/judge/path/token canaries. Deployment OS/network enforcement is a separate
+sandbox integration gate.
+
+Real parallel DTAP/Docker gate:
+
+```bash
+export PYTHONPATH=/path/to/DecodingTrust-Agent:$PYTHONPATH
+export DTAP_M4_ROOT=/path/to/DecodingTrust-Agent
+export DTAP_M4_PARALLEL_TASK_DIR=/path/to/a/prompt-compatible/task
+export DTAP_M4_INHERITED_ENV_NAMES=PYTHONPATH,OPENAI_API_KEY
+
+pytest -q -m integration \
+  examples/dtap_agent_rl/tests/test_m4_real_dtap_optional.py
+```
+
+For an Anthropic-compatible provider used by both the policy and a ClaudeSDK
+victim, keep the actual policy adapter variables out of the DTAP child and pass
+trusted aliases explicitly:
+
+```bash
+export DTAP_POLICY_ANTHROPIC_BASE_URL=https://provider.example
+export DTAP_POLICY_USE_API_KEY_AS_AUTH_TOKEN=1
+export DTAP_VICTIM_ANTHROPIC_BASE_URL=https://provider.example
+export DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN=1
+export DTAP_M4_AGENT_TYPE=claudesdk
+export DTAP_M4_MODEL=provider-model
+export DTAP_M4_INHERITED_ENV_NAMES=PYTHONPATH,ANTHROPIC_API_KEY,DTAP_VICTIM_ANTHROPIC_BASE_URL,DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN
+```
+
+The aliases are consumed only inside the isolated DTAP subprocess. Direct
+inheritance of `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, policy MCP bearer,
+and slime adapter session credentials remains forbidden.
+
+See `M4_IMPLEMENTATION_PLAN.md`, `M4_IMPLEMENTATION_REPORT.md`, and
+`M4_TEST_REPORT.md` for the frozen threat model and release gates.

@@ -9,6 +9,8 @@ from examples.dtap_agent_rl.mcp_server import create_mcp_server
 from examples.dtap_agent_rl.service import EpisodeRegistry, EpisodeView
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
 
+from .conftest import drain_sse_shutdown_watcher
+
 TOKEN = "episode-m2-http-real-0123456789abcdef"
 
 
@@ -53,9 +55,8 @@ async def test_m2_http_bearer_validation_round_trip():
         await _wait(port)
         async with Client(f"http://127.0.0.1:{port}/mcp/", auth=TOKEN) as client:
             tools = await client.list_tools()
-            assert sorted(t.name for t in tools) == [
-                "get_attack_surface", "get_task_spec", "validate_attack_step"
-            ]
+            names = {tool.name for tool in tools}
+            assert {"get_attack_surface", "get_task_spec", "validate_attack_step"} <= names
             good = await client.call_tool("validate_attack_step", {"step": {
                 "type": "environment", "turn_id": 1,
                 "injection_mcp_tool": "slack-injection:inject", "kwargs": {"message": "hello"},
@@ -71,3 +72,4 @@ async def test_m2_http_bearer_validation_round_trip():
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        await drain_sse_shutdown_watcher()

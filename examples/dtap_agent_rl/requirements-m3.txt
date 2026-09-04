@@ -1,0 +1,6 @@
+-r requirements-m1.txt
+-r requirements-m2.txt
+pytest>=8,<9
+pytest-asyncio>=0.23,<1
+PyYAML>=6,<7
+socksio>=1,<2

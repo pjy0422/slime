@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import re
 import sys
@@ -9,6 +10,29 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+async def drain_sse_shutdown_watcher() -> None:
+    """Let sse-starlette retire its process-global shutdown watcher cleanly.
+
+    FastMCP's HTTP test server starts this watcher outside the uvicorn task. A
+    cancelled test server therefore needs one final shutdown broadcast before
+    the pytest event loop closes, otherwise asyncio reports a destroyed pending
+    task even though the server itself stopped successfully.
+    """
+
+    try:
+        from sse_starlette.sse import AppStatus, _get_shutdown_state
+    except ImportError:
+        return
+
+    state = _get_shutdown_state()
+    if not state.watcher_started:
+        return
+
+    AppStatus.should_exit = True
+    await asyncio.sleep(0.55)
+    AppStatus.should_exit = False
 
 # The deliverable is intended to live inside the slime repository. This execution
 # environment does not have slime installed, so provide a tiny API-compatible stub
@@ -93,6 +117,12 @@ if importlib.util.find_spec("slime") is None:
 from examples.dtap_agent_rl.attack_surface import AttackSurface, ToolSpec
 from examples.dtap_agent_rl.dtap_compat import DtapApi
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "integration: requires a real DTAP installation and Docker environment"
+    )
 
 
 class FakeSandbox:

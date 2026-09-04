@@ -1,4 +1,4 @@
-"""Host-side FastMCP surface for M0-M2.
+"""Host-side FastMCP surface for M0-M3.
 
 M2 remains read-only with respect to DTAP state. validate_attack_step() validates
 only the already-sanitized immutable EpisodeView; it performs no Docker, MCP,
@@ -7,9 +7,12 @@ filesystem, config, victim-agent, or judge mutation.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .actions import candidate_attack_step_schema
+from .authority import EpisodeAuthorityRegistry
+from .policy_contract import PolicyContract
+from .security_policy import M4SecurityPolicy, PolicyInputLimitError
 from .service import EpisodeAccessError, EpisodeRegistry
 from .validation import ValidationContext, validate_attack_step as validate_candidate_step
 
@@ -23,8 +26,13 @@ def parse_bearer_token(headers: Mapping[str, str]) -> str:
 
 
 class ReadOnlyEpisodeService:
-    def __init__(self, registry: EpisodeRegistry):
+    def __init__(
+        self,
+        registry: EpisodeRegistry,
+        submission_controller_resolver: Callable[[str], Any] | None = None,
+    ):
         self.registry = registry
+        self.submission_controller_resolver = submission_controller_resolver
 
     def get_task_spec(self, token: str) -> dict:
         return self.registry.resolve(token).task.to_dict()
@@ -40,16 +48,31 @@ class ReadOnlyEpisodeService:
         ctx = ValidationContext.from_view(view)
         return validate_candidate_step(step, ctx).to_dict()
 
+    async def submit_attack(self, token: str, plan: Any) -> dict:
+        if self.submission_controller_resolver is None:
+            raise EpisodeAccessError("unauthorized episode")
+        # Resolve the immutable view too, so read and write capability lifetimes
+        # cannot silently diverge.
+        self.registry.resolve(token)
+        try:
+            controller = self.submission_controller_resolver(token)
+        except Exception as exc:
+            raise EpisodeAccessError("unauthorized episode") from exc
+        return await controller.submit(plan)
 
-def create_mcp_server(registry: EpisodeRegistry):
+
+def create_mcp_server(
+    registry: EpisodeRegistry,
+    submission_controller_resolver: Callable[[str], Any] | None = None,
+):
     try:
         from fastmcp import FastMCP
         from fastmcp.server.dependencies import get_http_headers
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("FastMCP >= 2.6 is required for M1/M2 HTTP bearer routing") from exc
+        raise RuntimeError("FastMCP >= 2.6 is required for M1-M3 HTTP bearer routing") from exc
 
-    service = ReadOnlyEpisodeService(registry)
-    mcp = FastMCP(name="DTAP RL Harness", stateless_http=True)
+    service = ReadOnlyEpisodeService(registry, submission_controller_resolver)
+    mcp = FastMCP(name="DTAP RL Harness")
 
     def current_token() -> str:
         return parse_bearer_token(get_http_headers() or {})
@@ -68,5 +91,147 @@ def create_mcp_server(registry: EpisodeRegistry):
     def validate_attack_step(step: dict[str, Any]) -> dict:
         """Strictly validate one candidate attack step without applying it."""
         return service.validate_attack_step(current_token(), step)
+
+    if submission_controller_resolver is not None:
+
+        @mcp.tool
+        async def submit_attack(plan: dict[str, Any]) -> dict:
+            """Validate and run one fresh DTAP macro submission for this episode."""
+            return await service.submit_attack(current_token(), plan)
+
+    return mcp
+
+
+def create_m3_mcp_server(registry: EpisodeRegistry, submission_registry: Any):
+    """Create the four-tool M3 server from paired episode registries."""
+
+    return create_mcp_server(
+        registry,
+        submission_controller_resolver=submission_registry.resolve,
+    )
+
+
+class M4EpisodeService:
+    """Atomic-authority service whose every result crosses the public contract."""
+
+    def __init__(
+        self,
+        registry: EpisodeAuthorityRegistry,
+        contract: PolicyContract,
+        security_policy: M4SecurityPolicy,
+    ) -> None:
+        self.registry = registry
+        self.contract = contract
+        self.security_policy = security_policy
+
+    def _contract(self, authority: Any) -> PolicyContract:
+        return authority.policy_contract or self.contract
+
+    def get_task_spec(self, token: str) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        try:
+            return self._contract(authority).public_payload(authority.view.task.to_dict())
+        except Exception as exc:
+            if not authority.coordinator.runtime.terminal:
+                authority.coordinator.runtime.record_security_failure(stage="task_projection")
+                authority.terminal_event.set()
+            raise RuntimeError("request unavailable") from None
+
+    def get_attack_surface(self, token: str) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        result = authority.view.attack_surface.to_dict()
+        result["candidate_step_schema"] = candidate_attack_step_schema()
+        try:
+            return self._contract(authority).public_payload(result)
+        except Exception:
+            if not authority.coordinator.runtime.terminal:
+                authority.coordinator.runtime.record_security_failure(stage="attack_surface")
+                authority.terminal_event.set()
+            raise RuntimeError("request unavailable") from None
+
+    def validate_attack_step(self, token: str, step: dict[str, Any]) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        try:
+            self.security_policy.preflight_plan({"steps": [step]})
+            result = validate_candidate_step(
+                step,
+                ValidationContext.from_view(authority.view),
+            ).to_dict()
+            return self._contract(authority).public_payload(result)
+        except PolicyInputLimitError:
+            return self._contract(authority).public_payload(
+                {
+                    "valid": False,
+                    "errors": [
+                        {
+                            "code": "INVALID_SHAPE",
+                            "path": "$",
+                            "message": "step exceeds public limits",
+                        }
+                    ],
+                }
+            )
+        except Exception:
+            if not authority.coordinator.runtime.terminal:
+                authority.coordinator.runtime.record_security_failure(stage="validation_response")
+                authority.terminal_event.set()
+            raise RuntimeError("request unavailable") from None
+
+    async def submit_attack(self, token: str, plan: Any) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        try:
+            return self._contract(authority).public_payload(
+                await authority.coordinator.submit(plan)
+            )
+        except Exception:
+            if not authority.coordinator.runtime.terminal:
+                authority.coordinator.runtime.record_security_failure(stage="submit_boundary")
+                authority.terminal_event.set()
+            return self._contract(authority).rejected_submit(
+                code="EVALUATION_UNAVAILABLE",
+                terminal=True,
+                remaining_submissions=authority.coordinator.runtime.remaining_submissions,
+            )
+
+
+def create_m4_mcp_server(
+    registry: EpisodeAuthorityRegistry,
+    *,
+    security_policy: M4SecurityPolicy,
+    contract: PolicyContract | None = None,
+):
+    """Create the frozen four-tool M4 server using one atomic authority registry."""
+
+    try:
+        from fastmcp import FastMCP
+        from fastmcp.server.dependencies import get_http_headers
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("FastMCP >= 2.6 is required for M4 bearer routing") from exc
+
+    service = M4EpisodeService(registry, contract or PolicyContract(), security_policy)
+    mcp = FastMCP(name="DTAP RL Harness M4")
+
+    def token() -> str:
+        return parse_bearer_token(get_http_headers() or {})
+
+    @mcp.tool
+    def get_task_spec() -> dict:
+        """Return the allowlisted task projection for this episode."""
+        return service.get_task_spec(token())
+
+    @mcp.tool
+    def get_attack_surface() -> dict:
+        """Return the allowlisted attack surface and action schema."""
+        return service.get_attack_surface(token())
+
+    @mcp.tool
+    def validate_attack_step(step: dict[str, Any]) -> dict:
+        """Validate one step without changing DTAP state or consuming H/Q."""
+        return service.validate_attack_step(token(), step)
+
+    @mcp.tool
+    async def submit_attack(plan: dict[str, Any]) -> dict:
+        """Run one authoritative, bounded M4 submission transaction."""
+        return await service.submit_attack(token(), plan)
 
     return mcp

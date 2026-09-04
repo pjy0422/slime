@@ -11,7 +11,7 @@ TOKEN = "episode-m2-http-0123456789abcdef"
 
 
 @pytest.mark.asyncio
-async def test_m2_fastmcp_has_three_tools_and_validation_round_trip():
+async def test_m2_fastmcp_preserves_the_three_read_only_tools():
     if importlib.util.find_spec("fastmcp") is None:
         pytest.skip("fastmcp not installed")
     from fastmcp import Client
@@ -32,4 +32,5 @@ async def test_m2_fastmcp_has_three_tools_and_validation_round_trip():
     mcp = create_mcp_server(registry)
     async with Client(mcp) as client:
         tools = await client.list_tools()
-    assert sorted(t.name for t in tools) == ["get_attack_surface", "get_task_spec", "validate_attack_step"]
+    names = {tool.name for tool in tools}
+    assert {"get_attack_surface", "get_task_spec", "validate_attack_step"} <= names
