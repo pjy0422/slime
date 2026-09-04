@@ -86,7 +86,26 @@ Windows and macOS need a guest-side read-only endpoint for file, registry/plist,
 and Office state. Until such an endpoint is available, keep their placement
 mutators unsupported rather than treating injection-MCP success as proof.
 
-## Reproducing M0 through M5
+## M6 receipt boundary
+
+M6 exposes placement only through an episode-owned opaque action receipt. The
+caller first supplies a fully schema-validated environment action to
+`apply_attack_step`; `validate_placement` accepts only the returned `action_id`.
+It accepts no environment name, backend query, filesystem path, or payload.
+
+Successful read-back returns `validated_placement_locator`. Failed read-back
+returns `requested_placement_locator`, a stable error code, and only the fields
+that locate the entity (for example `kwargs.matter_id`, `kwargs.city` plus
+`kwargs.name`, or `kwargs.file_path`). The locator is derived from the caller's
+own submitted action. It is a targeted repair hint, not a backend listing or a
+claim that some unverified alternate path exists.
+
+Each apply uses a disposable sandbox and a sealed result file. Unknown fields,
+symlinks, oversized output, missing results, and non-placement exceptions fail
+closed as `EVALUATION_UNAVAILABLE`. Receipts are held only in the episode's
+authority and disappear when that authority is unregistered.
+
+## Reproducing M0 through M6
 
 Start from the DTAP virtual environment and apply the slime-managed overlay:
 
@@ -169,3 +188,32 @@ in the opt-in pytest integration suite.
 M5 remains a trusted auxiliary check. It does not expose read-back to the policy,
 does not issue policy-visible `action_id` receipts, and does not alter reward.
 Those policy-scoped receipt semantics belong to M6.
+
+Run the real M6 receipt path (no victim or judge):
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m6_placement \
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/legal/malicious/indirect/strategy_leak/6 \
+  --tool legal-injection:inject_into_matter \
+  --dtap-root /home/pjy0422/workspace/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python
+
+python -m examples.dtap_agent_rl.scripts.smoke_m6_placement \
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004 \
+  --dtap-root /home/pjy0422/workspace/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python
+
+python -m examples.dtap_agent_rl.scripts.smoke_m6_placement \
+  --task-dir /home/pjy0422/workspace/DecodingTrust-Agent/dataset/os-filesystem/malicious/indirect/prohibited-ai-practices-and-profiling/11 \
+  --turn-id 1 \
+  --dtap-root /home/pjy0422/workspace/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python
+```
+
+The OS example's source template places the global environment injection at turn
+3 while its projected task is one instruction; `--turn-id 1` matches the public
+M2-M6 candidate contract and does not change placement semantics.
+
+For the generated-plan M6 release gate, use the same provider variables as the
+M5 command and add `--m6-placement`. Set `DTAP_M6_GLM_TASK_DIR` and
+`DTAP_M6_DTAP_ROOT` to run the opt-in pytest gate.

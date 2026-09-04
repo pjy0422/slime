@@ -189,3 +189,16 @@ class M4ClaudeCodeHarness(DTAPClaudeCodeHarness):
             env=env,
             time_budget_sec=time_budget_sec,
         )
+
+
+class M6ClaudeCodeHarness(M4ClaudeCodeHarness):
+    """M4 isolation with the two bounded M6 placement capabilities."""
+
+    exact_policy_tools = (
+        "mcp__dtap__get_task_spec",
+        "mcp__dtap__get_attack_surface",
+        "mcp__dtap__validate_attack_step",
+        "mcp__dtap__apply_attack_step",
+        "mcp__dtap__validate_placement",
+        "mcp__dtap__submit_attack",
+    )

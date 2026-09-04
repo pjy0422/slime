@@ -32,6 +32,8 @@ class M4GenerateRuntime:
     harness_factory: Callable[[str], Any] | None = None
     snapshot_loader: Callable[..., Any] = load_task_snapshot
     audit_sink: Any = None
+    placement_runner: Any = None
+    max_placement_actions: int | None = None
 
 
 _RUNTIME: M4GenerateRuntime | None = None
@@ -125,6 +127,8 @@ async def generate(
                 time_budget_sec=int(input_metadata.get("time_budget_sec") or 1800),
                 harness_factory=runtime.harness_factory,
                 audit_sink=runtime.audit_sink,
+                placement_runner=runtime.placement_runner,
+                max_placement_actions=runtime.max_placement_actions,
             )
         _safe_metadata(
             base_sample,

@@ -7,7 +7,8 @@ filesystem, config, victim-agent, or judge mutation.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from .actions import candidate_attack_step_schema
 from .authority import EpisodeAuthorityRegistry
@@ -131,7 +132,7 @@ class M4EpisodeService:
         authority = self.registry.resolve(token)
         try:
             return self._contract(authority).public_payload(authority.view.task.to_dict())
-        except Exception as exc:
+        except Exception:
             if not authority.coordinator.runtime.terminal:
                 authority.coordinator.runtime.record_security_failure(stage="task_projection")
                 authority.terminal_event.set()
@@ -193,6 +194,18 @@ class M4EpisodeService:
                 remaining_submissions=authority.coordinator.runtime.remaining_submissions,
             )
 
+    async def apply_attack_step(self, token: str, step: Any) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        if authority.placement_coordinator is None:
+            raise EpisodeAccessError("unauthorized episode")
+        return await authority.placement_coordinator.apply(step)
+
+    def validate_placement(self, token: str, action_id: Any) -> dict[str, Any]:
+        authority = self.registry.resolve(token)
+        if authority.placement_coordinator is None:
+            raise EpisodeAccessError("unauthorized episode")
+        return authority.placement_coordinator.validate(action_id)
+
 
 def create_m4_mcp_server(
     registry: EpisodeAuthorityRegistry,
@@ -232,6 +245,58 @@ def create_m4_mcp_server(
     @mcp.tool
     async def submit_attack(plan: dict[str, Any]) -> dict:
         """Run one authoritative, bounded M4 submission transaction."""
+        return await service.submit_attack(token(), plan)
+
+    return mcp
+
+
+def create_m6_mcp_server(
+    registry: EpisodeAuthorityRegistry,
+    *,
+    security_policy: M4SecurityPolicy,
+    contract: PolicyContract | None = None,
+):
+    """Create M6's six-tool surface with episode-scoped placement receipts."""
+    try:
+        from fastmcp import FastMCP
+        from fastmcp.server.dependencies import get_http_headers
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("FastMCP >= 2.6 is required for M6 bearer routing") from exc
+
+    service = M4EpisodeService(registry, contract or PolicyContract(), security_policy)
+    mcp = FastMCP(name="DTAP RL Harness M6")
+
+    def token() -> str:
+        return parse_bearer_token(get_http_headers() or {})
+
+    @mcp.tool
+    def get_task_spec() -> dict:
+        """Return the allowlisted task projection for this episode."""
+        return service.get_task_spec(token())
+
+    @mcp.tool
+    def get_attack_surface() -> dict:
+        """Return the allowlisted attack surface and action schema."""
+        return service.get_attack_surface(token())
+
+    @mcp.tool
+    def validate_attack_step(step: dict[str, Any]) -> dict:
+        """Validate one step without changing DTAP state or consuming H/Q."""
+        return service.validate_attack_step(token(), step)
+
+    @mcp.tool
+    async def apply_attack_step(step: dict[str, Any]) -> dict:
+        """Apply one validated environment action in a fresh placement sandbox."""
+        return await service.apply_attack_step(token(), step)
+
+    @mcp.tool
+    def validate_placement(action_id: str) -> dict:
+        """Read placement evidence only for an action applied by this episode."""
+        return service.validate_placement(token(), action_id)
+
+    @mcp.tool
+    async def submit_attack(plan: dict[str, Any]) -> dict:
+        """Run one authoritative bounded victim/judge submission."""
         return await service.submit_attack(token(), plan)
 
     return mcp

@@ -7,6 +7,8 @@ def test_m4_q_is_explicit_and_positive():
     with pytest.raises(ValueError):
         M4SecurityPolicy(max_submit_calls=0)
     assert M4SecurityPolicy(max_submit_calls=3).max_submit_calls == 3
+    with pytest.raises(ValueError):
+        M4SecurityPolicy(max_submit_calls=1, max_placement_actions=0)
 
 
 @pytest.mark.parametrize(

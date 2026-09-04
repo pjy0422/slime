@@ -322,4 +322,37 @@ python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
 Use the policy/victim provider aliases shown above and set placement strict mode
 for this release gate. M5 verification is trusted auxiliary state only: it is
 not returned as an arbitrary environment oracle and does not affect reward.
-Policy-visible action receipts and `validate_placement(action_id)` remain M6.
+## M6: policy-scoped placement receipts
+
+M6 adds exactly two capabilities to the hardened surface:
+
+- `apply_attack_step(step)` accepts one already-validatable environment action,
+  applies it in a fresh auxiliary DTAP sandbox, and returns an opaque `action_id`.
+- `validate_placement(action_id)` returns the stored independent read-back only
+  when that ID belongs to the same episode capability. A verified result includes
+  `validated_placement_locator`. An invalid result includes the requested locator
+  plus `repair.fields`, so the policy can revise only the location-bearing fields.
+
+The policy cannot provide a server, path, query, or payload to
+`validate_placement`; consequently it is not an arbitrary environment oracle.
+Probe sandboxes are destroyed before the result is returned, probes do not spend
+H/Q and do not affect reward, and `submit_attack` re-applies the final plan in its
+own fresh victim/judge environment. Non-environment actions are rejected by the
+probe endpoint because they have no independent pre-victim placement semantics.
+
+The default probe budget is eight actions per episode and is bounded by
+`M4SecurityPolicy.max_placement_actions`. Use `create_m6_mcp_server` and provide a
+`DtapPlacementRunner` when configuring the runtime; M4 remains an unchanged
+four-tool contract when no placement runner is supplied.
+
+Run one real receipt/read-back smoke without a victim LLM:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.smoke_m6_placement \
+  --task-dir /path/to/DecodingTrust-Agent/dataset/travel/malicious/indirect/off-platform-payments/004 \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python
+```
+
+Add `--m6-placement` to `smoke_m5_glm_e2e` for a generated-plan run that requires
+GLM-5.2 to validate, apply, read the owned receipt, and then submit the final plan.

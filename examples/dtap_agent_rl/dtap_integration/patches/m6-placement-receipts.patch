@@ -1,0 +1,231 @@
+diff --git a/dt_arena/src/env_verification.py b/dt_arena/src/env_verification.py
+index c438f8e..158aec1 100644
+--- a/dt_arena/src/env_verification.py
++++ b/dt_arena/src/env_verification.py
+@@ -25,6 +25,21 @@ class VerificationError(RuntimeError):
+     pass
+ 
+ 
++class PlacementValidationError(VerificationError):
++    """Structured, policy-safe placement failure.
++
++    The locator and repair fields are derived only from the submitted injection,
++    never from an unrestricted backend listing.
++    """
++
++    def __init__(self, code: str, message: str, *, locator: str = "",
++                 repair_fields: Sequence[str] = ()):
++        super().__init__(message)
++        self.code = code
++        self.locator = locator
++        self.repair_fields = tuple(repair_fields)
++
++
+ class VerificationMode(str, Enum):
+     OFF = "off"
+     ROUTE = "route"
+@@ -282,6 +297,65 @@ class PlacementProof:
+     digest: str = ""
+ 
+ 
++@dataclass(frozen=True)
++class PlacementTarget:
++    locator: str
++    repair_fields: tuple[str, ...]
++
++
++def describe_placement_target(injection: Mapping[str, Any]) -> PlacementTarget | None:
++    """Describe the bounded read-back target using policy-supplied arguments only."""
++    server = str(injection.get("server_name", "")).lower()
++    tool = str(injection.get("tool_name", ""))
++    kwargs = injection.get("kwargs") or {}
++    if not isinstance(kwargs, Mapping):
++        return None
++    if server == "legal-injection" and tool in {"inject_into_matter", "modify_matter"}:
++        matter = quote(str(kwargs.get("matter_id", "")), safe="")
++        return PlacementTarget(
++            f"legal:/api/inject/state#matter_id={matter}",
++            ("kwargs.matter_id",),
++        )
++    if server == "travel-injection":
++        if tool in {"inject_accommodation", "inject_restaurant"}:
++            kind = tool.removeprefix("inject_")
++            query = urlencode({"city": kwargs.get("city", "")})
++            name = quote(str(kwargs.get("name", "")), safe="")
++            return PlacementTarget(
++                f"travel:/query_{kind}?{query}#name={name}",
++                ("kwargs.city", "kwargs.name"),
++            )
++        if tool == "inject_flight":
++            query = urlencode({
++                "departure": kwargs.get("origin_city_name", ""),
++                "destination": kwargs.get("dest_city_name", ""),
++                "departure_date": kwargs.get("flight_date", ""),
++            })
++            return PlacementTarget(
++                f"travel:/query_flight?{query}",
++                ("kwargs.origin_city_name", "kwargs.dest_city_name", "kwargs.flight_date"),
++            )
++        if tool == "inject_review" and kwargs.get("entity_type") in {"accommodation", "restaurant"}:
++            query = urlencode({"city": kwargs.get("city", "")})
++            name = quote(str(kwargs.get("entity_name", "")), safe="")
++            return PlacementTarget(
++                f"travel:/query_{kwargs['entity_type']}?{query}#name={name}",
++                ("kwargs.entity_type", "kwargs.city", "kwargs.entity_name"),
++            )
++    if server == "os-filesystem-injection":
++        field = {
++            "inject_file": "file_path", "inject_append": "file_path",
++            "inject_executable": "file_path", "inject_directory": "dir_path",
++            "inject_symlink": "link_path",
++        }.get(tool)
++        if field:
++            return PlacementTarget(
++                f"os-filesystem:{kwargs.get(field, '')}",
++                (f"kwargs.{field}",),
++            )
++    return None
++
++
+ def _digest(data: bytes) -> str:
+     return hashlib.sha256(data).hexdigest()
+ 
+@@ -340,6 +414,7 @@ def _one_container(docker: DockerInspector, project: str, service: str) -> Conta
+ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, Any],
+                            environ: Mapping[str, str], docker: DockerInspector) -> PlacementProof:
+     server, tool, kwargs = injection["server_name"].lower(), injection["tool_name"], injection.get("kwargs") or {}
++    target = describe_placement_target(injection)
+     if tool.startswith(("get_", "list_", "read_", "search_")):
+         return PlacementProof(server, tool, PlacementStatus.NOT_APPLICABLE)
+     proof: PlacementProof
+@@ -466,7 +541,11 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+         proof = _contains(blob, [kwargs["content"]], f"{environment}:{path}")
+     else:
+         return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
+-    return PlacementProof(server, tool, proof.status, proof.locator, proof.digest)
++    return PlacementProof(
++        server, tool, proof.status,
++        target.locator if target is not None else proof.locator,
++        proof.digest,
++    )
+ 
+ 
+ async def verify_placement_batch(injections: Sequence[Mapping[str, Any]], results: Sequence[Mapping[str, Any]],
+@@ -478,6 +557,7 @@ async def verify_placement_batch(injections: Sequence[Mapping[str, Any]], result
+     remaining = list(results)
+     proofs = []
+     for injection in injections:
++        target = describe_placement_target(injection)
+         match = next((item for item in remaining if
+                       item.get("server_name") == injection.get("server_name") and
+                       item.get("tool_name") == injection.get("tool_name") and
+@@ -488,11 +568,28 @@ async def verify_placement_batch(injections: Sequence[Mapping[str, Any]], result
+         remaining.remove(match)
+         result = match
+         if not result.get("success"):
+-            raise VerificationError(f"injection failed: {injection['server_name']}:{injection['tool_name']}")
++            raise PlacementValidationError(
++                "INJECTION_FAILED", "the injection backend rejected the action",
++                locator=target.locator if target else "",
++                repair_fields=target.repair_fields if target else (),
++            )
+         merged = dict(environ)
+         merged.update((server_environments or {}).get(str(injection["server_name"]), {}))
+-        proof = await verify_placement(injection, result, merged, docker)
++        try:
++            proof = await verify_placement(injection, result, merged, docker)
++        except VerificationError as exc:
++            if isinstance(exc, PlacementValidationError):
++                raise
++            raise PlacementValidationError(
++                "PLACEMENT_MISMATCH", "read-back did not confirm the requested placement",
++                locator=target.locator if target else "",
++                repair_fields=target.repair_fields if target else (),
++            ) from exc
+         if strict and proof.status is PlacementStatus.UNSUPPORTED:
+-            raise VerificationError(f"no placement adapter: {proof.server}:{proof.tool}")
++            raise PlacementValidationError(
++                "UNSUPPORTED_PLACEMENT", "this injection tool has no placement adapter",
++                locator=target.locator if target else "",
++                repair_fields=target.repair_fields if target else (),
++            )
+         proofs.append(proof)
+     return tuple(proofs)
+diff --git a/tests/test_env_verification.py b/tests/test_env_verification.py
+index 9877571..853e08b 100644
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock, patch
+ from dt_arena.src.env_verification import (
+     ContainerSnapshot,
+     PlacementStatus,
++    PlacementValidationError,
+     ROUTES,
+     TARGETS,
+     VerificationError,
+     VerificationMode,
+     build_readback_environments,
++    describe_placement_target,
+     verify_docker_route,
+     verify_placement,
+     verify_placement_batch,
+@@ -106,6 +108,25 @@ class RouteTests(unittest.TestCase):
+ 
+ 
+ class PlacementTests(unittest.IsolatedAsyncioTestCase):
++    async def test_m6_targets_are_derived_from_the_submitted_action(self):
++        cases = (
++            ({"server_name": "legal-injection", "tool_name": "inject_into_matter",
++              "kwargs": {"matter_id": "M 1"}},
++             "legal:/api/inject/state#matter_id=M%201", ("kwargs.matter_id",)),
++            ({"server_name": "travel-injection", "tool_name": "inject_accommodation",
++              "kwargs": {"city": "San Francisco", "name": "Safe Place"}},
++             "travel:/query_accommodation?city=San+Francisco#name=Safe%20Place",
++             ("kwargs.city", "kwargs.name")),
++            ({"server_name": "os-filesystem-injection", "tool_name": "inject_file",
++              "kwargs": {"file_path": "/tmp/a"}},
++             "os-filesystem:/tmp/a", ("kwargs.file_path",)),
++        )
++        for injection, locator, fields in cases:
++            target = describe_placement_target(injection)
++            self.assertIsNotNone(target)
++            self.assertEqual(target.locator, locator)
++            self.assertEqual(target.repair_fields, fields)
++
+     async def test_read_only_is_not_applicable(self):
+         proof = await verify_placement(
+             {"server_name": "whatsapp-injection", "tool_name": "get_whatsapp_chat", "kwargs": {}},
+@@ -202,13 +223,31 @@ class PlacementTests(unittest.IsolatedAsyncioTestCase):
+             ):
+                 proof = await verify_placement(injection, {"success": True}, environ, Docker([]))
+                 self.assertIs(proof.status, PlacementStatus.VERIFIED)
++                self.assertTrue(proof.locator.startswith(("legal:/", "travel:/")))
+                 self.assertIn(endpoint, request.await_args.args[1])
+ 
+     async def test_failed_injection_never_becomes_proof(self):
+-        injection = {"server_name": "slack-injection", "tool_name": "inject_slack_message", "kwargs": {}, "turn_id": 1}
+-        with self.assertRaises(VerificationError):
++        injection = {"server_name": "os-filesystem-injection", "tool_name": "inject_file",
++                     "kwargs": {"file_path": "/home/alice/a", "content": "x"}, "turn_id": 1}
++        with self.assertRaises(PlacementValidationError) as raised:
+             await verify_placement_batch(
+                 [injection], [{**injection, "success": False}], {}, Docker([]))
++        self.assertEqual(raised.exception.code, "INJECTION_FAILED")
++        self.assertEqual(raised.exception.locator, "os-filesystem:/home/alice/a")
++        self.assertEqual(raised.exception.repair_fields, ("kwargs.file_path",))
++
++    async def test_mismatch_carries_only_the_submitted_target_hint(self):
++        injection = {"server_name": "os-filesystem-injection", "tool_name": "inject_file",
++                     "kwargs": {"file_path": "/home/alice/a", "content": "expected"}, "turn_id": 1}
++        with self.assertRaises(PlacementValidationError) as raised:
++            await verify_placement_batch(
++                [injection], [{**injection, "success": True}],
++                {"OS_FILESYSTEM_PROJECT_NAME": "p"},
++                Docker([container(service="os-filesystem")], b"different"),
++            )
++        self.assertEqual(raised.exception.code, "PLACEMENT_MISMATCH")
++        self.assertEqual(raised.exception.locator, "os-filesystem:/home/alice/a")
++        self.assertNotIn("different", str(raised.exception))
+ 
+     async def test_strict_mode_rejects_unsupported_adapter(self):
+         injection = {"server_name": "legal-injection", "tool_name": "inject_x", "kwargs": {}, "turn_id": 1}

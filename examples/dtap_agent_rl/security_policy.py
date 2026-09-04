@@ -62,6 +62,7 @@ class M4SecurityPolicy:
     max_judge_nodes: int = 4096
     max_parallel_attempts: int = 1
     max_queued_attempts: int = 32
+    max_placement_actions: int = 8
     queue_wait_timeout_seconds: float = 300.0
     inherited_dtap_env_names: tuple[str, ...] = ()
 
@@ -80,6 +81,7 @@ class M4SecurityPolicy:
             "max_judge_nodes",
             "max_parallel_attempts",
             "max_queued_attempts",
+            "max_placement_actions",
         )
         for name in integer_fields:
             value = getattr(self, name)

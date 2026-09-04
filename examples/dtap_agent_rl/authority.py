@@ -36,6 +36,7 @@ class EpisodeAuthority:
     coordinator: Any
     terminal_event: Any
     policy_contract: Any = None
+    placement_coordinator: Any = None
 
 
 class EpisodeAuthorityRegistry:
