@@ -80,6 +80,27 @@ def test_m4_validation_endpoint_applies_read_only_resource_limits():
     }
 
 
+def test_m4_surface_discloses_whole_plan_resource_limits():
+    credentials = EpisodeCredentials.issue("adapter-session-0123456789")
+    registry = EpisodeAuthorityRegistry()
+    registry.register(credentials, _authority())
+    policy = M4SecurityPolicy(
+        max_submit_calls=3,
+        max_steps_per_plan=7,
+        max_placement_actions=5,
+    )
+    surface = M4EpisodeService(registry, PolicyContract(), policy).get_attack_surface(
+        credentials.mcp_bearer_token
+    )
+
+    assert surface["policy_limits"] == {
+        "max_steps_per_plan": 7,
+        "max_placement_actions": 5,
+        "max_apply_attack_step_calls": 5,
+        "max_submit_calls": 3,
+    }
+
+
 @pytest.mark.asyncio
 async def test_m4_fastmcp_surface_remains_exactly_four_tools():
     if importlib.util.find_spec("fastmcp") is None:

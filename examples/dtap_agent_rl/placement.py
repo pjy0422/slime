@@ -16,7 +16,7 @@ from typing import Any
 
 from .candidate_config import materialize_attempt_dir
 from .integrity import BenchmarkManifest
-from .policy_contract import PolicyContract
+from .policy_contract import PolicyContract, canonical_policy_json
 from .scheduler import AttemptScheduler, SchedulerSaturated
 from .security_policy import M4SecurityPolicy, PolicyInputLimitError
 from .validation import ValidationContext, validate_attack_step
@@ -157,6 +157,7 @@ class PlacementCoordinator:
             raise ValueError("max_actions must be positive")
         self.candidate_validator = candidate_validator
         self._receipts: dict[str, PlacementRunResult] = {}
+        self._receipt_steps: dict[str, str] = {}
         self._attempts = 0
         self._validated_ids: set[str] = set()
         self._lock = asyncio.Lock()
@@ -189,6 +190,9 @@ class PlacementCoordinator:
                 return self.policy_contract.public_payload({"accepted": False, "error": {"code": "EVALUATION_UNAVAILABLE"}})
             action_id = f"act_{secrets.token_urlsafe(24)}"
             self._receipts[action_id] = result
+            self._receipt_steps[action_id] = canonical_policy_json(
+                validated.step.to_dict()
+            )
             return self.policy_contract.public_payload({
                 "accepted": True, "action_id": action_id, "applied": result.applied,
                 "placement_ready": True,
@@ -215,6 +219,31 @@ class PlacementCoordinator:
                 "instruction": "change only the listed placement fields, then apply the revised action",
             }
         return self.policy_contract.public_payload(payload)
+
+    def unverified_environment_indices(self, steps: Any) -> tuple[int, ...]:
+        """Return submitted environment steps lacking an owned valid read-back.
+
+        A receipt can authorize at most one matching step. This prevents a
+        policy from applying one action and duplicating it in the final plan.
+        Only receipts explicitly read through validate_placement participate.
+        """
+        available = [
+            self._receipt_steps[action_id]
+            for action_id in self._validated_ids
+            if self._receipts[action_id].valid
+        ]
+        missing: list[int] = []
+        for index, step in enumerate(steps):
+            if getattr(step, "type", None) != "environment":
+                continue
+            canonical = canonical_policy_json(step.to_dict())
+            try:
+                match = available.index(canonical)
+            except ValueError:
+                missing.append(index)
+            else:
+                available.pop(match)
+        return tuple(missing)
 
     @property
     def applied_actions(self) -> int:

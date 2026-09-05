@@ -75,6 +75,7 @@ class DtapAttemptRunner:
         extra_env: Mapping[str, str] | None = None,
         security_policy: M4SecurityPolicy | None = None,
         scheduler: AttemptScheduler | None = None,
+        port_range_start: int = 20_000,
     ) -> None:
         if isinstance(max_parallel, bool) or max_parallel < 1:
             raise ValueError("max_parallel must be positive")
@@ -92,6 +93,11 @@ class DtapAttemptRunner:
         self.security_policy = security_policy
         self.m4_hardened = security_policy is not None
         self.scheduler = scheduler
+        if isinstance(port_range_start, bool) or not isinstance(port_range_start, int):
+            raise ValueError("port_range_start must be an integer")
+        if port_range_start < 1024 or port_range_start + 511 > 65535:
+            raise ValueError("port_range_start must reserve 512 valid user ports")
+        self.port_range_start = port_range_start
         if security_policy is not None:
             if scheduler is None:
                 raise ValueError("M4 requires one explicit worker-scoped scheduler")
@@ -156,7 +162,12 @@ class DtapAttemptRunner:
                 # therefore receive disjoint trusted port ranges and are told not
                 # to race for each environment's shared default ports.
                 slot = next(self._m4_launch_slots) % 80
-                port_start = 20_000 + slot * 512
+                port_start = self.port_range_start + slot * 512
+                if port_start + 511 > 65535:
+                    return AttemptResult.infrastructure_failure(
+                        stage="port_range",
+                        evaluation_started=False,
+                    )
                 env["DT_DISABLE_DEFAULT_PORTS"] = "1"
                 env["DT_PORT_RANGE_START"] = str(port_start)
                 env["DT_PORT_RANGE_END"] = str(port_start + 511)

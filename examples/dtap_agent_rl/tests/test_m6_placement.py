@@ -12,7 +12,7 @@ from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 from examples.dtap_agent_rl.scheduler import AttemptScheduler
 from examples.dtap_agent_rl.service import EpisodeView
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
-from examples.dtap_agent_rl.validation import ValidationContext
+from examples.dtap_agent_rl.validation import ValidationContext, validate_attack_step
 import yaml
 import json
 
@@ -81,6 +81,26 @@ async def test_apply_returns_opaque_receipt_and_validate_returns_verified_locato
         "found": True, "valid": True, "status": "verified",
         "validated_placement_locator": "os-filesystem:/tmp/target",
     }
+    validated = validate_attack_step(STEP, ValidationContext.from_view(view())).step
+    assert validated is not None
+    assert placement.unverified_environment_indices((validated,)) == ()
+    # One owned receipt cannot authorize duplicated final actions.
+    assert placement.unverified_environment_indices((validated, validated)) == (1,)
+
+
+@pytest.mark.asyncio
+async def test_unread_or_invalid_receipt_cannot_authorize_final_environment_step(task_dir):
+    placement = coordinator(task_dir, PlacementRunResult(
+        True, True, False, "invalid", "os-filesystem:/tmp/target",
+        "PLACEMENT_MISMATCH", ("kwargs.file_path",),
+    ))
+    receipt = await placement.apply(STEP)
+    validated = validate_attack_step(STEP, ValidationContext.from_view(view())).step
+    assert validated is not None
+
+    assert placement.unverified_environment_indices((validated,)) == (0,)
+    placement.validate(receipt["action_id"])
+    assert placement.unverified_environment_indices((validated,)) == (0,)
 
 
 @pytest.mark.asyncio
