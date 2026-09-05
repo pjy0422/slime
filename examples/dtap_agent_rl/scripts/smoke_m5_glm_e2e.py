@@ -118,6 +118,49 @@ class RecordingRunner:
         self.plans: list[list[dict]] = []
         self.artifacts_dir = artifacts_dir
         self.exported_victim_traces = 0
+        self.exported_victim_mcp_events = 0
+        self.exported_judge_artifacts = 0
+        self.delegate_completed = False
+
+    def _export_artifacts(self, workspace) -> None:
+        if self.artifacts_dir is None:
+            return
+        for name in ("judge_result.json", ".m4-verdict.json"):
+            candidates = sorted(workspace.output_root.rglob(name))
+            if candidates:
+                output_name = "judge-result.json" if name == "judge_result.json" else "judge-verdict.json"
+                shutil.copy2(candidates[0], self.artifacts_dir / output_name)
+                self.exported_judge_artifacts += 1
+        for candidate in sorted(workspace.output_root.rglob("*.json")):
+            if candidate.name in {"judge_result.json", ".m4-verdict.json"}:
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("trajectory"), list):
+                shutil.copy2(candidate, self.artifacts_dir / "victim-trajectory.json")
+                self.exported_victim_traces = 1
+                break
+        event_logs = sorted(
+            workspace.output_root.rglob("*.mcp-events.jsonl"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if event_logs:
+            shutil.copy2(event_logs[0], self.artifacts_dir / "victim-mcp-events.jsonl")
+            self.exported_victim_mcp_events = 1
+        (self.artifacts_dir / "episode-state.json").write_text(
+            json.dumps({
+                "schema": "dtap-agent-rl-episode-state", "schema_version": 1,
+                "plan_generated": bool(self.plans),
+                "victim_trajectory_retained": bool(self.exported_victim_traces),
+                "victim_mcp_log_retained": bool(self.exported_victim_mcp_events),
+                "judge_artifacts_retained": self.exported_judge_artifacts,
+                "evaluation_delegate_completed": self.delegate_completed,
+            }, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     async def run(self, workspace):
         config = yaml.safe_load(workspace.config_path.read_text(encoding="utf-8"))
@@ -126,20 +169,12 @@ class RecordingRunner:
         if self.artifacts_dir is not None:
             self.artifacts_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(workspace.config_path, self.artifacts_dir / "submitted-config.yaml")
-        result = await self.delegate.run(workspace)
-        if self.artifacts_dir is not None:
-            for candidate in sorted(workspace.output_root.rglob("*.json")):
-                if candidate.name in {"judge_result.json", ".m4-verdict.json"}:
-                    continue
-                try:
-                    payload = json.loads(candidate.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("trajectory"), list):
-                    shutil.copy2(candidate, self.artifacts_dir / "victim-trajectory.json")
-                    self.exported_victim_traces = 1
-                    break
-        return result
+        try:
+            result = await self.delegate.run(workspace)
+            self.delegate_completed = True
+            return result
+        finally:
+            self._export_artifacts(workspace)
 
 
 def _free_port() -> int:
@@ -188,6 +223,15 @@ def _environment_step_count(plan: list[dict]) -> int:
         for turn in plan
         for step in turn.get("attack_steps", [])
     )
+
+
+def _environment_tools(plan: list[dict]) -> list[str]:
+    return [
+        str(step.get("injection_mcp_tool"))
+        for turn in plan
+        for step in turn.get("attack_steps", [])
+        if step.get("type") == "environment" and step.get("injection_mcp_tool")
+    ]
 
 
 async def _main(args) -> None:
@@ -241,6 +285,16 @@ async def _main(args) -> None:
     runner = RecordingRunner(real_runner, artifacts_dir=artifacts_dir)
     placement = None
     credentials = EpisodeCredentials.issue("glm-e2e-adapter-session-0123456789")
+    real_runner.extra_env["DTAP_EVALUATION_EPISODE_ID"] = credentials.public_episode_id
+    if artifacts_dir is not None:
+        (artifacts_dir / "episode-manifest.json").write_text(
+            json.dumps({
+                "schema": "dtap-agent-rl-episode",
+                "schema_version": 1,
+                "episode_id": credentials.public_episode_id,
+            }, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
     runtime = EpisodeRuntimeState(max_submissions=1, max_submit_calls=policy.max_submit_calls)
     contract = PolicyContract(
         PolicyLeakageGuard(
@@ -379,6 +433,7 @@ async def _main(args) -> None:
             if runtime.status not in {EpisodeStatus.SUCCEEDED, EpisodeStatus.EXHAUSTED}:
                 raise RuntimeError(f"real DTAP evaluation did not terminate cleanly: {runtime.status.value}")
             environment_steps = _environment_step_count(runner.plans[0])
+            environment_tools = _environment_tools(runner.plans[0])
             if args.m6_placement and environment_steps and (
                 placement is None or placement.verified_actions < environment_steps
                 or placement.validated_actions < environment_steps
@@ -386,9 +441,19 @@ async def _main(args) -> None:
                 raise RuntimeError("GLM did not complete a verified M6 placement receipt")
             if artifacts_dir is not None and runner.exported_victim_traces < 1:
                 raise RuntimeError("artifact export found no DTAP victim trajectory")
+            if (
+                artifacts_dir is not None
+                and args.victim_agent_type == "openclaw"
+                and runner.exported_victim_mcp_events < 1
+            ):
+                raise RuntimeError("artifact export found no OpenClaw victim MCP event log")
             BenchmarkIntegrityGuard.verify(snapshot.task_dir, snapshot.benchmark_manifest)
             print(json.dumps({
                 "status": "passed",
+                "evaluation_completed": True,
+                "failure_class": None,
+                "episode_id": credentials.public_episode_id,
+                "plan_generated": True,
                 "policy_model": args.policy_model,
                 "victim_model": args.victim_model,
                 "generated_plan": runner.plans[0],
@@ -399,7 +464,28 @@ async def _main(args) -> None:
                 "placement_actions": placement.applied_actions if placement else 0,
                 "placements_verified": placement.verified_actions if placement else 0,
                 "environment_steps": environment_steps,
+                "action_applied": bool(
+                    environment_steps == 0
+                    or not args.m6_placement
+                    or (placement is not None and placement.applied_actions >= environment_steps)
+                ),
+                "environment_tools": environment_tools,
+                "placement_applicable": environment_steps > 0,
+                "placement_covered": bool(
+                    environment_steps > 0
+                    and placement is not None
+                    and placement.verified_actions >= environment_steps
+                ),
+                "placement_verified": bool(
+                    environment_steps > 0
+                    and placement is not None
+                    and placement.verified_actions >= environment_steps
+                ),
+                "victim_completed": True,
+                "judge_completed": True,
                 "victim_agent_type": args.victim_agent_type,
+                "victim_mcp_events": runner.exported_victim_mcp_events,
+                "judge_artifacts": runner.exported_judge_artifacts,
                 "artifacts_dir": str(artifacts_dir) if artifacts_dir else None,
             }, ensure_ascii=False, indent=2, sort_keys=True))
         finally:

@@ -3,12 +3,26 @@ import json
 import pytest
 
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
+    _failure_class,
     _first_record,
     _failure_count,
     _passed_payload,
     _stored_results,
     _task_dir,
 )
+
+
+@pytest.mark.parametrize(("tail", "expected"), [
+    ("UNSUPPORTED_PLACEMENT", "unsupported_placement"),
+    ("PLACEMENT_MISMATCH", "placement"),
+    ("judge process failed", "judge"),
+    ("OpenClaw victim failed", "victim"),
+    ("INVALID_SUBMISSION validation", "validation"),
+    ("GLM did not produce a plan", "policy"),
+    ("docker daemon unavailable", "infrastructure"),
+])
+def test_failure_classes_are_machine_separable(tail, expected):
+    assert _failure_class({"status": "failed", "error_tail": tail}) == expected
 
 
 def test_matrix_resolves_malicious_benchmark_record(tmp_path):

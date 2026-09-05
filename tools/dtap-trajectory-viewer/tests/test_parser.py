@@ -10,7 +10,9 @@ from dtap_traj.parser import (
     find_openclaw_trace,
     find_policy_trace,
     find_victim_trace,
+    find_victim_mcp_events,
     parse_dtap_trajectory,
+    parse_victim_mcp_events,
 )
 from dtap_traj.render import render_html
 from dtap_traj.cli import main
@@ -95,8 +97,47 @@ def test_discovery_keeps_policy_and_victim_distinct(tmp_path: Path) -> None:
     victim = tmp_path / "traces" / "openclaw_runtime" / "run.jsonl"
     victim.parent.mkdir(parents=True)
     victim.write_text("{}\n")
+    events = victim.parent / "run.mcp-events.jsonl"
+    events.write_text("{}\n")
     assert find_policy_trace(tmp_path) == policy
     assert find_openclaw_trace(tmp_path) == victim
+    assert find_victim_mcp_events(tmp_path) == events
+
+
+def test_redacted_proxy_events_complete_detached_victim_timeline(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text(_line({"type": "model.completed", "data": {
+        "messagesSnapshot": [
+            {"role": "user", "content": [{"type": "text", "text": "Do it"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Done"}]},
+        ]
+    }}))
+    events = tmp_path / "victim-mcp-events.jsonl"
+    events.write_text(
+        _line({
+            "schema": "dtap-openclaw-mcp-event", "type": "tool.started",
+            "call_id": "c1", "timestamp": "2026-01-01T00:00:00Z",
+            "server": "gmail", "tool": "search_emails",
+            "arguments": {"query": {"type": "string", "length": 4, "sha256": "a" * 64}},
+            "arguments_digest": "b" * 64,
+        }) + _line({
+            "schema": "dtap-openclaw-mcp-event", "type": "tool.completed",
+            "call_id": "c1", "timestamp": "2026-01-01T00:00:01Z",
+            "server": "gmail", "tool": "search_emails", "is_error": False,
+            "result_digest": "c" * 64,
+        }),
+        encoding="utf-8",
+    )
+
+    parsed = parse_victim_mcp_events(events)
+    data = build_timeline(victim, victim_mcp_events_path=events)
+
+    assert [item["kind"] for item in parsed] == ["tool_call", "tool_result"]
+    assert [item["kind"] for item in data["timeline"]] == [
+        "user", "tool_call", "tool_result", "final"
+    ]
+    assert data["timeline"][1]["source"] == "mcp_proxy"
+    assert data["victim_mcp_events"] == str(events)
 
 
 def test_parses_framework_neutral_dtap_victim_trajectory(tmp_path: Path) -> None:
@@ -131,6 +172,17 @@ def test_cli_auto_discovers_viewer_bundle(tmp_path: Path) -> None:
     (tmp_path / "policy-prompt.txt").write_text("make a plan")
     (tmp_path / "original-config.yaml").write_text("Attack:\n  attack_turns: []\n")
     (tmp_path / "submitted-config.yaml").write_text("Attack:\n  attack_turns: []\n")
+    (tmp_path / "episode-manifest.json").write_text(json.dumps({
+        "schema": "dtap-agent-rl-episode", "schema_version": 1,
+        "episode_id": "episode-public-7",
+    }))
+    (tmp_path / "result.json").write_text(json.dumps({
+        "status": "passed", "attack_success": False,
+        "evaluation_completed": True,
+    }))
+    (tmp_path / "judge-result.json").write_text(json.dumps({
+        "attack_success": False, "reason": "contract miss",
+    }))
     victim = tmp_path / "traces" / "openclaw_runtime" / "victim.jsonl"
     victim.parent.mkdir(parents=True)
     victim.write_text(_line({"type": "model.completed", "data": {"messagesSnapshot": []}}))
@@ -140,6 +192,45 @@ def test_cli_auto_discovers_viewer_bundle(tmp_path: Path) -> None:
     page = output.read_text()
     assert "make a plan" in page
     assert "configs identical" in page
+    assert "episode episode-public-7" in page
+    assert "evaluation passed" in page
+    assert "Judge result" in page
+    assert "contract miss" in page
+
+
+def test_viewer_warns_when_victim_events_belong_to_another_episode(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text(_line({"type": "model.completed", "data": {"messagesSnapshot": []}}))
+    events = tmp_path / "victim-mcp-events.jsonl"
+    events.write_text(_line({
+        "schema": "dtap-openclaw-mcp-event", "type": "tool.started",
+        "episode_id": "episode-wrong", "server": "gmail", "tool": "search",
+        "call_id": "c1", "arguments": {},
+    }))
+
+    data = build_timeline(
+        victim, victim_mcp_events_path=events,
+        meta={"episode_id": "episode-expected"},
+    )
+
+    assert data["trajectory_warnings"] == [
+        "victim MCP events do not match the bundle episode_id"
+    ]
+
+
+def test_zero_call_proxy_log_is_a_valid_correlated_trajectory(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text(_line({"type": "model.completed", "data": {"messagesSnapshot": []}}))
+    events = tmp_path / "victim-mcp-events.jsonl"
+    events.write_text("")
+
+    data = build_timeline(
+        victim, victim_mcp_events_path=events,
+        meta={"episode_id": "episode-zero"},
+    )
+
+    assert data["episode_id"] == "episode-zero"
+    assert "trajectory_warnings" not in data
 
 
 def test_embedded_json_cannot_close_script() -> None:

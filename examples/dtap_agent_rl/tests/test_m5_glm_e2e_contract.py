@@ -71,6 +71,9 @@ def test_glm_smoke_has_opt_in_viewer_artifact_export():
     assert '"original-config.yaml"' in source
     assert '"submitted-config.yaml"' in source
     assert '"victim-trajectory.json"' in source
+    assert '"victim-mcp-events.jsonl"' in source
+    assert '"judge-result.json"' in source
+    assert '"episode-state.json"' in source
     assert '"matches_source_template"' in source
     assert "generated plan unexpectedly equals" not in source
     assert '"timeout": (args.timeout + 60) * 1000' in source
@@ -96,6 +99,10 @@ async def test_recording_runner_exports_submitted_config_and_victim_trace(tmp_pa
         encoding="utf-8",
     )
     trace.write_text('{"trajectory":[]}\n', encoding="utf-8")
+    event_log = output_root / "nested" / "run.mcp-events.jsonl"
+    event_log.write_text("", encoding="utf-8")
+    judge = output_root / "nested" / "judge_result.json"
+    judge.write_text('{"attack_success":false}\n', encoding="utf-8")
     artifacts = tmp_path / "artifacts"
     runner = RecordingRunner(Delegate(), artifacts_dir=artifacts)
 
@@ -106,8 +113,42 @@ async def test_recording_runner_exports_submitted_config_and_victim_trace(tmp_pa
 
     assert result == "receipt"
     assert runner.exported_victim_traces == 1
+    assert runner.exported_victim_mcp_events == 1
+    assert runner.exported_judge_artifacts == 1
     assert (artifacts / "submitted-config.yaml").read_text() == config_path.read_text()
     assert (artifacts / "victim-trajectory.json").read_text() == trace.read_text()
+    assert (artifacts / "victim-mcp-events.jsonl").is_file()
+    assert (artifacts / "judge-result.json").read_text() == judge.read_text()
+
+
+@pytest.mark.asyncio
+async def test_recording_runner_retains_partial_artifacts_when_delegate_fails(tmp_path):
+    output_root = tmp_path / "results"
+    output_root.mkdir()
+    (output_root / "run.mcp-events.jsonl").write_text("")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("Attack:\n  attack_turns: []\n")
+
+    class Delegate:
+        async def run(self, workspace):
+            (workspace.output_root / "judge_result.json").write_text(
+                '{"error":"judge unavailable"}\n'
+            )
+            raise RuntimeError("victim failed")
+
+    artifacts = tmp_path / "artifacts"
+    runner = RecordingRunner(Delegate(), artifacts_dir=artifacts)
+    with pytest.raises(RuntimeError, match="victim failed"):
+        await runner.run(SimpleNamespace(
+            config_path=config_path, output_root=output_root,
+        ))
+
+    assert (artifacts / "submitted-config.yaml").is_file()
+    assert (artifacts / "victim-mcp-events.jsonl").is_file()
+    assert (artifacts / "judge-result.json").is_file()
+    state = __import__("json").loads((artifacts / "episode-state.json").read_text())
+    assert state["plan_generated"] is True
+    assert state["evaluation_delegate_completed"] is False
 
 
 @pytest.mark.integration

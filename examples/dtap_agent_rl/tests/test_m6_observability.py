@@ -1,0 +1,90 @@
+import json
+import os
+from pathlib import Path
+
+from examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage import audit
+from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
+    DOMAINS,
+    EXCLUDED_PLATFORM_DOMAINS,
+    _summary_metrics,
+)
+from examples.dtap_agent_rl.scripts.verify_m6_runtime_lock import verify
+
+
+def _dtap_root() -> Path:
+    default = Path(__file__).resolve().parents[3].parent / "DecodingTrust-Agent"
+    return Path(os.environ.get("DTAP_ROOT", default)).resolve()
+
+
+def test_default_matrix_explicitly_excludes_guest_platforms():
+    assert EXCLUDED_PLATFORM_DOMAINS == {"macos", "windows"}
+    assert "macos" not in DOMAINS
+    assert "windows" not in DOMAINS
+    assert len(DOMAINS) == 12
+
+
+def test_summary_separates_completion_reward_and_placement_coverage():
+    metrics = _summary_metrics([
+        {
+            "status": "passed", "evaluation_completed": True,
+            "attack_success": False, "placement_applicable": False,
+            "placement_covered": False, "placement_actions": 0,
+            "placements_verified": 0, "environment_tools": [],
+            "action_applied": True, "domain": "legal", "threat_model": "direct",
+        },
+        {
+            "status": "passed", "evaluation_completed": True,
+            "attack_success": True, "placement_applicable": True,
+            "placement_covered": True, "placement_actions": 1,
+            "placements_verified": 1,
+            "environment_tools": ["gmail-injection:inject_email"],
+            "action_applied": True, "domain": "legal", "threat_model": "indirect",
+        },
+        {"status": "failed", "failure_class": "infrastructure"},
+    ])
+
+    assert metrics["evaluation_completed"] == 2
+    assert metrics["attack_successes"] == 1
+    assert metrics["action_applied"] == 2
+    assert metrics["placement_applicable"] == 1
+    assert metrics["placement_covered"] == 1
+    assert metrics["failures_by_class"]["infrastructure"] == 1
+    assert metrics["placement_by_tool"]["gmail-injection:inject_email"] == {
+        "attempted": 1, "verified": 1,
+    }
+    assert metrics["placement_by_injection_mcp"]["gmail-injection"] == {
+        "attempted": 1, "verified": 1,
+    }
+    assert metrics["placement_by_domain"]["legal"] == {
+        "evaluations": 2, "applicable": 1, "covered": 1,
+    }
+    assert metrics["placement_by_threat_model"]["indirect"] == {
+        "evaluations": 1, "applicable": 1, "covered": 1,
+    }
+
+
+def test_enabled_adapter_inventory_is_consistent():
+    result = audit(_dtap_root())
+    assert result["status"] == "passed"
+    assert result["missing_implementations"] == []
+    assert result["verified_mutators"] == 115
+    assert result["unsupported_mutators"] == 0
+    assert not any(
+        row["server"] in {"windows-injection", "macos-injection"}
+        for row in result["servers"]
+    )
+
+
+def test_runtime_lock_schema_and_non_image_checks():
+    root = Path(__file__).parents[1]
+    lock = root / "dtap_integration/runtime-lock.json"
+    payload = json.loads(lock.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert all("@sha256:" in value for value in payload["container_images"].values())
+    assert payload["system_tools"]["jq"]["version"] == "jq-1.8.2"
+    assert len(payload["system_tools"]["jq"]["sha256"]) == 64
+    result = verify(
+        lock, _dtap_root(),
+        check_images=False,
+    )
+    assert result["status"] == "passed"

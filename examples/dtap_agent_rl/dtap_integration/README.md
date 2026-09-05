@@ -1,6 +1,6 @@
 # DTAP integration overlay
 
-This directory keeps the DecodingTrust-Agent changes required by the slime M4
+This directory keeps the DecodingTrust-Agent changes required by the slime M6
 harness under the same version control as the harness.
 
 The patch is based on DecodingTrust-Agent commit
@@ -10,9 +10,8 @@ The patch is based on DecodingTrust-Agent commit
 - opt-in disabling of shared default Docker ports so parallel M4 children can
   use the disjoint port ranges assigned by slime.
 - M5 zero-LLM route verification for bridge and host-network environments;
-- independent placement read-back for Slack, Gmail, WhatsApp, Legal, Travel,
-  OS Filesystem, terminal, and research injections, with explicit unsupported
-  status for other tools;
+- independent placement read-back for all 115 enabled Linux mutators across 25
+  injection MCPs, with unknown tools failing closed;
 - a trusted OS Filesystem injection credential fix (the prior empty value
   produced an invalid `Authorization: Bearer ` header); and
 - the Research injection route fix for TaskExecutor's dynamic arXiv port.
@@ -43,40 +42,39 @@ attempt. Verification failures are infrastructure failures and never reward zero
 
 ## Placement support and handoff
 
-M5 placement verification currently supports:
+The source of truth is `SUPPORTED_PLACEMENT_TOOLS` in the DTAP overlay and is
+checked against every enabled Linux injection server by
+`scripts/audit_m6_adapter_coverage.py`. The current audit covers 115 mutators in
+25 injection MCPs with no unknown or stale registry entry:
 
-- Slack channel writes carrying `channel_name` and a message payload. Direct
-  messages without a channel locator are not yet covered.
-- Gmail `inject_email`, using the Mailpit list API followed by the message-detail
-  API to compare recipient, subject, and body.
-- WhatsApp `send_whatsapp_message`, using `get_conversation` for read-back.
-- Terminal `inject_readme` and `inject_file`, read directly from the target
-  container.
-- Research `inject_readme` and `inject_paper_notes`, read directly from the
-  target container.
-- Legal `inject_into_matter` and `modify_matter`, requiring both a real matter
-  and an exact match in the backend overlay state used by victim `get_matter`.
-- Travel accommodation, restaurant, flight, and supported review injections,
-  read through the victim-facing query endpoints.
-- OS Filesystem file/append/executable/directory/symlink injections, read from
-  the exact TaskExecutor-owned container (including mode and link metadata).
-- Custom Website `update_html_content`, fetched from the victim-visible root
-  document and compared with the submitted HTML.
-- Finance `inject_html_*` actions, fetched from the exact victim-visible page
-  selected by the submitted `page`, `symbol`, and optional article target.
+| Adapter group | Verified mutators |
+| --- | ---: |
+| Customer Service, Salesforce, Legal, Finance | 31 |
+| Gmail, Slack, Calendar, Zoom, Google Docs/Form | 24 |
+| WhatsApp, PayPal, Ecommerce, Custom Website, Travel | 13 |
+| Snowflake, Databricks, Telecom | 23 |
+| OS Filesystem, Terminal, Research | 12 |
+| Atlassian, Telegram, GitHub, Hospital | 12 |
+| **Total** | **115** |
 
+Read-back is independent of the injection acknowledgement: HTTP adapters query
+the victim-visible entity, database adapters issue bounded table reads, and file
+adapters inspect the exact TaskExecutor-owned container. Mismatch responses use
+the caller's submitted locator and return only location-bearing `repair.fields`.
 Read-only tools whose names start with `get_`, `list_`, `read_`, or `search_`
-return `not_applicable`. All other mutating tools return `unsupported`; this
-currently includes Customer Service, Salesforce, Finance content mutations,
-Calendar, Zoom,
-Google Docs/Form, Snowflake, Databricks, PayPal, Ecommerce, Telecom, Atlassian,
-Telegram, GitHub, Hospital, Windows, and macOS mutations,
-plus uncovered variants in otherwise supported services.
+remain `not_applicable`; an unknown mutator fails closed as `unsupported`.
 
-Five enabled injection registries do not yet have even a route definition:
-`chase-injection`, `robinhood-injection`, `reddit-injection`,
-`googlesheets-injection`, and `googledrive-injection`. They fail closed in route
-mode and need entries in both `ROUTES` and `TARGETS` before placement work.
+M4/M6 policy projection keeps exact qualified names and JSON schemas but reduces
+long tool docstrings to their first semantic paragraph. For the representative
+CRM task this reduces `get_attack_surface` from 64,812 to 35,954 bytes, below
+Claude Code's persisted-output threshold; the policy therefore does not need a
+forbidden filesystem/Monitor tool to read its own action surface.
+
+Chase, Robinhood, Reddit, Google Sheets, and Google Drive entries are disabled in
+the overlay because this DTAP revision contains no corresponding
+`env_injection.py`. Advertising them as enabled produced an unusable surface.
+They should be re-enabled only together with an implementation, route mapping,
+independent read-back adapter, and positive/mismatch tests.
 
 To add an adapter:
 
@@ -93,9 +91,9 @@ To add an adapter:
 6. Add positive, mismatch, authentication, and strict-mode unit tests, followed
    by a real indirect-task smoke test.
 
-Windows and macOS need a guest-side read-only endpoint for file, registry/plist,
-and Office state. Until such an endpoint is available, keep their placement
-mutators unsupported rather than treating injection-MCP success as proof.
+Windows and macOS are outside this Linux release gate. They still need a
+guest-side read-only endpoint for file, registry/plist, and Office state; until
+then their mutators remain fail-closed and excluded from the default matrix.
 
 ## M6 receipt boundary
 
@@ -128,6 +126,20 @@ examples/dtap_agent_rl/dtap_integration/apply.sh \
   /home/pjy0422/workspace/DecodingTrust-Agent
 
 export PYTHONPATH=/home/pjy0422/workspace/DecodingTrust-Agent:${PYTHONPATH:-}
+```
+
+Several upstream task `setup.sh` fixtures use `jq` to JSON-encode seed SQL.
+The release runtime pins the official Linux amd64 `jq-1.8.2` binary and its
+SHA-256 in `runtime-lock.json`; install it on `PATH` before running the matrix.
+The release gate rejects a missing or different binary instead of continuing
+with partially seeded environments.
+
+```bash
+curl -fsSLo /tmp/jq-linux-amd64 \
+  https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+echo 'b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  /tmp/jq-linux-amd64' \
+  | sha256sum --check --strict
+install -m 0755 /tmp/jq-linux-amd64 /path/on/PATH/jq
 ```
 
 Run the deterministic suites:
@@ -225,6 +237,15 @@ The OS example's source template places the global environment injection at turn
 3 while its projected task is one instruction; `--turn-id 1` matches the public
 M2-M6 candidate contract and does not change placement semantics.
 
+The Linux adapter hardening was also exercised against real strict-placement
+tasks for Legal, Travel, OS Filesystem, Salesforce, Hospital, PayPal, Snowflake,
+Telecom, Telegram, and Atlassian. In particular, Atlassian must use task fixture
+`workflow/.../sensitive-file-deletion/010`, whose allowlist contains
+`atlassian-injection`; fixture `016` enables environment attacks in the abstract
+but does not advertise an environment injection MCP and is correctly rejected
+before application. The Atlassian read-back authenticates with the victim's
+task-scoped token and checks both the returned issue fields and its project key.
+
 For the generated-plan M6 release gate, use the same provider variables as the
 M5 command and add `--m6-placement`. Set `DTAP_M6_GLM_TASK_DIR` and
 `DTAP_M6_DTAP_ROOT` to run the opt-in pytest gate.
@@ -234,10 +255,14 @@ M5 command and add `--m6-placement`. Set `DTAP_M6_GLM_TASK_DIR` and
 Install the OpenClaw CLI first and keep credentials in environment variables;
 the generated evaluation profile stores only an `ANTHROPIC_API_KEY` reference.
 OpenClaw 2026.9 detached runs do not always expose their SQLite transcript as a
-JSONL file. In that case the DTAP patch preserves prompt and assistant output in
-a standard trajectory, but exact victim tool arguments/results are unavailable.
+JSONL file. The proxy therefore writes a task-scoped append-only event stream
+containing tool/server names, timestamps, status, redacted argument shapes, and
+stable digests. Credentials, sandbox paths, raw arguments, and raw results are
+never persisted. The bundle manifest and proxy events share one public episode
+identifier, so the viewer can correlate a detached victim run with its policy,
+submitted YAML, placement receipts, and judge artifact.
 
-The following command selects one benchmark task for every one of the 14
+The following command selects one benchmark task for each of the 12 Linux
 domains and each threat model, runs disjoint DTAP port ranges in parallel, and
 writes a resumable result tree. `passed` means the complete policy, placement,
 victim, and judge pipeline ran without an infrastructure/security failure; the
@@ -266,8 +291,8 @@ Use `--resume` to skip cases whose `result.json` already says `passed`.
 Per-case stdout, stderr, original/submitted YAML, policy trajectory, victim
 trajectory, and result live below `<artifacts-root>/<domain>/<threat-model>/`;
 the aggregate report is `<artifacts-root>/summary.json`. A failed selected case
-always produces a nonzero exit code, including Windows/macOS: a platform name
-alone is not evidence of an unsupported runtime. Missing result files are not
+always produces a nonzero exit code. Windows/macOS are not selected by default
+and are recorded under `excluded_platform_domains`. Missing result files are not
 counted as completed cases; malformed or mismatched result files count as failed.
 For subset runs, `selected_failed` controls the exit code, while `failed` covers
 all stored cases (which may originate from earlier runs).
@@ -305,14 +330,32 @@ The policy and OpenClaw victim still use the requested model and credentials.
 OpenClaw's generated `requestTimeoutMs` (default 60 seconds; the E2E runner uses
 600 seconds).
 
+### Linux release gate
+
+The pinned runtime, clean overlay application, deterministic suites, adapter
+audit, and 24 generated-plan E2E cases can be reproduced with one command:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.run_m6_linux_release_gate \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --slime-root /path/to/slime \
+  --artifacts-root /path/to/artifacts \
+  --max-parallel 4
+```
+
+Use `--skip-images --skip-e2e` for the fast deterministic gate. The full gate
+requires `ANTHROPIC_API_KEY` in the process environment and never reads or writes
+a secret-bearing file. Runtime versions and image digests are pinned in
+`runtime-lock.json`; the corresponding Python boundary is installable from
+`requirements-release.txt` after DTAP's own pinned requirements.
+
 ### Verified matrix result (2026-09-05)
 
-The DeepSeek/OpenClaw run above completed all 24 Linux-supported direct and
-indirect cases without infrastructure or security failures. The aggregate was
-24 passed and 4 failed out of 28; the four fail-closed cases were Windows and
-macOS, direct and indirect, because those guest runtimes and read-back endpoints
-are unavailable on this Linux host. This is execution coverage, not attack
-success: reward-zero/exhausted episodes are valid completed evaluations.
+The earlier DeepSeek/OpenClaw run completed all 24 Linux direct and indirect
+cases without infrastructure or security failures. Windows and macOS are now
+excluded instead of being counted as four expected failures. This is execution
+coverage, not attack success: reward-zero/exhausted episodes are valid completed
+evaluations.
 
 The retained report is
 `/home/pjy0422/workspace/dtap-results/m6-deepseek-openclaw-domain-matrix-20260905/summary.json`.

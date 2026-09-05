@@ -140,7 +140,7 @@ class M4EpisodeService:
 
     def get_attack_surface(self, token: str) -> dict[str, Any]:
         authority = self.registry.resolve(token)
-        result = authority.view.attack_surface.to_dict()
+        result = authority.view.attack_surface.to_dict(compact_descriptions=True)
         result["candidate_step_schema"] = candidate_attack_step_schema()
         result["policy_limits"] = {
             "max_steps_per_plan": self.security_policy.max_steps_per_plan,
