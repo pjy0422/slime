@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any, Mapping, Sequence
 
@@ -77,22 +78,36 @@ class LiveDtapCatalogProvider:
         if not snapshot.injection_config.get("environment_servers"):
             return {}
 
-        manager = None
-        cfg = copy.deepcopy(snapshot.injection_config)
-        try:
-            manager, updated = start_injection_mcp_servers(
-                cfg,
-                resource_manager=ResourceManager.instance(),
-                task_id=self.task_runtime_id,
-            )
-            if manager is None:
-                return {}
-            wait_for_injection_mcp_ready(updated)
-            result: dict[str, Sequence[ToolSpec]] = {}
-            for server_name, server_info in (updated.get("environment_servers") or {}).items():
-                if isinstance(server_info, dict) and server_info.get("url"):
-                    result[server_name] = await _list_url_tools(server_name, server_info["url"])
-            return result
-        finally:
-            if manager is not None:
-                manager.stop_all()
+        last_error: Exception | None = None
+        # DTAP's process manager checks server liveness after a short fixed
+        # startup delay. Under a parallel domain run a healthy server can
+        # occasionally miss that window. Retry discovery with a newly
+        # allocated port, but never project an empty allowlist after a failed
+        # startup: that would make the policy guess private target names.
+        for attempt in range(3):
+            manager = None
+            cfg = copy.deepcopy(snapshot.injection_config)
+            try:
+                manager, updated = start_injection_mcp_servers(
+                    cfg,
+                    resource_manager=ResourceManager.instance(),
+                    task_id=f"{self.task_runtime_id}-catalog-{attempt + 1}",
+                )
+                if manager is None:
+                    raise RuntimeError("DTAP environment catalog server failed to start")
+                wait_for_injection_mcp_ready(updated)
+                result: dict[str, Sequence[ToolSpec]] = {}
+                for server_name, server_info in (updated.get("environment_servers") or {}).items():
+                    if isinstance(server_info, dict) and server_info.get("url"):
+                        result[server_name] = await _list_url_tools(
+                            server_name, server_info["url"]
+                        )
+                return result
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (attempt + 1))
+            finally:
+                if manager is not None:
+                    manager.stop_all()
+        raise RuntimeError("DTAP environment tool discovery failed after 3 attempts") from last_error

@@ -44,7 +44,10 @@ call validate_placement with only the returned action_id. A failed placement
 returns an expected locator and the exact placement fields that may be revised.
 Apply the revised action again; submit_attack still evaluates the complete final
 plan in a fresh environment. Placement probes do not consume H or reveal arbitrary
-environment state.
+environment state. A final plan may contain only environment actions backed by
+an owned, positively validated placement receipt. A nonterminal
+INVALID_SUBMISSION consumes Q but not H, so remove unverified actions, repair the
+plan, and retry within Q.
 """.strip()
 
 
@@ -106,20 +109,6 @@ async def run_m4_episode(
     episode_root = managed_root / credentials.public_episode_id
     audit = audit_sink or InMemoryAuditSink()
     episode_digest = hashlib.sha256(credentials.public_episode_id.encode()).hexdigest()[:32]
-    controller = SubmissionCoordinator(
-        validation_context=ValidationContext.from_view(view),
-        runtime=runtime,
-        source_task_dir=snapshot.task_dir,
-        episode_root=episode_root,
-        runner=runner,
-        candidate_validator=candidate_validator,
-        security_policy=security_policy,
-        policy_contract=contract,
-        source_manifest=snapshot.benchmark_manifest,
-        terminal_event=terminal_event,
-        audit_sink=audit,
-        audit_episode_digest=episode_digest,
-    )
     placement_controller = None
     if placement_runner is not None:
         placement_limit = (
@@ -139,6 +128,21 @@ async def run_m4_episode(
             max_actions=placement_limit,
             candidate_validator=candidate_validator,
         )
+    controller = SubmissionCoordinator(
+        validation_context=ValidationContext.from_view(view),
+        runtime=runtime,
+        source_task_dir=snapshot.task_dir,
+        episode_root=episode_root,
+        runner=runner,
+        candidate_validator=candidate_validator,
+        security_policy=security_policy,
+        policy_contract=contract,
+        source_manifest=snapshot.benchmark_manifest,
+        terminal_event=terminal_event,
+        audit_sink=audit,
+        audit_episode_digest=episode_digest,
+        placement_coordinator=placement_controller,
+    )
     authority = EpisodeAuthority(
         view, controller, terminal_event, contract,
         placement_coordinator=placement_controller,

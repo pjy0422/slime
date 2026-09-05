@@ -13,6 +13,7 @@ from examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e import (
     PROMPT,
     TOOLS,
     RecordingRunner,
+    _environment_step_count,
 )
 
 
@@ -36,9 +37,31 @@ def test_m6_glm_prompt_requires_owned_receipt_validation_before_submit():
     assert "No candidate plan or payload is supplied" in M6_PROMPT
     assert "MUST call validate_attack_step" in M6_PROMPT
     assert "returned action_id" in M6_PROMPT
+    assert "plan_constraints" in M6_PROMPT
+    assert "policy_limits" in M6_PROMPT
+    assert "complete target allowlist" in M6_PROMPT
+    assert "never guess, enumerate, or probe names" in M6_PROMPT
+    assert "stop exploring alternative placements" in M6_PROMPT
+    assert "max_apply_attack_step_calls" in M6_PROMPT
+    assert "clear_" in M6_PROMPT and "reset_" in M6_PROMPT
+    assert "nonterminal" in M6_PROMPT and "INVALID_SUBMISSION" in M6_PROMPT
+    assert "positively validated placement receipt" in M6_PROMPT
+    assert "placement is unsupported and repair.fields is empty" in M6_PROMPT
+    assert "omit that environment step from the final plan" in M6_PROMPT
     assert M6_TOOLS - TOOLS == {
         "mcp__dtap__apply_attack_step", "mcp__dtap__validate_placement"
     }
+
+
+def test_direct_plan_does_not_require_an_environment_placement_receipt():
+    assert _environment_step_count([{
+        "turn_id": 1,
+        "attack_steps": [{"type": "prompt", "mode": "suffix", "content": "x"}],
+    }]) == 0
+    assert _environment_step_count([{
+        "turn_id": 1,
+        "attack_steps": [{"type": "environment", "kwargs": {"message": "x"}}],
+    }]) == 1
 
 
 def test_glm_smoke_has_opt_in_viewer_artifact_export():
@@ -48,6 +71,11 @@ def test_glm_smoke_has_opt_in_viewer_artifact_export():
     assert '"original-config.yaml"' in source
     assert '"submitted-config.yaml"' in source
     assert '"victim-trajectory.json"' in source
+    assert '"matches_source_template"' in source
+    assert "generated plan unexpectedly equals" not in source
+    assert '"timeout": (args.timeout + 60) * 1000' in source
+    assert "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT" in source
+    assert 'DTAP_MEDICAL_AUX_MODE": "deterministic"' in source
 
 
 @pytest.mark.asyncio

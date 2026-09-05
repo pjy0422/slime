@@ -50,7 +50,10 @@ def _source(tmp_path: Path) -> Path:
     return source
 
 
-def _coordinator(tmp_path, *, h, q, runner, policy_overrides=None, audit_sink=None):
+def _coordinator(
+    tmp_path, *, h, q, runner, policy_overrides=None, audit_sink=None,
+    placement_coordinator=None,
+):
     source = _source(tmp_path)
     policy = M4SecurityPolicy(max_submit_calls=q, **(policy_overrides or {}))
     return SubmissionCoordinator(
@@ -68,6 +71,7 @@ def _coordinator(tmp_path, *, h, q, runner, policy_overrides=None, audit_sink=No
         ),
         audit_sink=audit_sink,
         audit_episode_digest="episode-digest" if audit_sink is not None else None,
+        placement_coordinator=placement_coordinator,
     )
 
 
@@ -92,6 +96,30 @@ async def test_invalid_submits_spend_q_not_h_and_q_terminal_is_trainable(tmp_pat
     assert coordinator.runtime.status is EpisodeStatus.POLICY_LIMIT
     assert coordinator.runtime.final_reward == 0.0
     assert coordinator.runtime.remove_sample is False
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_m6_unverified_environment_guard_spends_q_before_runner(tmp_path):
+    runner = Runner()
+    placement = SimpleNamespace(
+        unverified_environment_indices=lambda _steps: (0,)
+    )
+    coordinator = _coordinator(
+        tmp_path, h=1, q=2, runner=runner,
+        placement_coordinator=placement,
+    )
+
+    receipt = await coordinator.submit(VALID_PLAN)
+
+    assert receipt == {
+        "accepted": False,
+        "terminal": False,
+        "remaining_submissions": 1,
+        "error": {"code": "INVALID_SUBMISSION"},
+    }
+    assert coordinator.runtime.submit_calls == 1
+    assert coordinator.runtime.submissions_used == 0
     assert not runner.calls
 
 

@@ -142,6 +142,12 @@ class M4EpisodeService:
         authority = self.registry.resolve(token)
         result = authority.view.attack_surface.to_dict()
         result["candidate_step_schema"] = candidate_attack_step_schema()
+        result["policy_limits"] = {
+            "max_steps_per_plan": self.security_policy.max_steps_per_plan,
+            "max_placement_actions": self.security_policy.max_placement_actions,
+            "max_apply_attack_step_calls": self.security_policy.max_placement_actions,
+            "max_submit_calls": self.security_policy.max_submit_calls,
+        }
         try:
             return self._contract(authority).public_payload(result)
         except Exception:

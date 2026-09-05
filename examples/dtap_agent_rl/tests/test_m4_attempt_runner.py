@@ -80,3 +80,30 @@ printf '%s\n' '{"attack_success":"true"}' > "$EVAL_RESULTS_ROOT/.m4-verdict.json
     assert result.evaluation_started is True
     assert result.attack_success is None
     assert result.infrastructure_stage == "judge_result"
+
+
+@pytest.mark.asyncio
+async def test_m4_runner_accepts_a_disjoint_worker_port_range(tmp_path):
+    executable = _executable(
+        tmp_path,
+        """
+test "$DT_PORT_RANGE_START" = "41000"
+test "$DT_PORT_RANGE_END" = "41511"
+mkdir -p "$EVAL_RESULTS_ROOT"
+printf 1 > "$EVAL_RESULTS_ROOT/.m4-started"
+printf '%s\n' '{"attack_success":false}' > "$EVAL_RESULTS_ROOT/.m4-verdict.json"
+""",
+    )
+    policy = M4SecurityPolicy(max_submit_calls=1, max_queued_attempts=1)
+    runner = DtapAttemptRunner(
+        python_executable=str(executable),
+        model="fake",
+        security_policy=policy,
+        scheduler=AttemptScheduler(max_parallel=1, max_queued=1, wait_timeout=30),
+        port_range_start=41_000,
+    )
+
+    result = await runner.run(_workspace(tmp_path))
+
+    assert result.evaluation_started is True
+    assert result.attack_success is False

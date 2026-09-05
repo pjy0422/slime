@@ -12,9 +12,10 @@ from pathlib import Path
 
 VICTIM_BASE_URL_ENV = "DTAP_VICTIM_ANTHROPIC_BASE_URL"
 VICTIM_AUTH_FROM_API_KEY_ENV = "DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN"
+MEDICAL_AUX_MODE_ENV = "DTAP_MEDICAL_AUX_MODE"
 
 
-def _configure_victim_provider() -> None:
+def _configure_victim_provider(model: str) -> None:
     """Translate trusted runner-only aliases inside the isolated DTAP child.
 
     The M4 parent still refuses to inherit policy adapter variables directly.
@@ -32,6 +33,17 @@ def _configure_victim_provider() -> None:
         if not api_key:
             raise RuntimeError("victim API key is required for auth-token mapping")
         os.environ["ANTHROPIC_AUTH_TOKEN"] = api_key
+        # Some DTAP environments (notably Medical) contain an auxiliary model
+        # behind an OpenAI-compatible client. Keep that simulator on the same
+        # trusted provider and credential as the victim instead of silently
+        # falling back to api.openai.com with an empty key.
+        if base_url:
+            os.environ["OPENAI_API_KEY"] = api_key
+            os.environ["OPENAI_BASE_URL"] = f"{base_url.rstrip('/')}/v1"
+            os.environ["PATIENT_MODEL"] = model
+            os.environ["MEASUREMENT_MODEL"] = model
+            os.environ["JUDGE_MODEL"] = model
+            os.environ["OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS"] = "600"
 
 
 @contextmanager
@@ -53,8 +65,22 @@ def _task_environment(instances):
                 os.environ[key] = value
 
 
+@contextmanager
+def _restored_environment(values: dict[str, str]):
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 async def _run(args) -> int:
-    _configure_victim_provider()
+    _configure_victim_provider(args.model)
     from dt_arena.src.types.task import AttackConfig, TaskConfig
     from eval.task_runner import run_single_task
     from utils.task_executor import ScheduledTask, TaskExecutor, get_task_environments
@@ -71,23 +97,40 @@ async def _run(args) -> int:
         task_id=getattr(task_cfg, "task_id", None),
     )
     executor = TaskExecutor(max_parallel=1)
+    auxiliary_mode = os.environ.pop(MEDICAL_AUX_MODE_ENV, "")
+    victim_credentials: dict[str, str] = {}
+    if (
+        getattr(task_cfg, "domain", None) == "medical"
+        and auxiliary_mode == "deterministic"
+    ):
+        # The published Medical image supports only GPT/Claude/Gemini model
+        # names. Its built-in no-credential path derives deterministic patient
+        # replies from the scenario. Keep policy/victim credentials available
+        # to OpenClaw, but hide them while TaskExecutor creates the auxiliary
+        # patient container so an unsupported hosted model cannot enter its
+        # 30 x 20-second retry loop.
+        for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN"):
+            value = os.environ.pop(name, None)
+            if value is not None:
+                victim_credentials[name] = value
 
     async def callback(task, instances):
         if args.started_path is not None:
             args.started_path.parent.mkdir(parents=True, exist_ok=True)
             args.started_path.write_bytes(b"1")
-        with _task_environment(instances):
-            return await run_single_task(
-                task.task_dir,
-                agent_type=args.agent_type,
-                model=args.model,
-                temperature=args.temperature,
-                max_turns=args.max_turns,
-                skip_mcp=False,
-                skip_judge=False,
-                debug=args.debug,
-                direct_prompt=False,
-            )
+        with _restored_environment(victim_credentials):
+            with _task_environment(instances):
+                return await run_single_task(
+                    task.task_dir,
+                    agent_type=args.agent_type,
+                    model=args.model,
+                    temperature=args.temperature,
+                    max_turns=args.max_turns,
+                    skip_mcp=False,
+                    skip_judge=False,
+                    debug=args.debug,
+                    direct_prompt=False,
+                )
 
     try:
         results = await executor.run_all([scheduled], callback)

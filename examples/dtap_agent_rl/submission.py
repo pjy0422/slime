@@ -101,6 +101,7 @@ class SubmissionCoordinator:
         terminal_event: asyncio.Event | None = None,
         audit_sink: Any = None,
         audit_episode_digest: str | None = None,
+        placement_coordinator: Any = None,
     ) -> None:
         self.validation_context = validation_context
         self.runtime = runtime
@@ -114,6 +115,7 @@ class SubmissionCoordinator:
         self.terminal_event = terminal_event
         self.audit_sink = audit_sink
         self.audit_episode_digest = audit_episode_digest
+        self.placement_coordinator = placement_coordinator
         if security_policy is not None:
             if runtime.max_submit_calls is None:
                 raise ValueError("M4 runtime requires an explicit submit-call budget")
@@ -234,6 +236,20 @@ class SubmissionCoordinator:
                     **self._state_fields(),
                     "errors": [error.to_dict() for error in validated.errors],
                 }
+
+            if (
+                self.placement_coordinator is not None
+                and self.placement_coordinator.unverified_environment_indices(
+                    validated.steps
+                )
+            ):
+                # M6 final plans may contain only environment actions that this
+                # episode applied and then positively read back. The generic
+                # response intentionally reveals no environment oracle data.
+                self._finish_policy_rejection()
+                return self._m4_reject(
+                    "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
+                )
 
             attempt_index = self.runtime.submissions_used + 1
             try:
