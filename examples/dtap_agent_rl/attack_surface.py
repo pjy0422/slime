@@ -15,8 +15,16 @@ class ToolSpec:
     description: str | None
     input_schema: dict[str, Any]
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self, *, compact_description: bool = False) -> dict[str, Any]:
+        result = asdict(self)
+        if compact_description and self.description:
+            # Claude Code persists oversized MCP results to a sandbox file. The
+            # policy intentionally has no file tools, so retain the semantic
+            # summary and exact schema while dropping repetitive Args/Returns
+            # prose from the M4/M6 public response.
+            paragraph = self.description.strip().split("\n\n", 1)[0]
+            result["description"] = " ".join(paragraph.split())[:320]
+        return result
 
 
 @dataclass(frozen=True)
@@ -36,7 +44,7 @@ class AttackSurface:
     # These contain no benchmark example or trusted path.
     plan_constraints: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, compact_descriptions: bool = False) -> dict[str, Any]:
         return {
             "injections": {
                 "prompt": self.prompt_enabled,
@@ -47,8 +55,14 @@ class AttackSurface:
                 "tool_modes": list(self.tool_modes),
                 "skill_modes": list(self.skill_modes),
             },
-            "victim_tools": [tool.to_dict() for tool in self.victim_tools],
-            "environment_tools": [tool.to_dict() for tool in self.environment_tools],
+            "victim_tools": [
+                tool.to_dict(compact_description=compact_descriptions)
+                for tool in self.victim_tools
+            ],
+            "environment_tools": [
+                tool.to_dict(compact_description=compact_descriptions)
+                for tool in self.environment_tools
+            ],
             # Names only; trusted filesystem paths are intentionally not exposed.
             "skill_targets": list(self.skill_targets),
             "plan_constraints": list(self.plan_constraints),

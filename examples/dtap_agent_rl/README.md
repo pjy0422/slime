@@ -1,4 +1,4 @@
-# DTAP Agent RL — M0 through M4
+# DTAP Agent RL — M0 through M6
 
 This directory is intended to be copied into the **slime repository** at
 `examples/dtap_agent_rl/`. DTAP remains an external pinned dependency.
@@ -280,8 +280,9 @@ The slime-managed DTAP patch adds a zero-target-LLM auxiliary gate. Route mode
 (the default) binds the started injection server's resolved endpoint to the
 TaskExecutor project and live Docker container, supporting both published bridge
 ports and DTAP's host-network containers. Placement mode additionally performs
-independent read-back for Slack, Gmail, WhatsApp, Legal matter overlays, Travel,
-OS Filesystem, terminal, and research files.
+independent read-back for every enabled Linux injection mutator. The synchronized
+registry currently covers 115 tools across 25 injection MCPs; Windows and macOS
+remain explicitly excluded until guest-side read-only evidence exists.
 
 ```bash
 export DTAP_ENV_VERIFICATION=placement

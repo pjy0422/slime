@@ -13,10 +13,24 @@ def find_openclaw_trace(root: str | Path) -> Path | None:
     root = Path(root)
     if root.is_file():
         return root
-    hits = sorted(root.rglob("traces/openclaw_runtime/*.jsonl"))
+    hits = [
+        path for path in sorted(root.rglob("traces/openclaw_runtime/*.jsonl"))
+        if not path.name.endswith(".mcp-events.jsonl")
+    ]
     if hits:
         return hits[0]
-    hits = [p for p in sorted(root.rglob("*.jsonl")) if "policy" not in p.name.lower()]
+    hits = [
+        p for p in sorted(root.rglob("*.jsonl"))
+        if "policy" not in p.name.lower() and not p.name.endswith("mcp-events.jsonl")
+    ]
+    return hits[0] if hits else None
+
+
+def find_victim_mcp_events(root: str | Path) -> Path | None:
+    root = Path(root)
+    if root.is_file():
+        return root if root.name.endswith("mcp-events.jsonl") else None
+    hits = sorted(root.rglob("*mcp-events.jsonl"))
     return hits[0] if hits else None
 
 
@@ -251,6 +265,46 @@ def parse_victim_timeline(trace_path: str | Path) -> list[dict[str, Any]]:
     return parse_dtap_trajectory(path) if path.suffix.lower() == ".json" else parse_openclaw_timeline(path)
 
 
+def parse_victim_mcp_events(trace_path: str | Path) -> list[dict[str, Any]]:
+    """Parse the proxy-owned redacted tool audit stream."""
+    timeline: list[dict[str, Any]] = []
+    for line in Path(trace_path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if event.get("schema") != "dtap-openclaw-mcp-event":
+            continue
+        common = {
+            "episode_id": str(event.get("episode_id") or ""),
+            "server": str(event.get("server") or ""),
+            "tool": str(event.get("tool") or ""),
+            "call_id": str(event.get("call_id") or ""),
+            "timestamp": str(event.get("timestamp") or ""),
+            "source": "mcp_proxy",
+        }
+        if event.get("type") == "tool.started":
+            timeline.append({
+                "kind": "tool_call",
+                "args": event.get("arguments") or {},
+                "arguments_digest": event.get("arguments_digest"),
+                **common,
+            })
+        elif event.get("type") == "tool.completed":
+            timeline.append({
+                "kind": "tool_result",
+                "text": (
+                    f"{common['server']}:{common['tool']} completed; "
+                    f"is_error={bool(event.get('is_error'))}; "
+                    f"result_sha256={event.get('result_digest', '')}"
+                ),
+                "is_error": bool(event.get("is_error")),
+                "result_digest": event.get("result_digest"),
+                **common,
+            })
+    return timeline
+
+
 def parse_policy_timeline(trace_path: str | Path) -> list[dict[str, Any]]:
     """Parse Claude Code stream-json without duplicating cumulative snapshots."""
     timeline: list[dict[str, Any]] = []
@@ -380,6 +434,7 @@ def build_timeline(
     policy_prompt_path: str | Path | None = None,
     original_yaml_path: str | Path | None = None,
     submitted_yaml_path: str | Path | None = None,
+    victim_mcp_events_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Build a combined viewer payload; ``yaml_path`` remains the submitted-YAML alias."""
     submitted = submitted_yaml_path or yaml_path
@@ -391,6 +446,12 @@ def build_timeline(
         targets = {p["tool"] for p in payloads if p.get("kind") == "tool" and p.get("tool")}
         descriptions = extract_tool_descriptions(trace_path, targets)
         mark_injections(victim_timeline, payloads, descriptions)
+    if victim_mcp_events_path is not None:
+        proxy_events = parse_victim_mcp_events(victim_mcp_events_path)
+        insert_at = len(victim_timeline)
+        if victim_timeline and victim_timeline[-1].get("kind") == "final":
+            insert_at -= 1
+        victim_timeline[insert_at:insert_at] = proxy_events
     policy_timeline = parse_policy_timeline(policy_trace_path) if policy_trace_path else []
     if policy_prompt_path is not None:
         try:
@@ -400,15 +461,32 @@ def build_timeline(
         if policy_prompt:
             policy_timeline.insert(0, {"kind": "user", "text": policy_prompt})
     mark_injections(policy_timeline, payloads)
-    return {
+    result = {
         "trace": str(trace_path) if trace_path else None,
         "policy_trace": str(policy_trace_path) if policy_trace_path else None,
         "policy_prompt": str(policy_prompt_path) if policy_prompt_path else None,
         "yaml": str(submitted) if submitted else None,
         "original_yaml": str(original_yaml_path) if original_yaml_path else None,
+        "victim_mcp_events": (
+            str(victim_mcp_events_path) if victim_mcp_events_path else None
+        ),
         "payloads": payloads,
         "timeline": victim_timeline,
         "policy_timeline": policy_timeline,
         "config_comparison": compare_configs(original_yaml_path, submitted),
         **(meta or {}),
     }
+    event_episode_ids = {
+        event["episode_id"] for event in victim_timeline
+        if event.get("source") == "mcp_proxy" and event.get("episode_id")
+    }
+    if not result.get("episode_id") and len(event_episode_ids) == 1:
+        result["episode_id"] = next(iter(event_episode_ids))
+    elif (
+        result.get("episode_id") and event_episode_ids
+        and event_episode_ids != {result["episode_id"]}
+    ):
+        result.setdefault("trajectory_warnings", []).append(
+            "victim MCP events do not match the bundle episode_id"
+        )
+    return result

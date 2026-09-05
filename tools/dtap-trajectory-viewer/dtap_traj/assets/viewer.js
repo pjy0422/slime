@@ -34,7 +34,7 @@
     const labels = {
       user: ['🧑', 'User request'], thinking: ['🧠', 'Agent thinking'],
       tool_result: ['📦', 'Tool result'], say: ['💬', 'Agent says'],
-      final: ['✅', 'Final reply']
+      final: ['✅', 'Final reply'], judge: ['⚖️', 'Judge result']
     };
     if (event.kind === 'tool_call') {
       const desc = event.injected_tool_desc;
@@ -44,7 +44,7 @@
     const pair = labels[event.kind];
     if (!pair) return '';
     const injected = event.injection_spans && event.injection_spans.length;
-    const pre = event.kind === 'tool_result';
+    const pre = event.kind === 'tool_result' || event.kind === 'judge';
     return `<article class="row ${esc(event.kind)} ${injected ? 'target' : ''}"><div class="icon">${pair[0]}</div><div class="body"><div class="label">${pair[1]}${injected ? ' <span class="tag">contains submitted payload</span>' : ''}</div>${pre ? '<pre>' : '<div class="text">'}${spans(event.text, event.injection_spans)}${pre ? '</pre>' : '</div>'}</div></article>`;
   }
 

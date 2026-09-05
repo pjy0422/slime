@@ -9,15 +9,104 @@ import os
 import signal
 import shutil
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
-DOMAINS = (
+ALL_DOMAINS = (
     "browser", "code", "crm", "customer-service", "finance", "legal",
     "macos", "medical", "os-filesystem", "research", "telecom", "travel",
     "windows", "workflow",
 )
+EXCLUDED_PLATFORM_DOMAINS = frozenset({"macos", "windows"})
+DOMAINS = tuple(
+    domain for domain in ALL_DOMAINS if domain not in EXCLUDED_PLATFORM_DOMAINS
+)
+
+
+def _failure_class(result: dict[str, Any]) -> str | None:
+    if result.get("status") == "passed":
+        return None
+    if result.get("failure_class"):
+        return str(result["failure_class"])
+    tail = str(result.get("error_tail") or "").lower()
+    if "unsupported_placement" in tail:
+        return "unsupported_placement"
+    if "placement_mismatch" in tail or "placement" in tail and "read-back" in tail:
+        return "placement"
+    if "judge" in tail:
+        return "judge"
+    if "victim" in tail or "openclaw" in tail and "policy" not in tail:
+        return "victim"
+    if "invalid_submission" in tail or "validation" in tail:
+        return "validation"
+    if "policy" in tail or "glm did not" in tail:
+        return "policy"
+    return "infrastructure"
+
+
+def _summary_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
+    completed = [item for item in results if item.get("evaluation_completed")]
+    applicable = [item for item in completed if item.get("placement_applicable")]
+    tool_attempts = Counter(
+        str(tool)
+        for item in completed
+        for tool in (item.get("environment_tools") or ())
+    )
+    tool_verified = Counter()
+    for item in applicable:
+        if item.get("placement_covered"):
+            tool_verified.update(map(str, item.get("environment_tools") or ()))
+    def grouped(field: str) -> dict[str, dict[str, int]]:
+        keys = sorted({str(item.get(field)) for item in completed if item.get(field)})
+        return {
+            key: {
+                "evaluations": sum(str(item.get(field)) == key for item in completed),
+                "applicable": sum(
+                    str(item.get(field)) == key and item.get("placement_applicable") is True
+                    for item in completed
+                ),
+                "covered": sum(
+                    str(item.get(field)) == key and item.get("placement_covered") is True
+                    for item in completed
+                ),
+            }
+            for key in keys
+        }
+    server_attempts = Counter()
+    server_verified = Counter()
+    for item in completed:
+        servers = {str(tool).split(":", 1)[0] for tool in item.get("environment_tools") or ()}
+        server_attempts.update(servers)
+        if item.get("placement_covered"):
+            server_verified.update(servers)
+    return {
+        "evaluation_completed": len(completed),
+        "attack_successes": sum(item.get("attack_success") is True for item in completed),
+        "action_applied": sum(item.get("action_applied") is True for item in completed),
+        "placement_applicable": len(applicable),
+        "placement_covered": sum(item.get("placement_covered") is True for item in applicable),
+        "placement_actions": sum(int(item.get("placement_actions") or 0) for item in completed),
+        "placements_verified": sum(int(item.get("placements_verified") or 0) for item in completed),
+        "placement_by_tool": {
+            tool: {"attempted": count, "verified": tool_verified[tool]}
+            for tool, count in sorted(tool_attempts.items())
+        },
+        "placement_by_injection_mcp": {
+            server: {"attempted": count, "verified": server_verified[server]}
+            for server, count in sorted(server_attempts.items())
+        },
+        "placement_by_domain": grouped("domain"),
+        "placement_by_threat_model": grouped("threat_model"),
+        "failures_by_class": {
+            name: sum(_failure_class(item) == name for item in results)
+            for name in (
+                "policy", "validation", "unsupported_placement", "placement",
+                "victim", "judge", "infrastructure",
+            )
+        },
+    }
 
 
 def _first_record(path: Path) -> dict[str, Any]:
@@ -55,7 +144,7 @@ def _passed_payload(stdout: str) -> dict[str, Any] | None:
 
 def _stored_results(root: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for domain in DOMAINS:
+    for domain in ALL_DOMAINS:
         for threat_model in ("direct", "indirect"):
             path = root / domain / threat_model / "result.json"
             try:
@@ -173,11 +262,36 @@ async def _run_case(
                 "attack_success", "episode_status", "environment_steps",
                 "placement_actions", "placements_verified",
                 "matches_source_template",
+                "evaluation_completed", "failure_class", "plan_generated",
+                "action_applied",
+                "episode_id",
+                "placement_applicable", "placement_covered",
+                "placement_verified",
+                "victim_completed", "judge_completed", "victim_mcp_events",
+                "judge_artifacts",
+                "environment_tools",
             )
         })
     else:
         tail = (stderr or stdout)[-2000:]
         result["error_tail"] = tail
+        result["evaluation_completed"] = False
+        result["failure_class"] = _failure_class(result)
+        try:
+            state = json.loads((case_dir / "episode-state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        result.update({
+            "plan_generated": bool(
+                state.get("plan_generated") or (case_dir / "submitted-config.yaml").is_file()
+            ),
+            "action_applied": bool(state.get("evaluation_delegate_completed")),
+            "victim_completed": bool(state.get("evaluation_delegate_completed")),
+            "judge_completed": bool(state.get("judge_artifacts_retained")),
+            "victim_mcp_events": int(bool(state.get("victim_mcp_log_retained"))),
+            "judge_artifacts": int(state.get("judge_artifacts_retained") or 0),
+            "placement_verified": False,
+        })
     result_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -227,6 +341,9 @@ async def _main(args: argparse.Namespace) -> int:
         "failed": _failure_count(stored),
         "selected_total": len(results),
         "selected_failed": _failure_count(results),
+        "metrics": _summary_metrics(stored),
+        "selected_metrics": _summary_metrics(results),
+        "excluded_platform_domains": sorted(EXCLUDED_PLATFORM_DOMAINS),
         "results": stored,
     }
     (args.artifacts_root / "summary.json").write_text(
@@ -242,7 +359,7 @@ def main() -> None:
     parser.add_argument("--dtap-root", type=Path, required=True)
     parser.add_argument("--slime-root", type=Path, default=Path.cwd())
     parser.add_argument("--artifacts-root", type=Path, required=True)
-    parser.add_argument("--domains", nargs="+", choices=DOMAINS, default=list(DOMAINS))
+    parser.add_argument("--domains", nargs="+", choices=ALL_DOMAINS, default=list(DOMAINS))
     parser.add_argument("--threat-models", nargs="+", choices=("direct", "indirect"), default=["direct", "indirect"])
     parser.add_argument("--max-parallel", type=int, default=2)
     parser.add_argument("--port-range-start", type=int, default=20_000)

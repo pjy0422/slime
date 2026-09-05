@@ -31,6 +31,13 @@ def render_html(data: dict, title: str | None = None) -> str:
         f"{calls} tool calls",
         f"{len(data.get('payloads') or [])} submitted payloads",
     ]
+    if data.get("episode_id"):
+        bits.append(f"episode {html.escape(str(data['episode_id']))}")
+    evaluation = data.get("evaluation") or {}
+    if evaluation.get("status"):
+        bits.append(f"evaluation {html.escape(str(evaluation['status']))}")
+    if evaluation.get("attack_success") is not None:
+        bits.append(f"attack success {str(bool(evaluation['attack_success'])).lower()}")
     comparison = data.get("config_comparison")
     if comparison:
         bits.append("configs identical" if comparison["identical"] else "configs changed")

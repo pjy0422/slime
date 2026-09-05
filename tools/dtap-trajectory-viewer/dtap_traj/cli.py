@@ -8,7 +8,12 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from .parser import build_timeline, find_policy_trace, find_victim_trace
+from .parser import (
+    build_timeline,
+    find_policy_trace,
+    find_victim_mcp_events,
+    find_victim_trace,
+)
 from .render import write_html
 
 
@@ -37,6 +42,45 @@ def _guess_policy_prompt(root: Path) -> Path | None:
     return _first(root, ("policy-prompt.txt", "policy_prompt.txt"))
 
 
+def _guess_episode_meta(root: Path) -> dict:
+    manifest = _first(root, ("episode-manifest.json",))
+    if manifest is None:
+        return {}
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"trajectory_warnings": ["episode manifest is unreadable"]}
+    episode_id = payload.get("episode_id") if isinstance(payload, dict) else None
+    return {"episode_id": str(episode_id)} if episode_id else {}
+
+
+def _guess_evaluation(root: Path) -> dict:
+    directory = root if root.is_dir() else root.parent
+    evaluation: dict = {}
+    result = _first(directory, ("result.json",))
+    if result is not None:
+        try:
+            payload = json.loads(result.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {}
+        if isinstance(payload, dict):
+            for key in (
+                "status", "evaluation_completed", "failure_class", "attack_success",
+                "episode_status", "placement_applicable", "placement_covered",
+                "placement_actions", "placements_verified",
+            ):
+                if key in payload:
+                    evaluation[key] = payload[key]
+    judge = _first(directory, ("judge-verdict.json", "judge-result.json"))
+    if judge is not None:
+        try:
+            payload = json.loads(judge.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {"status": "unreadable"}
+        evaluation["judge"] = payload
+    return evaluation
+
+
 def _resolve_optional(value: str | None) -> Path | None:
     return Path(value).expanduser().resolve() if value else None
 
@@ -57,15 +101,30 @@ def _build(src: Path, args: argparse.Namespace) -> dict:
         submitted = submitted or _guess_submitted(src)
         original = original or _guess_original(src)
     policy_prompt = policy_prompt or _guess_policy_prompt(src)
+    victim_mcp_events = (
+        _resolve_optional(args.victim_mcp_events)
+        or (find_victim_mcp_events(src) if src.is_dir() else None)
+    )
     if victim_trace is None and policy_trace is None:
         raise FileNotFoundError(f"no victim or policy trace found under {src}")
-    return build_timeline(
+    data = build_timeline(
         victim_trace,
+        meta=_guess_episode_meta(src),
         policy_trace_path=policy_trace,
         policy_prompt_path=policy_prompt,
         original_yaml_path=original,
         submitted_yaml_path=submitted,
+        victim_mcp_events_path=victim_mcp_events,
     )
+    evaluation = _guess_evaluation(src)
+    if evaluation:
+        data["evaluation"] = evaluation
+        if "judge" in evaluation:
+            data["timeline"].append({
+                "kind": "judge",
+                "text": json.dumps(evaluation["judge"], ensure_ascii=False, indent=2),
+            })
+    return data
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,6 +134,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("path", help="run directory, victim trace, or policy stream-json")
     parser.add_argument("--victim-trace", help="explicit DTAP OpenClaw JSONL")
+    parser.add_argument(
+        "--victim-mcp-events",
+        help="explicit redacted OpenClaw MCP proxy event JSONL",
+    )
     parser.add_argument("--policy-trace", help="explicit Claude policy stream-json JSONL")
     parser.add_argument("--policy-prompt", help="policy instruction text shown as the first event")
     parser.add_argument("--original-yaml", help="original benchmark config.yaml")

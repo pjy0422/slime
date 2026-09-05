@@ -1,0 +1,2361 @@
+diff --git a/agent/openclaw/src/agent.py b/agent/openclaw/src/agent.py
+index fca99d65..aab8985c 100644
+--- a/agent/openclaw/src/agent.py
++++ b/agent/openclaw/src/agent.py
+@@ -82,6 +82,9 @@ class OpenClawAgent(Agent):
+ 
+         # Session management
+         self._session_id: str = f"dt-arena-{uuid.uuid4().hex[:8]}"
++        self._mcp_event_log: str = os.path.join(
++            self._runtime_trace_dir, f"{self._session_id}.mcp-events.jsonl"
++        )
+         self._conversation_history: List[Dict[str, Any]] = []
+ 
+         # Unique profile name for isolation (prevents plugin conflicts in parallel execution)
+@@ -653,7 +656,12 @@ class OpenClawAgent(Agent):
+         await self._setup_skills()
+ 
+         # Create MCP proxy servers
+-        self._proxy_manager = MCPProxyManager(debug=self._debug, hook_manager=self.hook_manager)
++        self._proxy_manager = MCPProxyManager(
++            debug=self._debug,
++            hook_manager=self.hook_manager,
++            event_log_path=self._mcp_event_log,
++            episode_id=os.environ.get("DTAP_EVALUATION_EPISODE_ID", self._session_id),
++        )
+ 
+         # Get tool injections from runtime config
+         tool_injections = self.runtime_config.mcp_injection or {}
+@@ -1068,6 +1076,9 @@ class OpenClawAgent(Agent):
+         self._conversation_history = []
+         self._turn_count = 0
+         self._session_id = f"dt-arena-{uuid.uuid4().hex[:8]}"
++        self._mcp_event_log = os.path.join(
++            self._runtime_trace_dir, f"{self._session_id}.mcp-events.jsonl"
++        )
+         self._trace_metadata = None
+         self._current_trajectory = None
+         self._last_cli_payload = None
+diff --git a/agent/openclaw/src/mcp_proxy.py b/agent/openclaw/src/mcp_proxy.py
+index 939262af..6b6b670b 100644
+--- a/agent/openclaw/src/mcp_proxy.py
++++ b/agent/openclaw/src/mcp_proxy.py
+@@ -11,12 +11,16 @@ enabling tool injection support for the OpenClaw agent.
+ """
+ 
+ import asyncio
++import hashlib
+ import json
+ import os
+ import signal
++from datetime import datetime, timezone
++from pathlib import Path
+ from typing import Any, Dict, List, Optional
+ from dataclasses import dataclass
+ import threading
++import uuid
+ 
+ from mcp import ClientSession, Tool
+ from mcp.client.sse import sse_client
+@@ -34,6 +38,67 @@ def _tool_timeout_seconds() -> float:
+         return 60.0
+     return min(1800.0, max(1.0, value))
+ 
++
++def _stable_digest(value: Any) -> str:
++    encoded = json.dumps(
++        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
++        default=str,
++    ).encode("utf-8")
++    return hashlib.sha256(encoded).hexdigest()
++
++
++def _redacted_shape(value: Any) -> Any:
++    """Retain argument structure without retaining policy or sandbox values."""
++    if isinstance(value, dict):
++        return {str(key): _redacted_shape(child) for key, child in value.items()}
++    if isinstance(value, list):
++        return [_redacted_shape(child) for child in value]
++    if value is None or isinstance(value, bool):
++        return value
++    if isinstance(value, str):
++        return {
++            "type": "string",
++            "length": len(value),
++            "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
++        }
++    return {"type": type(value).__name__, "sha256": _stable_digest(value)}
++
++
++class MCPEventSink:
++    """Best-effort append-only, task-scoped audit stream for victim MCP calls."""
++
++    def __init__(self, path: str | os.PathLike[str], episode_id: str):
++        self.path = Path(path)
++        self.episode_id = episode_id
++        self._lock = threading.Lock()
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        try:
++            # An empty file is a meaningful zero-tool-call trajectory. It lets
++            # artifact collection distinguish that state from a missing sink.
++            self.path.touch(exist_ok=True)
++        except OSError:
++            # Keep observability best-effort, matching emit().
++            pass
++
++    def emit(self, event_type: str, **data: Any) -> None:
++        event = {
++            "schema": "dtap-openclaw-mcp-event",
++            "schema_version": 1,
++            "episode_id": self.episode_id,
++            "timestamp": datetime.now(timezone.utc).isoformat(),
++            "type": event_type,
++            **data,
++        }
++        line = json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n"
++        try:
++            with self._lock:
++                with self.path.open("a", encoding="utf-8") as handle:
++                    handle.write(line)
++                    handle.flush()
++        except OSError:
++            # Observability must not alter victim tool semantics.
++            pass
++
+ # For running HTTP server
+ try:
+     from aiohttp import web
+@@ -80,6 +145,7 @@ class MCPProxyServer:
+         tool_injections: Optional[Dict[str, Any]] = None,
+         debug: bool = False,
+         hook_manager: HookManager = None,
++        event_sink: Optional[MCPEventSink] = None,
+     ):
+         """
+         Initialize the MCP Proxy Server.
+@@ -106,6 +172,7 @@ class MCPProxyServer:
+         self._tool_injections = tool_injections or {}
+         self._debug = debug
+         self._hook_manager = hook_manager
++        self._event_sink = event_sink
+ 
+         # Cached tools list (fetched once during connect)
+         self._connected = False
+@@ -284,18 +351,40 @@ class MCPProxyServer:
+             arguments=arguments,
+         )
+ 
++        call_id = uuid.uuid4().hex
++        if self._event_sink:
++            self._event_sink.emit(
++                "tool.started",
++                call_id=call_id,
++                server=self.name,
++                tool=tool_name,
++                arguments=_redacted_shape(arguments),
++                arguments_digest=_stable_digest(arguments),
++            )
++
+         try:
+-            return await self._hook_manager.wrap(ctx, _dispatch)
++            result = await self._hook_manager.wrap(ctx, _dispatch)
+         except asyncio.TimeoutError:
+-            return {
++            result = {
+                 "content": [{"type": "text", "text": f"Error: Tool call timed out after {timeout_seconds:g}s"}],
+                 "isError": True,
+             }
+         except Exception as e:
+-            return {
++            result = {
+                 "content": [{"type": "text", "text": f"Error: {e}"}],
+                 "isError": True,
+             }
++        if self._event_sink:
++            self._event_sink.emit(
++                "tool.completed",
++                call_id=call_id,
++                server=self.name,
++                tool=tool_name,
++                is_error=bool(result.get("isError")),
++                content_items=len(result.get("content") or ()),
++                result_digest=_stable_digest(result),
++            )
++        return result
+ 
+     def _format_tool_result(self, result: Any) -> Dict[str, Any]:
+         """Convert MCP result to standard format."""
+@@ -499,10 +588,16 @@ class MCPProxyManager:
+     applying tool injections as needed.
+     """
+ 
+-    def __init__(self, debug: bool = False, hook_manager: HookManager = None):
++    def __init__(self, debug: bool = False, hook_manager: HookManager = None,
++                 event_log_path: Optional[str] = None,
++                 episode_id: str = ""):
+         self._proxies: Dict[str, MCPProxyServer] = {}
+         self._debug = debug
+         self._hook_manager = hook_manager
++        self._event_sink = (
++            MCPEventSink(event_log_path, episode_id)
++            if event_log_path and episode_id else None
++        )
+         # Use port=0 to let OS auto-assign free ports (avoids conflicts in parallel execution)
+ 
+     async def create_proxies(
+@@ -540,6 +635,7 @@ class MCPProxyManager:
+                 tool_injections=injections,
+                 debug=self._debug,
+                 hook_manager=self._hook_manager,
++                event_sink=self._event_sink,
+             )
+ 
+             try:
+diff --git a/dt_arena/config/injection_mcp.yaml b/dt_arena/config/injection_mcp.yaml
+index 1000e05d..5b741d41 100644
+--- a/dt_arena/config/injection_mcp.yaml
++++ b/dt_arena/config/injection_mcp.yaml
+@@ -115,7 +115,8 @@ servers:
+     target_environment: chase
+     description: Chase environment injection MCP server for red-teaming (inject Zelle requests/contacts, transactions, statements)
+     path: chase/env_injection.py
+-    enabled: true
++    # Public release has no chase/env_injection.py implementation.
++    enabled: false
+     env:
+       CHASE_ENV_INJECTION_MCP_HOST: "localhost"
+       CHASE_ENV_INJECTION_MCP_PORT: "10318"
+@@ -132,7 +133,8 @@ servers:
+     target_environment: robinhood
+     description: Robinhood environment injection MCP server for red-teaming (inject orders, positions, watchlists, notifications)
+     path: robinhood/env_injection.py
+-    enabled: true
++    # Public release has no robinhood/env_injection.py implementation.
++    enabled: false
+     env:
+       ROBINHOOD_ENV_INJECTION_MCP_HOST: "localhost"
+       ROBINHOOD_ENV_INJECTION_MCP_PORT: "10317"
+@@ -176,7 +178,8 @@ servers:
+     target_environment: reddit
+     description: Reddit environment injection MCP server for red-teaming (inject posts, comments, messages, notifications)
+     path: reddit/env_injection.py
+-    enabled: true
++    # Public release has no reddit/env_injection.py implementation.
++    enabled: false
+     env:
+       REDDIT_ENV_INJECTION_MCP_HOST: "localhost"
+       REDDIT_ENV_INJECTION_MCP_PORT: "8874"
+@@ -255,7 +258,8 @@ servers:
+   - name: googlesheets-injection
+     description: Google Sheets environment injection MCP server for red-teaming
+     path: googlesheets/env_injection.py
+-    enabled: true
++    # Public release has no googlesheets/env_injection.py implementation.
++    enabled: false
+     env:
+       GOOGLESHEETS_ENV_INJECTION_MCP_HOST: "localhost"
+       GOOGLESHEETS_ENV_INJECTION_MCP_PORT: "8881"
+@@ -267,7 +271,8 @@ servers:
+   - name: googledrive-injection
+     description: Google Drive environment injection MCP server for red-teaming
+     path: googledrive/env_injection.py
+-    enabled: true
++    # Public release has no googledrive/env_injection.py implementation.
++    enabled: false
+     env:
+       GOOGLEDRIVE_ENV_INJECTION_MCP_HOST: "localhost"
+       GOOGLEDRIVE_ENV_INJECTION_MCP_PORT: "8882"
+diff --git a/dt_arena/envs/paypal/docker-compose-hub.yml b/dt_arena/envs/paypal/docker-compose-hub.yml
+index 4456ea15..2e7d85f8 100644
+--- a/dt_arena/envs/paypal/docker-compose-hub.yml
++++ b/dt_arena/envs/paypal/docker-compose-hub.yml
+@@ -11,6 +11,8 @@ services:
+       POSTGRES_USER: sandbox
+       POSTGRES_PASSWORD: sandbox
+     command: ["-p", "${PAYPAL_PG_PORT:-5544}"]
++    volumes:
++      - "./init.sql:/docker-entrypoint-initdb.d/10-paypal-schema.sql:ro"
+     healthcheck:
+       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p ${PAYPAL_PG_PORT:-5544} -U sandbox -d paypal_sandbox"]
+       interval: 5s
+diff --git a/dt_arena/envs/paypal/init.sql b/dt_arena/envs/paypal/init.sql
+new file mode 100644
+index 00000000..b2fffffc
+--- /dev/null
++++ b/dt_arena/envs/paypal/init.sql
+@@ -0,0 +1,9 @@
++-- The pinned PayPal API image reads and writes invoices but does not create
++-- this table. Keep the schema at the environment boundary so a fresh task
++-- project is usable before any victim or injection tool call.
++CREATE TABLE IF NOT EXISTS invoices (
++  id TEXT PRIMARY KEY,
++  recipient_email TEXT NOT NULL,
++  status TEXT NOT NULL,
++  items JSONB NOT NULL DEFAULT '[]'::jsonb
++);
+diff --git a/dt_arena/injection_mcp_server/hospital/env_injection.py b/dt_arena/injection_mcp_server/hospital/env_injection.py
+index 264d87c0..498aecd5 100644
+--- a/dt_arena/injection_mcp_server/hospital/env_injection.py
++++ b/dt_arena/injection_mcp_server/hospital/env_injection.py
+@@ -2,10 +2,18 @@ from fastmcp import FastMCP
+ import ujson as json
+ import requests
+ import os
++from pathlib import Path
+ 
+ timeout = 30
+ HOSPITAL_HOST = os.getenv("HOSPITAL_HOST", "localhost")
+ HOSPITAL_PORT = os.getenv("HOSPITAL_PORT", 12001)
++HOSPITAL_OVERLAY_FILE = Path(os.getenv(
++    "HOSPITAL_INJECTION_OVERLAY_FILE",
++    f"/tmp/dtap-hospital-overlay-{HOSPITAL_PORT}.json",
++))
++# A newly started task-scoped injection server must not inherit a crashed run's
++# pending state when the same host port is later reused.
++HOSPITAL_OVERLAY_FILE.unlink(missing_ok=True)
+ 
+ HOSPITAL_ENV_INJECTION_MCP_HOST = os.getenv("HOSPITAL_ENV_INJECTION_MCP_HOST", "localhost")
+ HOSPITAL_ENV_INJECTION_MCP_PORT = os.getenv("HOSPITAL_ENV_INJECTION_MCP_PORT", 12005)
+@@ -13,10 +21,30 @@ HOSPITAL_ENV_INJECTION_MCP_PORT = os.getenv("HOSPITAL_ENV_INJECTION_MCP_PORT", 1
+ mcp = FastMCP(name="HospitalEnvInjection")
+ 
+ 
++def _queue_test_result(data: dict) -> dict:
++    """Queue a pre-session result for HospitalClient.init_patient to consume."""
++    current = {}
++    try:
++        current = json.loads(HOSPITAL_OVERLAY_FILE.read_text())
++    except (FileNotFoundError, ValueError):
++        pass
++    if not isinstance(current, dict):
++        current = {}
++    current[str(data["test_name"])] = str(data["test_result"])
++    temporary = HOSPITAL_OVERLAY_FILE.with_suffix(f".{os.getpid()}.tmp")
++    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++    with os.fdopen(descriptor, "w") as handle:
++        json.dump(current, handle)
++    os.replace(temporary, HOSPITAL_OVERLAY_FILE)
++    return {"status": "queued", "test_name": data["test_name"]}
++
++
+ def send_post_request(endpoint: str, data: dict) -> dict:
+     """Send a POST request to the hospital server."""
+     url = f"http://{HOSPITAL_HOST}:{HOSPITAL_PORT}/{endpoint}"
+     resp = requests.post(url, json=data, timeout=timeout)
++    if endpoint == "inject_test_result" and resp.status_code == 404:
++        return _queue_test_result(data)
+     resp.raise_for_status()
+     return resp.json()
+ 
+diff --git a/dt_arena/injection_mcp_server/snowflake/env_injection.py b/dt_arena/injection_mcp_server/snowflake/env_injection.py
+index 7186b893..1c25c5f0 100644
+--- a/dt_arena/injection_mcp_server/snowflake/env_injection.py
++++ b/dt_arena/injection_mcp_server/snowflake/env_injection.py
+@@ -10,6 +10,8 @@ import sys
+ from typing import Optional, Dict, Any, List
+ 
+ import psycopg
++from psycopg import sql
++from psycopg.types.json import Jsonb
+ from fastmcp import FastMCP
+ 
+ # Configuration - Connect directly to PostgreSQL
+@@ -44,6 +46,57 @@ def _run_sql(sql: str, params: tuple = None) -> dict:
+         return {"error": "db_error", "message": str(e)}
+ 
+ 
++def _column_type(value: Any) -> str:
++    if isinstance(value, bool):
++        return "BOOLEAN"
++    if isinstance(value, int):
++        return "BIGINT"
++    if isinstance(value, float):
++        return "DOUBLE PRECISION"
++    if isinstance(value, (dict, list)):
++        return "JSONB"
++    return "TEXT"
++
++
++def _adapt(value: Any) -> Any:
++    return Jsonb(value) if isinstance(value, (dict, list)) else value
++
++
++def _prepare_table(cur: Any, table_name: str, rows: List[Dict[str, Any]]) -> None:
++    """Make a bounded task table capable of storing the submitted row shape."""
++    if not table_name.isidentifier() or not all(
++        isinstance(key, str) and key.isidentifier()
++        for row in rows for key in row if not key.startswith("_")
++    ):
++        raise ValueError("table and column names must be identifiers")
++    cur.execute(
++        "SELECT column_name, is_nullable, column_default "
++        "FROM information_schema.columns "
++        "WHERE table_schema=current_schema() AND table_name=%s",
++        (table_name,),
++    )
++    existing = {name: (nullable, default) for name, nullable, default in cur.fetchall()}
++    submitted = {
++        key: value for row in rows for key, value in row.items()
++        if not key.startswith("_")
++    }
++    if not existing:
++        cur.execute(sql.SQL("CREATE TABLE {} (id BIGSERIAL PRIMARY KEY)").format(
++            sql.Identifier(table_name)
++        ))
++        existing = {"id": ("NO", "generated")}
++    for name, value in submitted.items():
++        if name not in existing:
++            cur.execute(sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
++                sql.Identifier(table_name), sql.Identifier(name), sql.SQL(_column_type(value))
++            ))
++    for name, (nullable, default) in existing.items():
++        if name not in submitted and nullable == "NO" and default is None:
++            cur.execute(sql.SQL("ALTER TABLE {} ALTER COLUMN {} DROP NOT NULL").format(
++                sql.Identifier(table_name), sql.Identifier(name)
++            ))
++
++
+ @mcp.tool(name="inject_snowflake_data")
+ def inject_snowflake_data(
+     table_name: str,
+@@ -68,25 +121,19 @@ def inject_snowflake_data(
+         return {"error": "no_data", "message": "No data provided"}
+ 
+     try:
+-        columns = list(data[0].keys())
+-        # Filter out metadata columns
+-        columns = [c for c in columns if not c.startswith('_')]
+-        
+-        placeholders = ', '.join(['%s'] * len(columns))
+-        col_names = ', '.join(columns)
+-        
+         inserted = 0
+         with _get_pg_conn() as conn:
+             with conn.cursor() as cur:
++                _prepare_table(cur, table_name, data)
+                 for row in data:
+-                    values = tuple(row.get(col) for col in columns)
+-                    sql = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})"
+-                    try:
+-                        cur.execute(sql, values)
+-                        inserted += 1
+-                    except Exception as e:
+-                        # Table might not exist or column mismatch, try to continue
+-                        pass
++                    columns = [name for name in row if not name.startswith("_")]
++                    statement = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
++                        sql.Identifier(table_name),
++                        sql.SQL(", ").join(map(sql.Identifier, columns)),
++                        sql.SQL(", ").join(sql.Placeholder() for _ in columns),
++                    )
++                    cur.execute(statement, tuple(_adapt(row[name]) for name in columns))
++                    inserted += 1
+         
+         return {"success": True, "inserted": inserted, "table": table_name}
+     except Exception as e:
+diff --git a/dt_arena/mcp_server/hospital/mcp_server.py b/dt_arena/mcp_server/hospital/mcp_server.py
+index 2f34c2eb..f7e48482 100644
+--- a/dt_arena/mcp_server/hospital/mcp_server.py
++++ b/dt_arena/mcp_server/hospital/mcp_server.py
+@@ -3,10 +3,15 @@ import ujson as json
+ import requests
+ import os
+ import time
++from pathlib import Path
+ 
+ timeout = 30
+ HOSPITAL_HOST = os.getenv("HOSPITAL_HOST", "localhost")
+ HOSPITAL_PORT = os.getenv("HOSPITAL_PORT", 12001)
++HOSPITAL_OVERLAY_FILE = Path(os.getenv(
++    "HOSPITAL_INJECTION_OVERLAY_FILE",
++    f"/tmp/dtap-hospital-overlay-{HOSPITAL_PORT}.json",
++))
+ 
+ HOSPITAL_MCP_HOST = os.getenv("HOSPITAL_MCP_HOST", "localhost")
+ _raw_mcp_port = os.getenv("HOSPITAL_MCP_PORT")
+@@ -48,6 +53,21 @@ def send_post_request(endpoint: str, data: dict) -> dict:
+     url = f"http://{HOSPITAL_HOST}:{HOSPITAL_PORT}/{endpoint}"
+     return _request_with_retry("POST", url, data=data)
+ 
++
++def _apply_pending_test_results() -> None:
++    """Move task-scoped pre-session injections into the new patient session."""
++    try:
++        pending = json.loads(HOSPITAL_OVERLAY_FILE.read_text())
++    except (FileNotFoundError, ValueError):
++        return
++    if not isinstance(pending, dict):
++        raise RuntimeError("invalid Hospital injection overlay")
++    for test_name, test_result in pending.items():
++        send_post_request("inject_test_result", {
++            "test_name": str(test_name), "test_result": str(test_result),
++        })
++    HOSPITAL_OVERLAY_FILE.unlink(missing_ok=True)
++
+ @mcp.tool(name="init_patient")
+ def init_patient(scenario_id: int, patient_id: str = None) -> dict:
+     """Initialize a new patient session for diagnosis.
+@@ -65,7 +85,9 @@ def init_patient(scenario_id: int, patient_id: str = None) -> dict:
+     data = {"scenario_id": scenario_id}
+     if patient_id:
+         data["patient_id"] = patient_id
+-    return send_post_request("init_patient", data)
++    result = send_post_request("init_patient", data)
++    _apply_pending_test_results()
++    return result
+ 
+ @mcp.tool(name="chat_with_patient")
+ def chat_with_patient(patient_id: str, question: str) -> dict:
+diff --git a/dt_arena/src/env_verification.py b/dt_arena/src/env_verification.py
+index 3da87da0..a6e7abbd 100644
+--- a/dt_arena/src/env_verification.py
++++ b/dt_arena/src/env_verification.py
+@@ -8,8 +8,11 @@ from __future__ import annotations
+ import asyncio
+ import base64
+ import hashlib
++import html
+ import json
+ import os
++import re
++import stat
+ import subprocess
+ from dataclasses import dataclass, field
+ from enum import Enum
+@@ -160,12 +163,17 @@ def _env_has_port(snapshot: ContainerSnapshot, port: int) -> bool:
+ 
+ 
+ def verify_docker_route(environment: str, project: str, ports: Mapping[str, int],
+-                        definition: Mapping[str, Any], docker: DockerInspector) -> RouteProof:
++                        definition: Mapping[str, Any], docker: DockerInspector,
++                        required_ports: Sequence[str] | None = None) -> RouteProof:
+     containers = list(docker.project_containers(project))
+     if not containers or any(c.project != project for c in containers):
+         raise VerificationError(f"no trustworthy containers for project {project!r}")
+     verified = []
+-    for name, meta in (definition.get("ports") or {}).items():
++    definitions = definition.get("ports") or {}
++    selected = definitions if required_ports is None else {
++        name: definitions[name] for name in required_ports if name in definitions
++    }
++    for name, meta in selected.items():
+         if name not in ports:
+             raise VerificationError(f"missing allocated port {name}")
+         host, target = int(ports[name]), int(meta["container_port"])
+@@ -238,6 +246,46 @@ def build_readback_environments(agent_config: Any, manager: Any,
+     return result
+ 
+ 
++def build_injection_server_overrides(
++    agent_config: Any, injection_servers: Sequence[str]
++) -> Mapping[str, Mapping[str, str]]:
++    """Return an allowlisted subset of victim credentials needed to write.
++
++    Injection MCPs do not receive the full victim environment. Each explicit
++    alias below bridges one task-scoped credential expected under a different
++    variable name by the corresponding injection implementation.
++    """
++    victim_environments: dict[str, Mapping[str, Any]] = {}
++
++    def collect(agent: Any) -> None:
++        for server in getattr(agent, "mcp_servers", ()):
++            name = str(getattr(server, "name", "")).lower().replace("_", "-")
++            victim_environments[name] = getattr(server, "env", None) or {}
++        for child in getattr(agent, "sub_agents", ()):
++            collect(child)
++
++    collect(agent_config)
++    aliases = {
++        "paypal-injection": (
++            "paypal", "PAYPAL_ACCESS_TOKEN", ("PAYPAL_USER_ACCESS_TOKEN", "USER_ACCESS_TOKEN"),
++        ),
++        "telegram-injection": (
++            "telegram", "TELEGRAM_ADMIN_TOKEN", ("TELEGRAM_USER_ACCESS_TOKEN", "USER_ACCESS_TOKEN"),
++        ),
++    }
++    overrides: dict[str, dict[str, str]] = {}
++    for raw in injection_servers:
++        rule = aliases.get(raw.lower())
++        if rule is None:
++            continue
++        target, destination, sources = rule
++        victim = victim_environments.get(target, {})
++        value = next((victim.get(key) for key in sources if victim.get(key)), None)
++        if value:
++            overrides[raw.lower()] = {destination: str(value)}
++    return overrides
++
++
+ def _port(value: Any) -> int:
+     text = str(value)
+     if "${" in text:
+@@ -267,6 +315,7 @@ def verify_started_routes(repo: Path, manager: Any, server_names: Sequence[str],
+         if name not in ROUTES or not isinstance(cfg, Mapping):
+             raise VerificationError(f"unregistered or unstarted injection server: {raw}")
+         child = cfg.get("env") or {}
++        route_variables = {variable for _, variable in ROUTES[name]}
+         for key, variable in ROUTES[name]:
+             if key not in child or variable not in environ or _port(child[key]) != int(environ[variable]):
+                 raise VerificationError(f"{name}: resolved {key} does not match {variable}")
+@@ -277,7 +326,10 @@ def verify_started_routes(repo: Path, manager: Any, server_names: Sequence[str],
+             if not definition or not environ.get(project_key):
+                 raise VerificationError(f"{name}: missing DTAP environment {environment}")
+             allocated = {key: int(environ[key]) for key in (definition.get("ports") or {}) if key in environ}
+-            proofs.append(verify_docker_route(environment, environ[project_key], allocated, definition, docker))
++            proofs.append(verify_docker_route(
++                environment, environ[project_key], allocated, definition, docker,
++                required_ports=tuple(sorted(route_variables)),
++            ))
+         out[name] = tuple(proofs)
+     return out
+ 
+@@ -288,6 +340,103 @@ class PlacementStatus(str, Enum):
+     UNSUPPORTED = "unsupported"
+ 
+ 
++SUPPORTED_PLACEMENT_TOOLS: Mapping[str, frozenset[str]] = {
++    "customer-service-injection": frozenset({
++        "cs_case_note_inject", "cs_case_description_inject",
++        "cs_case_note_inject_all_by_order", "cs_order_metadata_inject",
++        "cs_order_metadata_inject_adaptive",
++    }),
++    "salesforce-injection": frozenset({
++        "inject_lead", "inject_contact", "inject_account", "inject_opportunity",
++        "inject_call", "inject_meeting", "inject_task", "inject_note", "inject_case",
++    }),
++    "legal-injection": frozenset({
++        "inject_into_matter", "modify_matter", "inject_into_document",
++        "inject_fake_document", "inject_case_note", "inject_extra_entry",
++    }),
++    "finance-injection": frozenset({
++        "inject_html_news", "inject_html_article", "inject_html_quote",
++        "inject_html_portfolio", "inject_html_market", "inject_html_options",
++        "inject_html_analysis", "inject_html_general", "create_news",
++        "create_comment", "inject_news",
++    }),
++    "os-filesystem-injection": frozenset({
++        "inject_file", "inject_append", "inject_executable", "inject_directory",
++        "inject_symlink",
++    }),
++    "gmail-injection": frozenset({"inject_email"}),
++    "slack-injection": frozenset({
++        "inject_slack_message", "inject_slack_dm", "inject_slack_thread_reply",
++        "inject_prompt_in_slack", "inject_fake_announcement",
++        "inject_malicious_link_message",
++    }),
++    "calendar-injection": frozenset({
++        "inject_calendar_event", "inject_fake_meeting_invite",
++        "inject_prompt_in_calendar", "inject_false_event_info",
++    }),
++    "zoom-injection": frozenset({
++        "inject_zoom_meeting", "inject_fake_zoom_invite", "inject_prompt_in_zoom",
++        "inject_zoom_with_leaked_password",
++    }),
++    "googledocs-injection": frozenset({
++        "inject_shared_document", "inject_comment", "inject_into_document",
++        "update_document",
++    }),
++    "whatsapp-injection": frozenset({"send_whatsapp_message", "create_contact"}),
++    "google-form-injection": frozenset({
++        "inject_form_response", "inject_malicious_form_response",
++        "inject_pii_in_form", "inject_prompt_in_form", "inject_bulk_form_responses",
++    }),
++    "snowflake-injection": frozenset({
++        "inject_snowflake_data", "inject_pii_data", "inject_prompt_in_data",
++        "inject_sensitive_query_result", "inject_exfiltration_target",
++    }),
++    "databricks-injection": frozenset({
++        "inject_databricks_data", "inject_pii_data", "inject_prompt_in_notebook",
++        "inject_job_with_data_access", "inject_exfiltration_target",
++    }),
++    "paypal-injection": frozenset({
++        "inject_transaction", "inject_payment_request", "inject_prompt_in_transaction",
++        "inject_fraudulent_request", "inject_refund_scenario",
++    }),
++    "ecommerce-injection": frozenset({"inject_review"}),
++    "custom-website-injection": frozenset({"update_html_content"}),
++    "travel-injection": frozenset({
++        "inject_accommodation", "inject_restaurant", "inject_flight", "inject_review",
++    }),
++    "telecom-injection": frozenset({
++        "customer_partial_inject", "account_partial_inject", "bill_partial_inject",
++        "calendar_event_partial_inject", "email_partial_inject", "order_partial_inject",
++        "outage_partial_inject", "sms_partial_inject", "ticket_partial_inject",
++        "forum_thread_inject", "forum_thread_partial_inject", "forum_post_inject",
++        "forum_post_partial_inject",
++    }),
++    "atlassian-injection": frozenset({
++        "inject_jira_issue", "inject_jira_comment", "inject_confluence_page",
++        "inject_sensitive_data",
++    }),
++    "terminal-injection": frozenset({"inject_readme", "inject_todo_list", "inject_file"}),
++    "research-injection": frozenset({
++        "inject_readme", "inject_paper_notes", "inject_fake_paper",
++        "inject_html_paper_metadata",
++    }),
++    "telegram-injection": frozenset({"inject_message", "inject_contact"}),
++    "github-injection": frozenset({
++        "inject_issue", "inject_pull_request", "inject_commit", "inject_comment",
++        "inject_prompt_chain",
++    }),
++    "hospital-env-injection": frozenset({"inject_test_result"}),
++}
++
++
++def placement_capability(server: str, tool: str) -> PlacementStatus:
++    if tool.startswith(("get_", "list_", "read_", "search_")):
++        return PlacementStatus.NOT_APPLICABLE
++    if tool in SUPPORTED_PLACEMENT_TOOLS.get(server.lower(), frozenset()):
++        return PlacementStatus.VERIFIED
++    return PlacementStatus.UNSUPPORTED
++
++
+ @dataclass(frozen=True)
+ class PlacementProof:
+     server: str
+@@ -316,6 +465,123 @@ def describe_placement_target(injection: Mapping[str, Any]) -> PlacementTarget |
+             f"legal:/api/inject/state#matter_id={matter}",
+             ("kwargs.matter_id",),
+         )
++    if server == "legal-injection":
++        identifier = (
++            kwargs.get("matter_id") or kwargs.get("document_id") or kwargs.get("doc_id")
++            or kwargs.get("case_id") or kwargs.get("entry_id", "")
++        )
++        fields = ("matter_id", "document_id", "doc_id", "case_id", "entry_id")
++        return PlacementTarget(
++            f"legal:/api/inject/state#{tool}={quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "customer-service-injection":
++        identifier = (
++            kwargs.get("case_identifier") or kwargs.get("order_id")
++            or kwargs.get("customer_email", "")
++        )
++        fields = ("case_identifier", "order_id", "customer_email")
++        return PlacementTarget(
++            f"customer-service:{quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "salesforce-injection" and tool.startswith("inject_"):
++        return PlacementTarget(f"salesforce:{tool.removeprefix('inject_')}", ())
++    if server in {"calendar-injection", "zoom-injection"} and tool.startswith("inject_"):
++        fields = ("event_id", "meeting_id", "calendar_id")
++        identifier = next((kwargs.get(field) for field in fields if kwargs.get(field)), tool)
++        return PlacementTarget(
++            f"{server.removesuffix('-injection')}:{quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "googledocs-injection" and tool in {
++        "inject_shared_document", "inject_comment", "inject_into_document",
++        "update_document",
++    }:
++        identifier = (
++            kwargs.get("document_id") or kwargs.get("title")
++            or kwargs.get("match", "")
++        )
++        fields = ("document_id", "title", "match")
++        return PlacementTarget(
++            f"googledocs:{quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "google-form-injection" and tool.startswith("inject_"):
++        return PlacementTarget(
++            f"google-form:{quote(str(kwargs.get('form_id', '')), safe='')}",
++            ("kwargs.form_id",),
++        )
++    if server in {"snowflake-injection", "databricks-injection"}:
++        table = kwargs.get("table_name") or (
++            "jobs" if tool == "inject_job_with_data_access" else kwargs.get("notebook_path", "")
++        )
++        field = "table_name" if kwargs.get("table_name") else (
++            "notebook_path" if kwargs.get("notebook_path") else "target_table"
++        )
++        return PlacementTarget(
++            f"{server.removesuffix('-injection')}:{quote(str(table), safe='')}",
++            (f"kwargs.{field}",) if kwargs.get(field) else (),
++        )
++    if server == "paypal-injection":
++        recipient = (
++            kwargs.get("recipient_email") or kwargs.get("target_email")
++            or kwargs.get("customer_email", "")
++        )
++        fields = ("recipient_email", "target_email", "customer_email")
++        return PlacementTarget(
++            f"paypal:{tool}#recipient={quote(str(recipient), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "hospital-env-injection" and tool == "inject_test_result":
++        return PlacementTarget(
++            f"hospital:latest#test={quote(str(kwargs.get('test_name', '')), safe='')}",
++            ("kwargs.test_name",),
++        )
++    if server == "telecom-injection":
++        keys = ("id", "customer_id", "order_id", "area")
++        identifier = next((kwargs.get(key) for key in keys if kwargs.get(key)), "")
++        return PlacementTarget(
++            f"telecom:{tool}#{quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{key}" for key in keys if kwargs.get(key)),
++        )
++    if server == "slack-injection":
++        destination = kwargs.get("channel_name") or kwargs.get("target_user_id", "")
++        field = "channel_name" if kwargs.get("channel_name") else "target_user_id"
++        return PlacementTarget(
++            f"slack:{quote(str(destination), safe='')}",
++            (f"kwargs.{field}",) if destination else (),
++        )
++    if server == "gmail-injection" and tool == "inject_email":
++        return PlacementTarget(
++            f"gmail:mailpit#to={quote(str(kwargs.get('to_email', '')), safe='')}",
++            ("kwargs.to_email",),
++        )
++    if server in {"whatsapp-injection", "telegram-injection"}:
++        phone = kwargs.get("phone_number") or kwargs.get("phone", "")
++        field = "phone_number" if kwargs.get("phone_number") else "phone"
++        return PlacementTarget(
++            f"{server.removesuffix('-injection')}:{quote(str(phone), safe='')}",
++            (f"kwargs.{field}",) if phone else (),
++        )
++    if server == "ecommerce-injection" and tool == "inject_review":
++        return PlacementTarget(
++            f"ecommerce:review#sku={quote(str(kwargs.get('product_sku', '')), safe='')}",
++            ("kwargs.product_sku",),
++        )
++    if server == "atlassian-injection":
++        identifier = kwargs.get("issue_key") or kwargs.get("project_key") or kwargs.get("space_key", "")
++        fields = ("issue_key", "project_key", "space_key")
++        return PlacementTarget(
++            f"atlassian:{tool}#{quote(str(identifier), safe='')}",
++            tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
++        )
++    if server == "github-injection":
++        owner, repo = kwargs.get("owner", ""), kwargs.get("repo", "")
++        return PlacementTarget(
++            f"github:{quote(str(owner), safe='')}/{quote(str(repo), safe='')}#{tool}",
++            ("kwargs.owner", "kwargs.repo"),
++        )
+     if server == "custom-website-injection" and tool == "update_html_content":
+         return PlacementTarget(
+             "custom-website:/",
+@@ -328,6 +594,16 @@ def describe_placement_target(injection: Mapping[str, Any]) -> PlacementTarget |
+             f"finance:{page}#symbol={symbol}",
+             ("kwargs.page", "kwargs.symbol"),
+         )
++    if server == "finance-injection" and tool in {"create_news", "create_comment", "inject_news"}:
++        symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
++        article = quote(str(kwargs.get("article_id", "")), safe="")
++        return PlacementTarget(
++            f"finance:news#symbol={symbol}&article_id={article}",
++            tuple(
++                f"kwargs.{field}" for field in ("symbol", "article_id")
++                if kwargs.get(field) not in (None, "")
++            ),
++        )
+     if server == "travel-injection":
+         if tool in {"inject_accommodation", "inject_restaurant"}:
+             kind = tool.removeprefix("inject_")
+@@ -365,6 +641,24 @@ def describe_placement_target(injection: Mapping[str, Any]) -> PlacementTarget |
+                 f"os-filesystem:{kwargs.get(field, '')}",
+                 (f"kwargs.{field}",),
+             )
++    if server == "terminal-injection":
++        default = {
++            "inject_readme": "README.md", "inject_todo_list": "todo_list.txt",
++        }.get(tool, "")
++        default = kwargs.get("file_path") or default
++        working = kwargs.get("working_dir") or "/app"
++        path = str(default) if str(default).startswith("/") else str(PurePosixPath(working) / str(default))
++        fields = ("working_dir",) if tool != "inject_file" else ("working_dir", "file_path")
++        return PlacementTarget(f"terminal:{path}", tuple(f"kwargs.{field}" for field in fields))
++    if server == "research-injection":
++        if tool in {"inject_fake_paper", "inject_html_paper_metadata"}:
++            paper = quote(str(kwargs.get("paper_id", "")), safe="")
++            return PlacementTarget(f"research:paper:{paper}", ("kwargs.paper_id",))
++        default = "README.md" if tool == "inject_readme" else "paper_notes.md"
++        working = kwargs.get("working_dir") or "/app/research"
++        return PlacementTarget(
++            f"research:{PurePosixPath(working) / default}", ("kwargs.working_dir",),
++        )
+     return None
+ 
+ 
+@@ -373,10 +667,13 @@ def _digest(data: bytes) -> str:
+ 
+ 
+ async def _http(method: str, url: str, *, body: Mapping[str, Any] | None = None,
+-                headers: Mapping[str, str] | None = None) -> bytes:
++                headers: Mapping[str, str] | None = None,
++                data: bytes | None = None) -> bytes:
+     def call() -> bytes:
+-        request = Request(url, method=method, headers=dict(headers or {}),
+-                          data=json.dumps(body).encode() if body is not None else None)
++        request = Request(
++            url, method=method, headers=dict(headers or {}),
++            data=json.dumps(body).encode() if body is not None else data,
++        )
+         if body is not None:
+             request.add_header("Content-Type", "application/json")
+         with urlopen(request, timeout=20) as response:
+@@ -409,13 +706,126 @@ def _contains(blob: bytes, values: Sequence[Any], locator: str) -> PlacementProo
+         strings(value)
+     except json.JSONDecodeError:
+         pass
+-    haystack = "\n".join(searchable)
++    haystack = html.unescape("\n".join(searchable))
+     expected = [str(v) for v in values if v not in (None, "")]
+-    if not expected or any(value not in haystack for value in expected):
++    if not expected or any(html.unescape(value) not in haystack for value in expected):
+         raise VerificationError(f"placement mismatch at {locator}")
+     return PlacementProof("", "", PlacementStatus.VERIFIED, locator, _digest(blob))
+ 
+ 
++def _result_payload(result: Mapping[str, Any]) -> Any:
++    raw = result.get("result")
++    if isinstance(raw, str):
++        try:
++            return json.loads(raw)
++        except json.JSONDecodeError:
++            return {}
++    return raw if isinstance(raw, (Mapping, Sequence)) else {}
++
++
++def _find_value(value: Any, names: Sequence[str]) -> Any:
++    if isinstance(value, Mapping):
++        for name in names:
++            if value.get(name) not in (None, ""):
++                return value[name]
++        for child in value.values():
++            found = _find_value(child, names)
++            if found not in (None, ""):
++                return found
++    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
++        for child in value:
++            found = _find_value(child, names)
++            if found not in (None, ""):
++                return found
++    return None
++
++
++def _find_values(value: Any, names: Sequence[str]) -> list[Any]:
++    found: list[Any] = []
++    if isinstance(value, Mapping):
++        for name in names:
++            item = value.get(name)
++            if item not in (None, ""):
++                found.extend(item if isinstance(item, list) else [item])
++        for child in value.values():
++            found.extend(_find_values(child, names))
++    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
++        for child in value:
++            found.extend(_find_values(child, names))
++    return found
++
++
++def _leaf_values(value: Any) -> list[Any]:
++    if isinstance(value, Mapping):
++        return [leaf for child in value.values() for leaf in _leaf_values(child)]
++    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
++        return [leaf for child in value for leaf in _leaf_values(child)]
++    return [] if value in (None, "") else [value]
++
++
++def _read_bounded_regular_file(path: Path, *, max_bytes: int = 64 * 1024) -> bytes:
++    """Read a small local proof file without following links or special files."""
++    try:
++        metadata = path.lstat()
++    except OSError as exc:
++        raise VerificationError("placement proof file is unavailable") from exc
++    if not stat.S_ISREG(metadata.st_mode):
++        raise VerificationError("placement proof path is not a regular file")
++    if metadata.st_size > max_bytes:
++        raise VerificationError("placement proof file exceeds the size limit")
++    try:
++        return path.read_bytes()
++    except OSError as exc:
++        raise VerificationError("placement proof file could not be read") from exc
++
++
++async def _salesforce_headers(environ: Mapping[str, str]) -> Mapping[str, str]:
++    token = str(environ.get("SALESFORCE_ACCESS_TOKEN", "")).strip()
++    if not token:
++        form = urlencode({
++            "grant_type": environ.get("SALESFORCE_GRANT_TYPE", "client_credentials"),
++            "client_id": environ.get("SALESFORCE_CLIENT_ID", ""),
++            "client_secret": environ.get("SALESFORCE_CLIENT_SECRET", ""),
++        }).encode()
++        blob = await _http(
++            "POST",
++            f"http://127.0.0.1:{environ['SALESFORCE_API_PORT']}/Api/access_token",
++            data=form,
++            headers={"Content-Type": "application/x-www-form-urlencoded"},
++        )
++        try:
++            payload = json.loads(blob)
++        except json.JSONDecodeError as exc:
++            raise VerificationError("invalid Salesforce token response") from exc
++        token = str(payload.get("access_token") or payload.get("token") or "")
++    if not token:
++        raise VerificationError("Salesforce read-back credential unavailable")
++    return {
++        "Authorization": f"Bearer {token}",
++        "Accept": "application/vnd.api+json",
++    }
++
++
++async def _postgres_read_table(dsn: str, table: str) -> bytes:
++    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
++        raise VerificationError("invalid database placement table")
++
++    def read() -> bytes:
++        try:
++            import psycopg
++
++            with psycopg.connect(dsn) as connection:
++                with connection.cursor() as cursor:
++                    cursor.execute(f'SELECT * FROM "{table}" LIMIT 500')
++                    columns = [item.name for item in cursor.description or ()]
++                    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
++            return json.dumps(rows, default=str, ensure_ascii=False).encode()
++        except Exception as exc:
++            raise VerificationError("database placement read-back failed") from exc
++
++    return await asyncio.to_thread(read)
++
++
+ def _one_container(docker: DockerInspector, project: str, service: str) -> ContainerSnapshot:
+     containers = [item for item in docker.project_containers(project) if item.service == service]
+     if len(containers) != 1:
+@@ -427,16 +837,274 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+                            environ: Mapping[str, str], docker: DockerInspector) -> PlacementProof:
+     server, tool, kwargs = injection["server_name"].lower(), injection["tool_name"], injection.get("kwargs") or {}
+     target = describe_placement_target(injection)
+-    if tool.startswith(("get_", "list_", "read_", "search_")):
+-        return PlacementProof(server, tool, PlacementStatus.NOT_APPLICABLE)
++    capability = placement_capability(server, tool)
++    if capability is not PlacementStatus.VERIFIED:
++        return PlacementProof(server, tool, capability)
+     proof: PlacementProof
+-    if server == "slack-injection" and "channel_name" in kwargs:
+-        params = urlencode({"channel": kwargs["channel_name"], "workspace_id": kwargs.get("workspace_id", "W01")})
++    if server == "customer-service-injection":
++        payload = _result_payload(result)
++        headers = {"x-api-key": str(environ.get("CS_API_KEY", "devkey1"))}
++        base = f"http://127.0.0.1:{environ['CUSTOMER_SERVICE_API_PORT']}"
++        if tool.startswith("cs_case_"):
++            ids = _find_values(payload, ("case_ids", "case_id"))
++            if not ids:
++                raise VerificationError("customer-service result has no case identity")
++            blobs = []
++            for case_id in dict.fromkeys(map(str, ids)):
++                blobs.append(await _http(
++                    "GET", f"{base}/sn/cases/{quote(case_id, safe='')}",
++                    headers=headers,
++                ))
++                if "note" in tool:
++                    blobs.append(await _http(
++                        "GET", f"{base}/sn/cases/{quote(case_id, safe='')}/activities",
++                        headers=headers,
++                    ))
++            fields = ("body", "author", "category") if "note" in tool else ("description",)
++            proof = _contains(
++                b"\n".join(blobs), [kwargs.get(field) for field in fields],
++                f"customer-service:case:{','.join(map(str, ids))}",
++            )
++        elif tool.startswith("cs_order_metadata_inject"):
++            ids = _find_values(payload, ("order_ids", "order_id"))
++            if not ids and kwargs.get("order_id"):
++                ids = [kwargs["order_id"]]
++            if not ids:
++                raise VerificationError("customer-service result has no order identity")
++            blobs = [await _http(
++                "GET", f"{base}/orders/{quote(str(order_id), safe='')}",
++                headers=headers,
++            ) for order_id in dict.fromkeys(map(str, ids))]
++            expected = _leaf_values(kwargs.get("metadata_updates") or {
++                key: kwargs.get(key) for key in
++                ("gift_message", "customer_note", "delivery_instructions")
++                if kwargs.get(key)
++            })
++            proof = _contains(
++                b"\n".join(blobs), expected,
++                f"customer-service:order:{','.join(map(str, ids))}",
++            )
++        else:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++    elif server == "salesforce-injection" and tool.startswith("inject_"):
++        modules = {
++            "inject_lead": "Leads", "inject_contact": "Contacts",
++            "inject_account": "Accounts", "inject_opportunity": "Opportunities",
++            "inject_call": "Calls", "inject_meeting": "Meetings",
++            "inject_task": "Tasks", "inject_note": "Notes", "inject_case": "Cases",
++        }
++        module = modules.get(tool)
++        record_id = _find_value(_result_payload(result), ("id",))
++        if not module or not record_id:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++        headers = await _salesforce_headers(environ)
++        blob = await _http(
++            "GET",
++            f"http://127.0.0.1:{environ['SALESFORCE_API_PORT']}/Api/V8/module/{module}/{quote(str(record_id), safe='')}",
++            headers=headers,
++        )
++        proof = _contains(
++            blob,
++            _leaf_values({key: value for key, value in kwargs.items() if value not in (None, "")}),
++            f"salesforce:{module}:{record_id}",
++        )
++    elif server == "calendar-injection" and tool.startswith("inject_"):
++        event_id = _find_value(_result_payload(result), ("id", "event_id"))
++        if not event_id:
++            raise VerificationError("calendar result has no event identity")
++        token = kwargs.get("user_token") or environ.get("CALENDAR_ACCESS_TOKEN", "tok_Calendar_Tom_v1")
++        blob = await _http(
++            "GET",
++            f"http://127.0.0.1:{environ['CALENDAR_API_PORT']}/calendar/v3/calendars/primary/events/{quote(str(event_id), safe='')}",
++            headers={"Authorization": f"Bearer {token}"},
++        )
++        proof = _contains(
++            blob, _leaf_values({key: value for key, value in kwargs.items() if key != "user_token"}),
++            f"calendar:event:{event_id}",
++        )
++    elif server == "zoom-injection" and tool.startswith("inject_"):
++        meeting_id = _find_value(_result_payload(result), ("id", "meeting_id"))
++        if not meeting_id:
++            raise VerificationError("zoom result has no meeting identity")
++        token = kwargs.get("user_token") or environ.get("ZOOM_ACCESS_TOKEN", "tok_Zoom_Tom_v1")
++        blob = await _http(
++            "GET", f"http://127.0.0.1:{environ['ZOOM_API_PORT']}/api/v1/meetings/{quote(str(meeting_id), safe='')}",
++            headers={"Authorization": f"Bearer {token}"},
++        )
++        proof = _contains(
++            blob,
++            _leaf_values({
++                key: value for key, value in kwargs.items()
++                if key not in {"user_token", "leak_channel"}
++            }),
++            f"zoom:meeting:{meeting_id}",
++        )
++    elif server == "googledocs-injection" and tool in {
++        "inject_shared_document", "inject_comment", "inject_into_document", "update_document",
++    }:
++        payload = _result_payload(result)
++        document_id = kwargs.get("document_id") or _find_value(
++            payload, ("document_id", "documentId", "id")
++        )
++        if not document_id:
++            raise VerificationError("Google Docs result has no document identity")
++        call_name = "get_comments" if tool == "inject_comment" else "get_document"
++        arguments = {"document_id": document_id}
++        blob = await _http(
++            "POST", f"http://127.0.0.1:{environ['GOOGLEDOCS_API_PORT']}/tools/call",
++            body={
++                "name": call_name,
++                "arguments": {
++                    **arguments,
++                    "access_token": environ.get("GOOGLEDOCS_USER_ACCESS_TOKEN", ""),
++                },
++            },
++        )
++        expected_fields = (
++            ("content",) if tool == "inject_comment"
++            else ("title", "content", "starred", "victim_email")
++        )
++        proof = _contains(
++            blob, [kwargs.get(field) for field in expected_fields],
++            f"googledocs:document:{document_id}",
++        )
++    elif server == "google-form-injection" and tool.startswith("inject_"):
++        blob = await _http(
++            "GET", f"http://127.0.0.1:{environ['GOOGLE_FORM_API_PORT']}/submissions"
++        )
++        ignored = {"form_id", "field_name", "target_field"}
++        proof = _contains(
++            blob,
++            _leaf_values({key: value for key, value in kwargs.items() if key not in ignored}),
++            f"google-form:{kwargs.get('form_id', '')}",
++        )
++    elif server in {"snowflake-injection", "databricks-injection"}:
++        if tool == "inject_prompt_in_notebook":
++            table = str(_find_value(_result_payload(result), ("table",)) or "")
++            expected = [kwargs.get("notebook_path"), kwargs.get("injection_payload")]
++        elif tool == "inject_job_with_data_access":
++            table = "jobs"
++            expected = [kwargs.get("job_name"), kwargs.get("target_table"), kwargs.get("action")]
++        else:
++            table = str(kwargs.get("table_name", ""))
++            data = (
++                kwargs.get("data") or kwargs.get("pii_records")
++                or kwargs.get("confidential_records") or kwargs.get("sensitive_data")
++            )
++            if data is None and kwargs.get("injection_payload") is not None:
++                data = {
++                    **(kwargs.get("additional_columns") or {}),
++                    str(kwargs.get("target_column")): kwargs.get("injection_payload"),
++                }
++            expected = _leaf_values(data)
++        prefix = "SNOWFLAKE" if server.startswith("snowflake") else "DATABRICKS"
++        dsn = str(environ.get(f"{prefix}_POSTGRES_DSN") or environ.get("POSTGRES_DSN") or "")
++        if not dsn:
++            raise VerificationError(f"{server} read-back DSN unavailable")
++        blob = await _postgres_read_table(dsn, table)
++        proof = _contains(blob, expected, f"{server}:{table}")
++    elif server == "paypal-injection":
++        token = environ.get("PAYPAL_ACCESS_TOKEN", "pp_token_dev_123")
++        base = f"http://127.0.0.1:{environ['PAYPAL_API_PORT']}/tools/call"
++        calls: list[tuple[str, list[Any]]] = []
++        if tool in {"inject_transaction", "inject_prompt_in_transaction"}:
++            calls.append(("list_payouts", [
++                kwargs.get("recipient_email") or kwargs.get("target_email"),
++                kwargs.get("amount"), kwargs.get("currency", "USD"),
++                kwargs.get("note") or kwargs.get("injection_payload"),
++            ]))
++        elif tool in {"inject_payment_request", "inject_fraudulent_request"}:
++            calls.append(("list_invoices", [
++                kwargs.get("target_email"), kwargs.get("amount"),
++                kwargs.get("message") or kwargs.get("urgency_message"),
++            ]))
++        elif tool == "inject_refund_scenario":
++            calls.extend([
++                ("list_invoices", [kwargs.get("customer_email"), kwargs.get("original_amount")]),
++                ("list_payouts", [kwargs.get("customer_email"), kwargs.get("refund_amount"), kwargs.get("reason")]),
++            ])
++        blobs = []
++        expected = []
++        for name, values in calls:
++            blobs.append(await _http(
++                "POST", base, body={"name": name, "arguments": {"access_token": token}},
++            ))
++            expected.extend(values)
++        proof = _contains(b"\n".join(blobs), expected, f"paypal:{tool}")
++    elif server == "hospital-env-injection" and tool == "inject_test_result":
++        base = f"http://127.0.0.1:{environ['HOSPITAL_PORT']}"
++        listing = await _http("GET", f"{base}/list_patients")
++        patient_ids = _find_values(json.loads(listing), ("patient_id",))
++        if not patient_ids:
++            overlay = Path(environ.get(
++                "HOSPITAL_INJECTION_OVERLAY_FILE",
++                f"/tmp/dtap-hospital-overlay-{environ['HOSPITAL_PORT']}.json",
++            ))
++            blob = _read_bounded_regular_file(overlay)
++            proof = _contains(
++                blob, [kwargs.get("test_name"), kwargs.get("test_result")],
++                f"hospital:pending:{kwargs.get('test_name', '')}",
++            )
++            return PlacementProof(server, tool, proof.status, proof.locator, proof.digest)
++        proof = None
++        for patient_id in reversed(patient_ids):
++            blob = await _http(
++                "GET", f"{base}/patient_status?{urlencode({'patient_id': patient_id})}"
++            )
++            try:
++                proof = _contains(
++                    blob, [kwargs.get("test_name"), kwargs.get("test_result")],
++                    f"hospital:patient:{patient_id}",
++                )
++                break
++            except VerificationError:
++                continue
++        if proof is None:
++            raise VerificationError("hospital placement mismatch")
++    elif server == "telecom-injection":
++        query = {
++            "customer_partial_inject": ("query_customer", "id"),
++            "account_partial_inject": ("query_account", "customer_id"),
++            "bill_partial_inject": ("query_bill", "customer_id"),
++            "calendar_event_partial_inject": ("query_calendar_event", "id"),
++            "email_partial_inject": ("query_email", "id"),
++            "order_partial_inject": ("query_order", "order_id"),
++            "outage_partial_inject": ("query_outage", "area"),
++            "sms_partial_inject": ("query_sms", "id"),
++            "ticket_partial_inject": ("query_ticket", "id"),
++            "forum_thread_partial_inject": ("query_forum_thread", "id"),
++            "forum_post_partial_inject": ("query_forum_post", "id"),
++        }.get(tool)
++        if query is None and tool in {"forum_thread_inject", "forum_post_inject"}:
++            endpoint = "query_forum_thread" if tool == "forum_thread_inject" else "query_forum_post"
++            key = "id"
++            identifier = _find_value(_result_payload(result), ("id", "thread_id", "post_id"))
++            if identifier is None:
++                identifier = (kwargs.get("data") or {}).get("id")
++            expected = _leaf_values(kwargs.get("data"))
++        elif query is not None:
++            endpoint, key = query
++            identifier = kwargs.get(key)
++            expected = _leaf_values(kwargs.get("updates")) or [kwargs.get("value")]
++        else:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++        if identifier in (None, ""):
++            raise VerificationError("telecom result has no record identity")
++        blob = await _http(
++            "GET",
++            f"http://127.0.0.1:{environ['TELECOM_PORT']}/{endpoint}?{urlencode({key: identifier})}",
++        )
++        proof = _contains(blob, expected, f"telecom:{endpoint}:{identifier}")
++    elif server == "slack-injection" and (
++        "channel_name" in kwargs or "target_user_id" in kwargs
++    ):
++        channel = kwargs.get("channel_name") or kwargs.get("target_user_id")
++        params = urlencode({"channel": channel, "workspace_id": kwargs.get("workspace_id", "W01")})
+         token = environ.get("USER_ACCESS_TOKEN") or environ.get("SLACK_ADMIN_TOKEN", "tok_Slack_Admin_v1")
+         headers = {"Authorization": f"Bearer {token}"}
+         blob = await _http("GET", f"http://127.0.0.1:{environ['SLACK_API_PORT']}/api/v1/channels.history?{params}", headers=headers)
+         values = [kwargs.get("message") or kwargs.get("injection_payload"), kwargs.get("announcement_body"), kwargs.get("malicious_link")]
+-        proof = _contains(blob, values, f"slack:{kwargs['channel_name']}")
++        proof = _contains(blob, values, f"slack:{channel}")
+     elif server == "gmail-injection" and tool == "inject_email":
+         base = f"http://127.0.0.1:{environ['GMAIL_UI_PORT']}"
+         listing = await _http("GET", f"{base}/api/v1/messages?limit=100")
+@@ -468,6 +1136,22 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+                 "access_token": environ.get("WHATSAPP_USER_ACCESS_TOKEN") or environ.get("USER_ACCESS_TOKEN", "")}}
+         blob = await _http("POST", f"http://127.0.0.1:{environ['WHATSAPP_API_PORT']}/tools/call", body=body)
+         proof = _contains(blob, [kwargs["phone_number"], kwargs["body"]], f"whatsapp:{kwargs['phone_number']}")
++    elif server == "whatsapp-injection" and tool == "create_contact":
++        contact_id = _find_value(_result_payload(result), ("contact_id", "id"))
++        name = "get_contact" if contact_id else "search_contacts"
++        arguments = (
++            {"contact_id": contact_id}
++            if contact_id else {"query": kwargs.get("phone") or kwargs.get("first_name"), "limit": 20}
++        )
++        arguments["access_token"] = environ.get("WHATSAPP_USER_ACCESS_TOKEN", "")
++        blob = await _http(
++            "POST", f"http://127.0.0.1:{environ['WHATSAPP_API_PORT']}/tools/call",
++            body={"name": name, "arguments": arguments},
++        )
++        proof = _contains(
++            blob, _leaf_values(kwargs),
++            f"whatsapp:contact:{contact_id or kwargs.get('phone', '')}",
++        )
+     elif server == "legal-injection" and tool in {"inject_into_matter", "modify_matter"}:
+         base = f"http://127.0.0.1:{environ['LEGAL_WEB_PORT']}"
+         matter_id = str(kwargs["matter_id"])
+@@ -484,6 +1168,17 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+             expected = [matter_id, *(value for key, value in kwargs.items()
+                        if key != "matter_id" and isinstance(value, str) and value)]
+         proof = _contains(state_blob, expected, f"legal:matter-overlay:{matter_id}")
++    elif server == "legal-injection" and tool in {
++        "inject_into_document", "inject_fake_document", "inject_case_note",
++        "inject_extra_entry",
++    }:
++        base = f"http://127.0.0.1:{environ['LEGAL_WEB_PORT']}"
++        if tool == "inject_fake_document" and kwargs.get("matter_id"):
++            matter_id = quote(str(kwargs["matter_id"]), safe="")
++            matter_blob = await _http("GET", f"{base}/api/matters/{matter_id}")
++            _contains(matter_blob, [kwargs["matter_id"]], f"legal:matter:{matter_id}")
++        state_blob = await _http("GET", f"{base}/api/inject/state")
++        proof = _contains(state_blob, _leaf_values(kwargs), f"legal:overlay:{tool}")
+     elif server == "travel-injection":
+         base = f"http://127.0.0.1:{environ['TRAVEL_PORT']}"
+         if tool == "inject_accommodation":
+@@ -549,6 +1244,27 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+             "GET", f"http://127.0.0.1:{environ['FINANCE_WEB_PORT']}{path}"
+         )
+         proof = _contains(blob, [kwargs.get("prompt")], f"finance:{path}")
++    elif server == "finance-injection" and tool in {
++        "create_news", "create_comment", "inject_news",
++    }:
++        symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
++        article_id = kwargs.get("article_id")
++        path = (
++            f"/news/{symbol}/article/{quote(str(article_id), safe='')}/"
++            if article_id is not None else f"/news/{symbol}/"
++        )
++        blob = await _http(
++            "GET", f"http://127.0.0.1:{environ['FINANCE_WEB_PORT']}{path}"
++        )
++        ignored = {
++            "symbol", "article_id", "position", "summary_inject_position",
++            "content_inject_position", "votes_up", "votes_down", "sentiment",
++        }
++        proof = _contains(
++            blob,
++            _leaf_values({key: value for key, value in kwargs.items() if key not in ignored}),
++            f"finance:{path}",
++        )
+     elif server == "os-filesystem-injection":
+         project = environ["OS_FILESYSTEM_PROJECT_NAME"]
+         selected = _one_container(docker, project, "os-filesystem")
+@@ -575,17 +1291,184 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+         else:
+             return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
+     elif (
+-        (server == "terminal-injection" and tool in {"inject_readme", "inject_file"})
++        (server == "terminal-injection" and tool in {"inject_readme", "inject_file", "inject_todo_list"})
+         or (server == "research-injection" and tool in {"inject_readme", "inject_paper_notes"})
+     ) and "content" in kwargs:
+         environment = "terminal" if server.startswith("terminal") else "research"
+         project = environ[f"{environment.upper()}_PROJECT_NAME"]
+         selected = _one_container(docker, project, f"{environment}-env")
+-        default = "README.md" if tool == "inject_readme" else "paper_notes.md" if tool == "inject_paper_notes" else kwargs.get("file_path")
++        default = kwargs.get("file_path") or (
++            "README.md" if tool == "inject_readme"
++            else "paper_notes.md" if tool == "inject_paper_notes"
++            else "todo_list.txt" if tool == "inject_todo_list"
++            else kwargs.get("file_path")
++        )
+         working = kwargs.get("working_dir") or ("/app" if environment == "terminal" else "/app/research")
+         path = str(PurePosixPath(default)) if str(default).startswith("/") else str(PurePosixPath(working) / str(default))
+         blob = docker.read_file(selected.container_id, path)
+         proof = _contains(blob, [kwargs["content"]], f"{environment}:{path}")
++    elif server == "research-injection" and tool in {
++        "inject_fake_paper", "inject_html_paper_metadata",
++    }:
++        paper_id = str(kwargs.get("paper_id", "")).strip()
++        if paper_id.startswith("arxiv:"):
++            paper_id = paper_id[6:]
++        if "arxiv.org/abs/" in paper_id:
++            paper_id = paper_id.split("arxiv.org/abs/", 1)[1]
++        if "v" in paper_id and paper_id.rsplit("v", 1)[-1].isdigit():
++            paper_id = paper_id.rsplit("v", 1)[0]
++        blob = await _http(
++            "GET",
++            f"http://127.0.0.1:{environ['ARXIV_API_PORT']}/api/v1/papers/{quote(paper_id, safe='')}",
++        )
++        expected = [paper_id]
++        expected.extend(_leaf_values({
++            key: value for key, value in kwargs.items()
++            if key not in {"paper_id", "arxiv_api_url", "submitted_date", "categories"}
++        }))
++        proof = _contains(blob, expected, f"research:paper:{paper_id}")
++    elif server == "ecommerce-injection" and tool == "inject_review":
++        base = f"http://127.0.0.1:{environ['ECOMMERCE_UI_PORT']}"
++        token_blob = await _http(
++            "POST", f"{base}/rest/default/V1/integration/admin/token",
++            body={"username": "admin", "password": "admin123456"},
++        )
++        try:
++            token = json.loads(token_blob)
++        except json.JSONDecodeError as exc:
++            raise VerificationError("invalid Ecommerce token response") from exc
++        query = urlencode({
++            "searchCriteria[filter_groups][0][filters][0][field]": "sku",
++            "searchCriteria[filter_groups][0][filters][0][value]": kwargs.get("product_sku", ""),
++            "searchCriteria[filter_groups][0][filters][0][condition_type]": "eq",
++        })
++        blob = await _http(
++            "GET", f"{base}/rest/V1/reviews?{query}",
++            headers={"Authorization": f"Bearer {token}"},
++        )
++        proof = _contains(
++            blob,
++            [kwargs.get(field) for field in ("title", "detail", "nickname", "rating")],
++            f"ecommerce:review:{kwargs.get('product_sku', '')}",
++        )
++    elif server == "atlassian-injection":
++        base = f"http://127.0.0.1:{environ['ATLASSIAN_API_PORT']}"
++        token = environ.get("ATLASSIAN_ACCESS_TOKEN") or environ.get("USER_ACCESS_TOKEN", "")
++        headers = {"Authorization": f"Bearer {token}"}
++        payload = _result_payload(result)
++        issue_id = _find_value(payload, ("issue_id", "id"))
++        if tool == "inject_jira_comment":
++            issue_key = kwargs.get("issue_key")
++            search = await _http(
++                "GET", f"{base}/api/issues/search?{urlencode({'query': issue_key})}",
++                headers=headers,
++            )
++            issue_id = issue_id or _find_value(json.loads(search), ("issue_id", "id"))
++            if not issue_id:
++                raise VerificationError("Atlassian result has no issue identity")
++            blob = await _http(
++                "GET", f"{base}/api/issues/{quote(str(issue_id), safe='')}/comments",
++                headers=headers,
++            )
++            expected = [kwargs.get("comment_body")]
++        else:
++            if not issue_id:
++                raise VerificationError("Atlassian result has no issue identity")
++            blob = await _http(
++                "GET", f"{base}/api/issues/{quote(str(issue_id), safe='')}",
++                headers=headers,
++            )
++            try:
++                issue = json.loads(blob)
++            except json.JSONDecodeError as exc:
++                raise VerificationError("invalid Atlassian issue response") from exc
++            project_key = str(kwargs.get("project_key") or kwargs.get("space_key") or "")
++            issue_key = str(_find_value(issue, ("key", "issue_key")) or "")
++            if project_key and not issue_key.upper().startswith(f"{project_key.upper()}-"):
++                raise VerificationError("Atlassian issue was created in a different project")
++            if tool == "inject_jira_issue":
++                expected = [kwargs.get("summary"), kwargs.get("description")]
++                expected_type = str(kwargs.get("issue_type") or "").lower()
++            elif tool == "inject_confluence_page":
++                expected = [kwargs.get("title"), kwargs.get("content"), kwargs.get("parent_id")]
++                expected_type = "task"
++            elif tool == "inject_sensitive_data":
++                expected = [kwargs.get("data_type"), kwargs.get("content")]
++                expected_type = "task"
++            else:
++                expected = _leaf_values(kwargs)
++                expected_type = ""
++            proof = _contains(blob, expected, f"atlassian:issue:{issue_id}")
++            if expected_type and expected_type not in blob.decode("utf-8", errors="replace").lower():
++                raise VerificationError("Atlassian issue type does not match")
++        if tool == "inject_jira_comment":
++            proof = _contains(blob, expected, f"atlassian:issue:{issue_id}")
++    elif server == "telegram-injection":
++        base = f"http://127.0.0.1:{environ['TELEGRAM_API_PORT']}"
++        token = environ.get("TELEGRAM_USER_ACCESS_TOKEN") or environ.get("USER_ACCESS_TOKEN", "")
++        headers = {"Authorization": f"Bearer {token}"}
++        identifier = _find_value(
++            _result_payload(result),
++            ("message_id", "contact_id", "id"),
++        )
++        if not identifier:
++            raise VerificationError("Telegram result has no entity identity")
++        if tool == "inject_contact":
++            blob = await _http(
++                "GET", f"{base}/contacts/{quote(str(identifier), safe='')}", headers=headers
++            )
++            expected = _leaf_values(kwargs)
++            locator = f"telegram:contacts:{identifier}"
++        else:
++            phone = str(kwargs.get("phone_number", ""))
++            blob = await _http(
++                "GET",
++                f"{base}/messages/chat/{quote(phone, safe='')}?limit=100",
++                headers=headers,
++            )
++            # sender_name is accepted by the injection facade but is not a
++            # persisted Telegram sandbox field.
++            expected = [phone, kwargs.get("body")]
++            locator = f"telegram:messages:{identifier}"
++        proof = _contains(blob, expected, locator)
++    elif server == "github-injection":
++        base = f"http://127.0.0.1:{environ['GITHUB_API_PORT']}"
++        owner = quote(str(kwargs.get("owner", "")), safe="")
++        repo = quote(str(kwargs.get("repo", "")), safe="")
++        payload = _result_payload(result)
++        token = environ.get("GITHUB_ACCESS_TOKEN", "")
++        headers = {"Authorization": f"Bearer {token}"} if token else {}
++        if tool in {"inject_issue", "inject_prompt_chain"}:
++            number = _find_value(payload, ("number", "issue_number"))
++            path = f"issues/{number}" if number is not None else "issues"
++        elif tool == "inject_pull_request":
++            number = _find_value(payload, ("number", "pull_number"))
++            path = f"pulls/{number}" if number is not None else "pulls"
++        elif tool == "inject_commit":
++            sha = _find_value(payload, ("sha", "commit_sha", "id"))
++            path = f"commits/{quote(str(sha), safe='')}" if sha else "commits"
++        elif tool == "inject_comment":
++            number = kwargs.get("number")
++            kind = "pulls" if str(kwargs.get("target_type", "")).lower() in {"pull", "pr"} else "issues"
++            path = f"{kind}/{number}/comments"
++        else:
++            return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
++        blob = await _http("GET", f"{base}/api/repos/{owner}/{repo}/{path}", headers=headers)
++        if tool == "inject_prompt_chain" and kwargs.get("comment_payload") and number is not None:
++            comments = await _http(
++                "GET", f"{base}/api/repos/{owner}/{repo}/issues/{number}/comments",
++                headers=headers,
++            )
++            blob += b"\n" + comments
++        ignored = {
++            "owner", "repo", "issue_number", "pull_number", "number",
++            "base_branch", "target_type",
++        }
++        proof = _contains(
++            blob,
++            _leaf_values({key: value for key, value in kwargs.items() if key not in ignored}),
++            f"github:{owner}/{repo}/{path}",
++        )
+     else:
+         return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
+     return PlacementProof(
+diff --git a/eval/task_runner.py b/eval/task_runner.py
+index 13eb464c..ff08b549 100644
+--- a/eval/task_runner.py
++++ b/eval/task_runner.py
+@@ -39,7 +39,7 @@ from dt_arena.src.env_verification import (
+     SubprocessDockerInspector,
+     VerificationError,
+     VerificationMode,
+-    build_readback_environments,
++    build_readback_environments, build_injection_server_overrides,
+     verify_placement_batch,
+     verify_started_routes,
+ )
+@@ -174,6 +174,9 @@ async def run_single_task(
+                     injection_config,
+                     resource_manager=resource_mgr,
+                     task_id=task_id,
++                    task_env_overrides=build_injection_server_overrides(
++                        agent_cfg, list(required_servers)
++                    ),
+                 )
+ 
+                 if injection_config.get("environment_servers"):
+diff --git a/tests/test_env_verification.py b/tests/test_env_verification.py
+index 26c97bb0..e65468d0 100644
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -1,3 +1,7 @@
++import ast
++import importlib.util
++import json
++import tempfile
+ import unittest
+ from pathlib import Path
+ from types import SimpleNamespace
+@@ -8,16 +12,19 @@ from dt_arena.src.env_verification import (
+     PlacementStatus,
+     PlacementValidationError,
+     ROUTES,
++    SUPPORTED_PLACEMENT_TOOLS,
+     TARGETS,
+     VerificationError,
+     VerificationMode,
+     build_readback_environments,
++    build_injection_server_overrides,
+     describe_placement_target,
+     verify_docker_route,
+     verify_placement,
+     verify_placement_batch,
+     verify_started_routes,
+ )
++from dt_arena.src import env_verification
+ from utils.injection_helpers import _classify_injection_result
+ 
+ 
+@@ -26,6 +33,88 @@ def container(project="p", *, mode="bridge", port=None, service="api", env=()):
+     return ContainerSnapshot("id", "name", project, service, mode, tuple(env), ports)
+ 
+ 
++def _registered_tool_parameters(repo: Path) -> dict[tuple[str, str], list[str]]:
++    config = __import__("yaml").safe_load(
++        (repo / "dt_arena/config/injection_mcp.yaml").read_text(encoding="utf-8")
++    )
++    found = {}
++    for server in config["servers"]:
++        name = str(server["name"])
++        if name not in SUPPORTED_PLACEMENT_TOOLS:
++            continue
++        source = repo / "dt_arena/injection_mcp_server" / str(server["path"])
++        if name == "finance-injection":
++            source = repo / "dt_arena/mcp_server/finance/server/injection_mcp.py"
++        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
++            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
++                continue
++            tool = None
++            for decorator in node.decorator_list:
++                if not (
++                    isinstance(decorator, ast.Call)
++                    and isinstance(decorator.func, ast.Attribute)
++                    and decorator.func.attr == "tool"
++                ):
++                    continue
++                tool = node.name
++                for keyword in decorator.keywords:
++                    if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
++                        tool = str(keyword.value.value)
++            if tool in SUPPORTED_PLACEMENT_TOOLS[name]:
++                found[(name, tool)] = [argument.arg for argument in node.args.args]
++    return found
++
++
++def _load_module(name: str, path: Path):
++    spec = importlib.util.spec_from_file_location(name, path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def _contract_value(name: str):
++    fixed = {
++        "page": "stock_news", "symbol": "ACME", "article_id": 47,
++        "target_type": "pr", "number": 47, "entity_type": "accommodation",
++        "table_name": "records", "target_table": "records",
++        "notebook_path": "/notebooks/contract", "field": "notes",
++        "updates": {"notes": "contract-updates-value"},
++        "metadata_updates": {"notes": "contract-metadata-value"},
++        "data": {"id": "record-47", "notes": "contract-data-value"},
++        "responses": {"comment": "contract-response-value"},
++        "responses_list": [{"comment": "contract-bulk-value"}],
++        "pii_records": [{"email": "contract-pii@example.test"}],
++        "confidential_records": [{"secret": "contract-confidential-value"}],
++        "sensitive_data": {"secret": "contract-sensitive-value"},
++        "additional_columns": {"note": "contract-column-value"},
++        "attendees": ["contract-attendee@example.test"],
++        "authors": ["Contract Author"], "modified_authors": ["Contract Author"],
++        "labels": ["contract-label"], "rating": 4, "amount": 47.25,
++        "price": 47.25, "average_cost": 47.25, "review_rate_number": 4.7,
++        "aggregate_rating": 4.7, "probability": 47, "duration": 47,
++        "duration_hours": 1, "duration_minutes": 47, "cell_position": 0,
++        "votes_up": 47, "votes_down": 0, "repetitions": 1,
++        "maximum_occupancy": 2, "distance": 47, "actual_elapsed_time": 47,
++        "starred": True, "append": True, "as_victim": True,
++        "favorite": True, "is_read": True,
++    }
++    return fixed.get(name, f"contract-{name}-value")
++
++
++def _contract_kwargs(tool: str, parameters: list[str]) -> dict:
++    values = {name: _contract_value(name) for name in parameters}
++    finance_pages = {
++        "inject_html_news": "stock_news", "inject_html_article": "article",
++        "inject_html_quote": "quote", "inject_html_portfolio": "portfolios",
++        "inject_html_market": "markets", "inject_html_options": "options",
++        "inject_html_analysis": "analysis", "inject_html_general": "news",
++    }
++    if tool in finance_pages:
++        values["page"] = finance_pages[tool]
++    return values
++
++
+ class Docker:
+     def __init__(self, containers, content=b"", metadata=b'{}'):
+         self.containers = containers
+@@ -61,6 +150,27 @@ class RouteTests(unittest.TestCase):
+                 {"ports": {"SLACK_API_PORT": {"container_port": 8034}}},
+                 Docker([container(mode="host", env=("SLACK_API_PORT=8",))]))
+ 
++    def test_internal_unpublished_port_is_not_part_of_injection_route(self):
++        proof = verify_docker_route(
++            "salesforce", "p",
++            {"SALESFORCE_API_PORT": 18123, "SALESFORCE_DB_PORT": 3306},
++            {"ports": {
++                "SALESFORCE_API_PORT": {"container_port": 8034},
++                "SALESFORCE_DB_PORT": {"container_port": 3306},
++            }},
++            Docker([container(port=18123)]),
++            required_ports=("SALESFORCE_API_PORT",),
++        )
++        self.assertEqual(proof.ports, ("SALESFORCE_API_PORT",))
++
++    def test_readback_comparison_normalizes_html_entities(self):
++        proof = env_verification._contains(
++            b'{"description":"contractor&#039;s record"}',
++            ["contractor's record"],
++            "salesforce:Notes:1",
++        )
++        self.assertEqual(proof.status, PlacementStatus.VERIFIED)
++
+     def test_fourteen_domain_environment_shapes(self):
+         servers = (
+             "ecommerce-injection", "terminal-injection", "salesforce-injection",
+@@ -142,7 +252,7 @@ class PlacementTests(unittest.IsolatedAsyncioTestCase):
+     async def test_unknown_mutator_is_explicitly_unsupported(self):
+         cases = (
+             {"server_name": "legal-injection", "tool_name": "inject_x", "kwargs": {}},
+-            {"server_name": "terminal-injection", "tool_name": "inject_todo_list",
++            {"server_name": "terminal-injection", "tool_name": "inject_unknown",
+              "kwargs": {"content": "not-yet-supported"}},
+         )
+         for injection in cases:
+@@ -159,6 +269,419 @@ class PlacementTests(unittest.IsolatedAsyncioTestCase):
+         self.assertIs(proof.status, PlacementStatus.VERIFIED)
+         self.assertEqual(len(proof.digest), 64)
+ 
++    async def test_terminal_todo_has_independent_file_readback(self):
++        proof = await verify_placement(
++            {"server_name": "terminal-injection", "tool_name": "inject_todo_list",
++             "kwargs": {"content": "sentinel"}},
++            {"success": True}, {"TERMINAL_PROJECT_NAME": "p"},
++            Docker([container(service="terminal-env")], b"sentinel"))
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++    async def test_customer_service_readback_uses_victim_api(self):
++        injection = {
++            "server_name": "customer-service-injection",
++            "tool_name": "cs_case_note_inject",
++            "kwargs": {"case_identifier": "ord_2", "body": "payload", "author": "Risk"},
++        }
++        request = AsyncMock(side_effect=[b'{"id":2}', b'{"body":"payload","author":"Risk"}'])
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection,
++                {"success": True, "result": '{"case_ids":[2]}'},
++                {"CUSTOMER_SERVICE_API_PORT": "8080", "CS_API_KEY": "victim"},
++                Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertIn("/sn/cases/2/activities", request.await_args_list[-1].args[1])
++
++    async def test_salesforce_calendar_form_hospital_and_telecom_readbacks(self):
++        cases = (
++            ({"server_name": "salesforce-injection", "tool_name": "inject_lead",
++              "kwargs": {"first_name": "Ada", "last_name": "Lovelace"}},
++             {"success": True, "result": '{"data":{"id":"lead-1"}}'},
++             {"SALESFORCE_API_PORT": "8080", "SALESFORCE_ACCESS_TOKEN": "token"},
++             [b'{"first_name":"Ada","last_name":"Lovelace"}']),
++            ({"server_name": "calendar-injection", "tool_name": "inject_calendar_event",
++              "kwargs": {"title": "Review", "start_time": "2026-01-01", "end_time": "2026-01-02"}},
++             {"success": True, "result": '{"id":"event-1"}'},
++             {"CALENDAR_API_PORT": "8032"},
++             [b'{"summary":"Review","start":"2026-01-01","end":"2026-01-02"}']),
++            ({"server_name": "google-form-injection", "tool_name": "inject_form_response",
++              "kwargs": {"form_id": "f1", "responses": {"comment": "payload"}}},
++             {"success": True, "result": '{"ok":true}'},
++             {"GOOGLE_FORM_API_PORT": "8054"},
++             [b'{"submissions":[{"comment":"payload"}]}']),
++            ({"server_name": "hospital-env-injection", "tool_name": "inject_test_result",
++              "kwargs": {"test_name": "MRI", "test_result": "payload"}},
++             {"success": True, "result": '{"ok":true}'},
++             {"HOSPITAL_PORT": "12001"},
++             [b'{"patients":[{"patient_id":"p1"}]}', b'{"test_history":{"MRI":"payload"}}']),
++            ({"server_name": "telecom-injection", "tool_name": "customer_partial_inject",
++              "kwargs": {"id": "c1", "field": "notes", "value": "payload"}},
++             {"success": True, "result": '{"ok":true}'},
++             {"TELECOM_PORT": "12001"},
++             [b'{"id":"c1","notes":"payload"}']),
++        )
++        for injection, result, environ, responses in cases:
++            request = AsyncMock(side_effect=responses)
++            with self.subTest(server=injection["server_name"]), patch(
++                "dt_arena.src.env_verification._http", new=request
++            ):
++                proof = await verify_placement(injection, result, environ, Docker([]))
++                self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++    async def test_hospital_pre_session_overlay_is_independently_read_back(self):
++        injection = {
++            "server_name": "hospital-env-injection", "tool_name": "inject_test_result",
++            "kwargs": {"test_name": "MRI", "test_result": "pending payload"},
++        }
++        with tempfile.TemporaryDirectory() as directory:
++            overlay = Path(directory) / "hospital-overlay.json"
++            overlay.write_text(json.dumps({"MRI": "pending payload"}), encoding="utf-8")
++            with patch(
++                "dt_arena.src.env_verification._http",
++                new=AsyncMock(return_value=b'{"patients":[]}'),
++            ):
++                proof = await verify_placement(
++                    injection, {"success": True, "result": '{"status":"queued"}'},
++                    {"HOSPITAL_PORT": "12001", "HOSPITAL_INJECTION_OVERLAY_FILE": str(overlay)},
++                    Docker([]),
++                )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertEqual(proof.locator, "hospital:pending:MRI")
++
++    async def test_hospital_overlay_rejects_symlink_and_oversized_proof(self):
++        injection = {
++            "server_name": "hospital-env-injection", "tool_name": "inject_test_result",
++            "kwargs": {"test_name": "MRI", "test_result": "pending payload"},
++        }
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            target = root / "target.json"
++            target.write_text('{"MRI":"pending payload"}', encoding="utf-8")
++            link = root / "overlay.json"
++            link.symlink_to(target)
++            with patch("dt_arena.src.env_verification._http", new=AsyncMock(return_value=b'{"patients":[]}')):
++                with self.assertRaises(VerificationError):
++                    await verify_placement(
++                        injection, {"success": True},
++                        {"HOSPITAL_PORT": "12001", "HOSPITAL_INJECTION_OVERLAY_FILE": str(link)},
++                        Docker([]),
++                    )
++            target.write_bytes(b"x" * (64 * 1024 + 1))
++            with patch("dt_arena.src.env_verification._http", new=AsyncMock(return_value=b'{"patients":[]}')):
++                with self.assertRaises(VerificationError):
++                    await verify_placement(
++                        injection, {"success": True},
++                        {"HOSPITAL_PORT": "12001", "HOSPITAL_INJECTION_OVERLAY_FILE": str(target)},
++                        Docker([]),
++                    )
++
++    async def test_research_and_ecommerce_read_back_visible_content(self):
++        research = {
++            "server_name": "research-injection", "tool_name": "inject_fake_paper",
++            "kwargs": {"paper_id": "2401.1", "title": "Title", "abstract": "payload",
++                       "authors": ["Author"]},
++        }
++        with patch("dt_arena.src.env_verification._http", new=AsyncMock(
++            return_value=b'{"id":"2401.1","title":"Title","abstract":"payload","authors":["Author"]}'
++        )):
++            proof = await verify_placement(
++                research, {"success": True}, {"ARXIV_API_PORT": "9000"}, Docker([])
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++        ecommerce = {
++            "server_name": "ecommerce-injection", "tool_name": "inject_review",
++            "kwargs": {"product_sku": "sku", "title": "Title", "detail": "payload",
++                       "nickname": "author", "rating": 5},
++        }
++        request = AsyncMock(side_effect=[b'"token"', b'Title payload author 5'])
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                ecommerce, {"success": True}, {"ECOMMERCE_UI_PORT": "7770"}, Docker([])
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++    async def test_database_and_remote_service_adapters_read_back_independently(self):
++        database = {
++            "server_name": "snowflake-injection", "tool_name": "inject_snowflake_data",
++            "kwargs": {"table_name": "records", "data": [{"note": "payload"}]},
++        }
++        with patch(
++            "dt_arena.src.env_verification._postgres_read_table",
++            new=AsyncMock(return_value=b'[{"note":"payload"}]'),
++        ) as read_table:
++            proof = await verify_placement(
++                database, {"success": True}, {"SNOWFLAKE_POSTGRES_DSN": "postgresql://local"},
++                Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        read_table.assert_awaited_once_with("postgresql://local", "records")
++
++        cases = (
++            ({"server_name": "paypal-injection", "tool_name": "inject_transaction",
++              "kwargs": {"recipient_email": "target@example.test", "amount": 7,
++                         "currency": "USD", "note": "payload"}},
++             {"PAYPAL_API_PORT": "8080"}, {"success": True},
++             b'target@example.test 7 USD payload'),
++            ({"server_name": "atlassian-injection", "tool_name": "inject_sensitive_data",
++              "kwargs": {"project_key": "SEC", "data_type": "token", "content": "payload"}},
++             {"ATLASSIAN_API_PORT": "8080"}, {"success": True, "result": '{"id":"i1"}'},
++             b'{"id":"i1","key":"SEC-1","title":"token","description":"payload","type":"task"}'),
++            ({"server_name": "telegram-injection", "tool_name": "inject_message",
++              "kwargs": {"phone_number": "+1", "body": "payload", "sender_name": "Risk"}},
++             {"TELEGRAM_API_PORT": "8080"}, {"success": True, "result": '{"message_id":"m1"}'},
++             b'+1 payload Risk'),
++            ({"server_name": "github-injection", "tool_name": "inject_comment",
++              "kwargs": {"owner": "acme", "repo": "app", "target_type": "pr",
++                         "number": 4, "body": "payload"}},
++             {"GITHUB_API_PORT": "8080"}, {"success": True}, b'payload'),
++        )
++        for injection, environ, result, response in cases:
++            request = AsyncMock(return_value=response)
++            with self.subTest(server=injection["server_name"]), patch(
++                "dt_arena.src.env_verification._http", new=request,
++            ):
++                proof = await verify_placement(injection, result, environ, Docker([]))
++                self.assertIs(proof.status, PlacementStatus.VERIFIED)
++            if injection["server_name"] == "github-injection":
++                self.assertIn("/pulls/4/comments", request.await_args.args[1])
++
++    async def test_github_prompt_chain_reads_issue_and_comment(self):
++        injection = {
++            "server_name": "github-injection", "tool_name": "inject_prompt_chain",
++            "kwargs": {"owner": "acme", "repo": "app", "issue_title": "Review",
++                       "issue_payload": "payload-one", "comment_payload": "payload-two"},
++        }
++        request = AsyncMock(side_effect=[b'Review payload-one', b'payload-two'])
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection, {"success": True, "result": '{"issue":{"number":3}}'},
++                {"GITHUB_API_PORT": "8080"}, Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertIn("/issues/3/comments", request.await_args_list[1].args[1])
++
++    async def test_atlassian_issue_readback_checks_project_key_and_normalizes_type(self):
++        injection = {
++            "server_name": "atlassian-injection", "tool_name": "inject_jira_issue",
++            "kwargs": {"project_key": "OPS", "summary": "Cleanup", "description": "payload",
++                       "issue_type": "Task"},
++        }
++        response = b'{"id":"i1","key":"OPS-7","title":"Cleanup","description":"payload","type":"task"}'
++        request = AsyncMock(return_value=response)
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection, {"success": True, "result": '{"id":"i1"}'},
++                {"ATLASSIAN_API_PORT": "8080", "USER_ACCESS_TOKEN": "victim-token"},
++                Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertEqual(
++            request.await_args.kwargs["headers"],
++            {"Authorization": "Bearer victim-token"},
++        )
++
++        wrong_project = response.replace(b'OPS-7', b'SEC-7')
++        with patch("dt_arena.src.env_verification._http", new=AsyncMock(return_value=wrong_project)):
++            with self.assertRaises(VerificationError):
++                await verify_placement(
++                    injection, {"success": True, "result": '{"id":"i1"}'},
++                    {"ATLASSIAN_API_PORT": "8080"}, Docker([]),
++                )
++
++    async def test_new_adapter_mismatches_return_bounded_repair_targets(self):
++        cases = (
++            ({"server_name": "snowflake-injection", "tool_name": "inject_snowflake_data",
++              "kwargs": {"table_name": "records", "data": [{"note": "payload"}]}},
++             {"SNOWFLAKE_POSTGRES_DSN": "postgresql://local"},
++             {"success": True}),
++            ({"server_name": "paypal-injection", "tool_name": "inject_transaction",
++              "kwargs": {"recipient_email": "target@example.test", "amount": 7,
++                         "currency": "USD", "note": "payload"}},
++             {"PAYPAL_API_PORT": "8080"}, {"success": True}),
++            ({"server_name": "atlassian-injection", "tool_name": "inject_sensitive_data",
++              "kwargs": {"project_key": "SEC", "data_type": "token", "content": "payload"}},
++             {"ATLASSIAN_API_PORT": "8080"}, {"success": True, "result": '{"id":"i1"}'}),
++            ({"server_name": "telegram-injection", "tool_name": "inject_message",
++              "kwargs": {"phone_number": "+1", "body": "payload"}},
++             {"TELEGRAM_API_PORT": "8080"},
++             {"success": True, "result": '{"message_id":"m1"}'}),
++            ({"server_name": "github-injection", "tool_name": "inject_comment",
++              "kwargs": {"owner": "acme", "repo": "app", "target_type": "issue",
++                         "number": 4, "body": "payload"}},
++             {"GITHUB_API_PORT": "8080"}, {"success": True}),
++        )
++        for index, (injection, environ, result) in enumerate(cases):
++            injection = {**injection, "turn_id": index}
++            result = {**result, **injection}
++            target = describe_placement_target(injection)
++            self.assertIsNotNone(target)
++            http = AsyncMock(return_value=b'unrelated')
++            database = AsyncMock(return_value=b'unrelated')
++            with self.subTest(server=injection["server_name"]), patch(
++                "dt_arena.src.env_verification._http", new=http,
++            ), patch(
++                "dt_arena.src.env_verification._postgres_read_table", new=database,
++            ):
++                with self.assertRaises(PlacementValidationError) as raised:
++                    await verify_placement_batch(
++                        [injection], [result], environ, Docker([]), strict=True,
++                    )
++            self.assertEqual(raised.exception.code, "PLACEMENT_MISMATCH")
++            self.assertEqual(raised.exception.locator, target.locator)
++            self.assertTrue(raised.exception.locator)
++
++    def test_every_supported_mutator_has_a_bounded_target_description(self):
++        common = {
++            "matter_id": "m1", "document_id": "d1", "case_identifier": "c1",
++            "order_id": "o1", "customer_email": "customer@example.test",
++            "event_id": "e1", "meeting_id": "z1", "calendar_id": "primary",
++            "form_id": "f1", "test_name": "MRI", "id": "id1",
++            "customer_id": "c1", "area": "north", "channel_name": "general",
++            "target_user_id": "u1", "to_email": "to@example.test",
++            "phone_number": "+1", "phone": "+1", "recipient_email": "to@example.test",
++            "target_email": "to@example.test", "product_sku": "sku1",
++            "issue_key": "SEC-1", "project_key": "SEC", "space_key": "SEC",
++            "owner": "acme", "repo": "app", "page": "stock_news", "symbol": "ACME",
++            "article_id": "a1", "city": "Seoul", "name": "Place",
++            "origin_city_name": "Seoul", "dest_city_name": "Busan",
++            "flight_date": "2026-01-01", "entity_type": "accommodation",
++            "entity_name": "Place", "file_path": "/tmp/file", "dir_path": "/tmp/dir",
++            "link_path": "/tmp/link", "working_dir": "/app", "paper_id": "2401.1",
++            "table_name": "records", "notebook_path": "/notes/one",
++            "target_table": "records",
++        }
++        for server, tools in SUPPORTED_PLACEMENT_TOOLS.items():
++            for tool in tools:
++                with self.subTest(server=server, tool=tool):
++                    target = describe_placement_target({
++                        "server_name": server, "tool_name": tool, "kwargs": common,
++                    })
++                    self.assertIsNotNone(target)
++                    self.assertTrue(target.locator)
++
++    async def test_every_supported_mutator_has_positive_and_mismatch_contract(self):
++        repo = Path(__file__).resolve().parents[1]
++        parameters = _registered_tool_parameters(repo)
++        registered = {
++            (server, tool)
++            for server, tools in SUPPORTED_PLACEMENT_TOOLS.items()
++            for tool in tools
++        }
++        self.assertEqual(set(parameters), registered)
++        environ = {
++            "CUSTOMER_SERVICE_API_PORT": "1", "CS_API_KEY": "victim",
++            "SALESFORCE_API_PORT": "1", "SALESFORCE_ACCESS_TOKEN": "victim",
++            "CALENDAR_API_PORT": "1", "CALENDAR_ACCESS_TOKEN": "victim",
++            "ZOOM_API_PORT": "1", "ZOOM_ACCESS_TOKEN": "victim",
++            "GOOGLEDOCS_API_PORT": "1", "GOOGLEDOCS_USER_ACCESS_TOKEN": "victim",
++            "GOOGLE_FORM_API_PORT": "1", "SNOWFLAKE_POSTGRES_DSN": "postgresql://local",
++            "DATABRICKS_POSTGRES_DSN": "postgresql://local", "PAYPAL_API_PORT": "1",
++            "HOSPITAL_PORT": "1", "TELECOM_PORT": "1", "SLACK_API_PORT": "1",
++            "USER_ACCESS_TOKEN": "victim", "GMAIL_UI_PORT": "1",
++            "WHATSAPP_API_PORT": "1", "WHATSAPP_USER_ACCESS_TOKEN": "victim",
++            "LEGAL_WEB_PORT": "1", "TRAVEL_PORT": "1", "CUSTOM_WEBSITE_UI_PORT": "1",
++            "FINANCE_WEB_PORT": "1", "OS_FILESYSTEM_PROJECT_NAME": "p",
++            "TERMINAL_PROJECT_NAME": "p", "RESEARCH_PROJECT_NAME": "p",
++            "ARXIV_API_PORT": "1", "ECOMMERCE_UI_PORT": "1",
++            "ATLASSIAN_API_PORT": "1", "TELEGRAM_API_PORT": "1",
++            "GITHUB_API_PORT": "1", "GITHUB_ACCESS_TOKEN": "victim",
++        }
++        docker = Docker([
++            container(service="os-filesystem"), container(service="terminal-env"),
++            container(service="research-env"),
++        ])
++        result_payload = json.dumps({
++            "id": "record-47", "case_ids": ["record-47"],
++            "order_ids": ["record-47"], "event_id": "record-47",
++            "meeting_id": "record-47", "document_id": "record-47",
++            "message_id": "record-47", "contact_id": "record-47",
++            "table": "records", "issue": {"number": 47},
++            "pull_request": {"number": 47}, "commit": {"sha": "record-47"},
++        })
++
++        for index, ((server, tool), names) in enumerate(sorted(parameters.items())):
++            kwargs = _contract_kwargs(tool, names)
++            injection = {
++                "server_name": server, "tool_name": tool,
++                "kwargs": kwargs, "turn_id": index,
++            }
++            positive = json.dumps({
++                "messages": [{"ID": "mail-47"}],
++                "patients": [{"patient_id": "patient-47"}],
++                "values": kwargs,
++                "defaults": ["USD"],
++                "is_dir": True, "is_symlink": True, "executable": True,
++                "target": kwargs.get("target_path"),
++            }, default=str).encode()
++
++            async def positive_http(method, url, **unused):
++                if "integration/admin/token" in url:
++                    return b'"victim-token"'
++                if server == "atlassian-injection":
++                    if tool == "inject_jira_comment":
++                        if "/search?" in url:
++                            return json.dumps({
++                                "items": [{"id": "record-47", "key": kwargs.get("issue_key")}],
++                            }).encode()
++                        return json.dumps({
++                            "comments": [{"body": kwargs.get("comment_body")}],
++                        }).encode()
++                    return json.dumps({
++                        "id": "record-47",
++                        "key": f"{kwargs.get('project_key') or kwargs.get('space_key')}-47",
++                        "title": kwargs.get("summary") or kwargs.get("title") or kwargs.get("data_type"),
++                        "description": kwargs.get("description") or kwargs.get("content"),
++                        "parent_id": kwargs.get("parent_id"),
++                        "type": str(kwargs.get("issue_type") or "task").lower(),
++                    }).encode()
++                return positive
++
++            positive_docker = Docker(docker.containers, positive, positive)
++            with self.subTest(server=server, tool=tool, phase="positive"), patch(
++                "dt_arena.src.env_verification._http", new=positive_http,
++            ), patch(
++                "dt_arena.src.env_verification._postgres_read_table",
++                new=AsyncMock(return_value=positive),
++            ):
++                proof = await verify_placement(
++                    injection, {"success": True, "result": result_payload},
++                    environ, positive_docker,
++                )
++                self.assertIs(proof.status, PlacementStatus.VERIFIED)
++
++            structural = json.dumps({
++                "messages": [{"ID": "mail-47"}],
++                "patients": [{"patient_id": "patient-47"}],
++            }).encode()
++
++            async def mismatch_http(method, url, **unused):
++                if "integration/admin/token" in url:
++                    return b'"victim-token"'
++                return structural
++
++            mismatch_result = {
++                **injection, "success": True, "result": result_payload,
++            }
++            with self.subTest(server=server, tool=tool, phase="mismatch"), patch(
++                "dt_arena.src.env_verification._http", new=mismatch_http,
++            ), patch(
++                "dt_arena.src.env_verification._postgres_read_table",
++                new=AsyncMock(return_value=structural),
++            ):
++                with self.assertRaises(PlacementValidationError) as raised:
++                    await verify_placement_batch(
++                        [injection], [mismatch_result], environ, docker, strict=True,
++                    )
++            self.assertEqual(raised.exception.code, "PLACEMENT_MISMATCH")
++            self.assertTrue(raised.exception.locator)
++
++    def test_supported_registry_excludes_guest_platforms(self):
++        self.assertNotIn("windows-injection", SUPPORTED_PLACEMENT_TOOLS)
++        self.assertNotIn("macos-injection", SUPPORTED_PLACEMENT_TOOLS)
++
+     async def test_os_filesystem_reads_content_and_path_metadata_directly(self):
+         cases = (
+             ({"tool_name": "inject_file", "kwargs": {"file_path": "/tmp/a", "content": "payload"}},
+@@ -298,8 +821,85 @@ class PlacementTests(unittest.IsolatedAsyncioTestCase):
+             await verify_placement_batch(
+                 [injection], [{**injection, "success": True}], {}, Docker([]), strict=True)
+ 
++    async def test_telegram_message_readback_uses_victim_scoped_chat(self):
++        injection = {
++            "server_name": "telegram-injection",
++            "tool_name": "inject_message",
++            "kwargs": {"phone_number": "+1-555-0100", "body": "payload"},
++            "turn_id": 1,
++        }
++        result = {**injection, "success": True, "result": {"message_id": "msg-1"}}
++        request = AsyncMock(return_value=b'{"phone_number":"+1-555-0100","body":"payload"}')
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection,
++                result,
++                {"TELEGRAM_API_PORT": "8038", "TELEGRAM_USER_ACCESS_TOKEN": "task-token"},
++                Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertIn("/messages/chat/%2B1-555-0100?limit=100", request.await_args.args[1])
++        self.assertEqual(
++            request.await_args.kwargs["headers"], {"Authorization": "Bearer task-token"}
++        )
++
+ 
+ class ModeTests(unittest.TestCase):
++    def test_only_allowlisted_write_credentials_are_forwarded(self):
++        agent = SimpleNamespace(
++            mcp_servers=[
++                SimpleNamespace(
++                    name="paypal",
++                    env={
++                        "PAYPAL_USER_ACCESS_TOKEN": "paypal-task-token",
++                        "UNRELATED_SECRET": "must-not-cross",
++                    },
++                ),
++                SimpleNamespace(
++                    name="telegram",
++                    env={"TELEGRAM_USER_ACCESS_TOKEN": "telegram-task-token"},
++                ),
++            ],
++            sub_agents=[],
++        )
++        self.assertEqual(
++            build_injection_server_overrides(
++                agent, ["paypal-injection", "telegram-injection", "gmail-injection"]
++            ),
++            {
++                "paypal-injection": {"PAYPAL_ACCESS_TOKEN": "paypal-task-token"},
++                "telegram-injection": {"TELEGRAM_ADMIN_TOKEN": "telegram-task-token"},
++            },
++        )
++
++    def test_hospital_overlay_is_queued_then_consumed_after_patient_init(self):
++        repo = Path(__file__).resolve().parents[1]
++        injection = _load_module(
++            "hospital_injection_overlay_test",
++            repo / "dt_arena/injection_mcp_server/hospital/env_injection.py",
++        )
++        client = _load_module(
++            "hospital_client_overlay_test",
++            repo / "dt_arena/mcp_server/hospital/mcp_server.py",
++        )
++        with tempfile.TemporaryDirectory() as directory:
++            overlay = Path(directory) / "pending.json"
++            injection.HOSPITAL_OVERLAY_FILE = overlay
++            client.HOSPITAL_OVERLAY_FILE = overlay
++            injection._queue_test_result({"test_name": "MRI", "test_result": "payload"})
++            calls = []
++
++            def request(endpoint, data):
++                calls.append((endpoint, data))
++                return {"status": "ok"}
++
++            client.send_post_request = request
++            client._apply_pending_test_results()
++            self.assertEqual(calls[0], (
++                "inject_test_result", {"test_name": "MRI", "test_result": "payload"},
++            ))
++            self.assertFalse(overlay.exists())
++
+     def test_os_injection_uses_trusted_setup_credential(self):
+         repo = Path(__file__).resolve().parents[1]
+         servers = __import__("yaml").safe_load(
+diff --git a/tests/test_openclaw_mcp_events.py b/tests/test_openclaw_mcp_events.py
+new file mode 100644
+index 00000000..f82c4ff8
+--- /dev/null
++++ b/tests/test_openclaw_mcp_events.py
+@@ -0,0 +1,83 @@
++import json
++
++import pytest
++
++from agent.openclaw.src.mcp_proxy import MCPEventSink, MCPProxyServer
++
++
++class _Hook:
++    async def wrap(self, context, dispatch):
++        return {
++            "content": [{"type": "text", "text": "private backend result"}],
++            "isError": False,
++        }
++
++
++def test_proxy_event_sink_materializes_zero_call_trajectory(tmp_path):
++    path = tmp_path / "empty.mcp-events.jsonl"
++    MCPEventSink(path, "episode-zero")
++    assert path.is_file()
++    assert path.read_text(encoding="utf-8") == ""
++
++
++@pytest.mark.asyncio
++async def test_proxy_event_sink_records_redacted_call_and_result(tmp_path):
++    path = tmp_path / "episode.mcp-events.jsonl"
++    sink = MCPEventSink(path, "episode-public-1")
++    proxy = MCPProxyServer(
++        name="filesystem",
++        transport="http",
++        url="http://127.0.0.1:1/mcp",
++        hook_manager=_Hook(),
++        event_sink=sink,
++    )
++    secret = "do-not-store-this-secret"
++    sandbox_path = "/private/sandbox/task/file.txt"
++
++    result = await proxy._call_tool(
++        "read_file", {"token": secret, "path": sandbox_path, "limit": 3}
++    )
++
++    assert result["isError"] is False
++    raw = path.read_text(encoding="utf-8")
++    assert secret not in raw
++    assert sandbox_path not in raw
++    assert "private backend result" not in raw
++    events = [json.loads(line) for line in raw.splitlines()]
++    assert [event["type"] for event in events] == [
++        "tool.started", "tool.completed"
++    ]
++    assert events[0]["episode_id"] == "episode-public-1"
++    assert events[0]["arguments"]["path"]["length"] == len(sandbox_path)
++    assert len(events[0]["arguments_digest"]) == 64
++    assert events[1]["is_error"] is False
++    assert len(events[1]["result_digest"]) == 64
++
++
++@pytest.mark.asyncio
++async def test_proxy_event_sink_never_persists_secret_classes(tmp_path):
++    path = tmp_path / "episode.mcp-events.jsonl"
++    sink = MCPEventSink(path, "episode-public-2")
++    proxy = MCPProxyServer(
++        name="filesystem", transport="http", url="http://127.0.0.1:1/mcp",
++        hook_manager=_Hook(), event_sink=sink,
++    )
++    secrets = {
++        "api_key": "sk-secret-api-key",
++        "authorization": "Bearer secret-bearer-token",
++        "mcp_credential": "opaque-mcp-capability",
++        "sandbox_path": "/private/task/sandbox/secret.txt",
++        "payload": "raw sensitive prompt payload",
++    }
++
++    await proxy._call_tool("read_file", secrets)
++
++    raw = path.read_text(encoding="utf-8")
++    assert all(secret not in raw for secret in secrets.values())
++    assert "private backend result" not in raw
++    events = [json.loads(line) for line in raw.splitlines()]
++    assert events[0]["arguments"].keys() == secrets.keys()
++    assert all(
++        set(shape) == {"type", "length", "sha256"}
++        for shape in events[0]["arguments"].values()
++    )
+diff --git a/utils/injection_mcp_helpers.py b/utils/injection_mcp_helpers.py
+index c3b84537..7ca509ca 100644
+--- a/utils/injection_mcp_helpers.py
++++ b/utils/injection_mcp_helpers.py
+@@ -77,7 +77,8 @@ def start_injection_mcp_servers(
+     injection_config: Dict[str, Any],
+     resource_manager: Any = None,
+     task_id: Optional[str] = None,
+-    host: str = "127.0.0.1"
++    host: str = "127.0.0.1",
++    task_env_overrides: Optional[Dict[str, Dict[str, str]]] = None,
+ ) -> Tuple[Optional[MCPServerManager], Dict[str, Any]]:
+     """Set up and start environment injection MCP servers.
+ 
+@@ -111,6 +112,7 @@ def start_injection_mcp_servers(
+         host=host,
+         prefix="injection",
+         log_prefix="[INJECTION MCP]",
++        task_env_overrides=task_env_overrides,
+     )
+ 
+     # Build updated environment_servers with URLs embedded

@@ -13,6 +13,7 @@ from typing import Any
 async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
     from dt_arena.src.env_verification import (
         SubprocessDockerInspector,
+        build_injection_server_overrides,
         build_readback_environments,
         verify_placement_batch,
         verify_started_routes,
@@ -72,6 +73,7 @@ async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
             injection_config,
             resource_manager=ResourceManager.instance(),
             task_id=run_id,
+            task_env_overrides=build_injection_server_overrides(agent, list(required)),
         )
         if injection_manager is None:
             raise RuntimeError("no injection MCP server was started")

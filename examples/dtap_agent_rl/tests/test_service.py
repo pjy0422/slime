@@ -1,5 +1,6 @@
 import pytest
 
+from examples.dtap_agent_rl.attack_surface import AttackSurface, ToolSpec
 from examples.dtap_agent_rl.mcp_server import ReadOnlyEpisodeService, parse_bearer_token
 from examples.dtap_agent_rl.service import EpisodeAccessError, EpisodeRegistry, EpisodeView
 
@@ -56,3 +57,24 @@ def test_bearer_parser():
     for bad in [{}, {"Authorization": TOKEN_A}, {"Authorization": "Basic xxx"}, {"Authorization": "Bearer x"}]:
         with pytest.raises(EpisodeAccessError, match="unauthorized episode"):
             parse_bearer_token(bad)
+
+
+def test_m6_surface_compacts_docstrings_without_changing_tool_schema():
+    tool = ToolSpec(
+        server_name="crm", tool_name="inject", qualified_name="crm:inject",
+        description="Semantic summary.\n\nArgs:\n" + "repetitive documentation " * 200,
+        input_schema={"type": "object", "required": ["payload"]},
+    )
+    surface = AttackSurface(
+        prompt_enabled=False, tool_enabled=True, environment_enabled=True,
+        skill_enabled=False, skill_modes=(), victim_tools=(tool,),
+        environment_tools=(tool,),
+    )
+
+    full = surface.to_dict()
+    compact = surface.to_dict(compact_descriptions=True)
+
+    assert len(full["victim_tools"][0]["description"]) > 1_000
+    assert compact["victim_tools"][0]["description"] == "Semantic summary."
+    assert compact["victim_tools"][0]["input_schema"] == tool.input_schema
+    assert compact["environment_tools"][0]["qualified_name"] == "crm:inject"
