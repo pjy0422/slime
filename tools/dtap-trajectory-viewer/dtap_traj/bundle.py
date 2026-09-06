@@ -31,6 +31,46 @@ def _read_json(path: Path | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _judge_source(metadata: Any) -> str:
+    if not isinstance(metadata, dict):
+        return "deterministic"
+    if metadata.get("judge_tool") == "llm_judge" or metadata.get("verdict_source") == "llm_judge":
+        return "llm_as_judge"
+    if any(metadata.get(key) is not None for key in ("llm_judge", "llm_model", "gpt_model", "gpt_score", "gpt_rationale")):
+        return "llm_as_judge"
+    return "deterministic"
+
+
+def _judge_component(result: dict[str, Any], name: str) -> dict[str, Any] | None:
+    success_key = f"{name}_success"
+    message_key = f"{name}_message"
+    metadata_key = f"{name}_metadata"
+    if not any(key in result for key in (success_key, message_key, metadata_key)):
+        return None
+    metadata = result.get(metadata_key)
+    return {
+        "name": name,
+        "success": result.get(success_key),
+        "message": result.get(message_key),
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "source": _judge_source(metadata),
+    }
+
+
+def load_judge_results(root: str | Path) -> dict[str, Any]:
+    root = Path(root).expanduser().resolve()
+    result = _read_json(_first(root, ("judge-result.json", "judge_result.json")))
+    verdict = _read_json(_first(root, ("judge-verdict.json", ".m4-verdict.json")))
+    components = [component for name in ("task", "attack") if (component := _judge_component(result, name)) is not None]
+    return {
+        "available": bool(result or verdict),
+        "components": components,
+        "error": result.get("error") if result else None,
+        "reward_firewall": verdict,
+        "raw": result,
+    }
+
+
 def load_episode_bundle(path: str | Path) -> dict[str, Any]:
     root = Path(path).expanduser().resolve()
     victim = find_victim_trace(root)
@@ -51,7 +91,7 @@ def load_episode_bundle(path: str | Path) -> dict[str, Any]:
         victim_mcp_events_path=mcp,
     )
     result = _read_json(_first(root, ("result.json",)))
-    judge = _read_json(_first(root, ("judge-verdict.json", "judge-result.json")))
+    judges = load_judge_results(root)
     evaluation = {
         key: result[key]
         for key in (
@@ -67,8 +107,11 @@ def load_episode_bundle(path: str | Path) -> dict[str, Any]:
         )
         if key in result
     }
-    if judge:
-        evaluation["judge"] = judge
+    if judges["raw"]:
+        evaluation["judge"] = judges["raw"]
+    elif judges["reward_firewall"]:
+        evaluation["judge"] = judges["reward_firewall"]
     if evaluation:
         data["evaluation"] = evaluation
+    data["judges"] = judges
     return data

@@ -25,12 +25,43 @@ The UI opens at `http://127.0.0.1:8765` by default and supports:
 - lazy Policy trajectory view,
 - lazy Victim trajectory view,
 - side-by-side Combined view,
+- DTAP task/attack judge results with deterministic and LLM-as-judge labels,
+- the trusted reward-firewall verdict kept separate from raw judge metadata,
 - original/submitted Config Diff,
 - server-side pagination,
 - live re-indexing with `--watch`.
 
 The explorer has no authentication and is intended for local use. Keep the
 default loopback host when trajectories contain sensitive evaluation data.
+
+## Opening the explorer from a remote machine
+
+Start the explorer on the server using its safe loopback default:
+
+```bash
+dtap-traj serve /path/to/artifacts --watch
+```
+
+When using VS Code Remote SSH, open the **Ports** view, choose **Forward a
+Port**, enter `8765`, and then use the forwarded URL shown by VS Code. A plain
+SSH client can do the same with:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 user@server
+```
+
+Then open <http://127.0.0.1:8765/> on the client machine.
+
+For a temporary clickable HTTPS URL, install `cloudflared` and run:
+
+```bash
+cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765
+```
+
+The generated `trycloudflare.com` URL is public and has no authentication or
+uptime guarantee. Use it only for sanitized/public artifacts, do not share the
+URL, and stop `cloudflared` when finished. For persistent or sensitive use,
+configure a named Cloudflare Tunnel protected by Cloudflare Access.
 
 `dtap-traj index <artifact-root>` can populate or refresh the SQLite index without starting the server. The default database is `<artifact-root>/.dtap-traj.sqlite3` and uses SQLite WAL mode.
 

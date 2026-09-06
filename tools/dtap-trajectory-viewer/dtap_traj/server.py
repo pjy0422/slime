@@ -127,6 +127,12 @@ def create_app(
         data = load_episode_bundle(artifact_dir_or_404(item))
         return {"episode": item, "comparison": data.get("config_comparison")}
 
+    @app.get("/api/episodes/{episode_id}/judges")
+    def judges(episode_id: str):
+        item = episode_or_404(episode_id)
+        data = load_episode_bundle(artifact_dir_or_404(item))
+        return {"episode": item, "judges": data.get("judges")}
+
     if _WEB.is_dir():
         app.mount("/assets", StaticFiles(directory=_WEB), name="assets")
 

@@ -9,6 +9,7 @@ import threading
 import webbrowser
 from pathlib import Path
 
+from .bundle import load_judge_results
 from .parser import build_timeline, find_policy_trace, find_victim_mcp_events, find_victim_trace
 
 
@@ -72,13 +73,10 @@ def _guess_evaluation(root: Path) -> dict:
             ):
                 if key in payload:
                     evaluation[key] = payload[key]
-    judge = _first(directory, ("judge-verdict.json", "judge-result.json"))
-    if judge is not None:
-        try:
-            payload = json.loads(judge.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            payload = {"status": "unreadable"}
-        evaluation["judge"] = payload
+    judges = load_judge_results(directory)
+    if judges["available"]:
+        evaluation["judges"] = judges
+        evaluation["judge"] = judges["raw"] or judges["reward_firewall"]
     return evaluation
 
 
@@ -117,8 +115,14 @@ def _build(src: Path, args: argparse.Namespace) -> dict:
     evaluation = _guess_evaluation(src)
     if evaluation:
         data["evaluation"] = evaluation
-        if "judge" in evaluation:
-            data["timeline"].append({"kind": "judge", "text": json.dumps(evaluation["judge"], ensure_ascii=False, indent=2)})
+        if "judges" in evaluation:
+            data["judges"] = evaluation["judges"]
+            data["timeline"].append(
+                {
+                    "kind": "judge",
+                    "text": json.dumps(evaluation["judges"], ensure_ascii=False, indent=2),
+                }
+            )
     return data
 
 

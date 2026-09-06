@@ -49,3 +49,16 @@ def test_checked_in_live_matrix_is_explorer_ready(tmp_path):
         assert bundle["timeline"], (domain, threat)
         assert bundle["config_comparison"] is not None
         assert "evaluation" in bundle
+        assert bundle["judges"]["available"] is True
+        assert len(bundle["judges"]["components"]) == 2
+        assert bundle["judges"]["reward_firewall"]
+
+    # The live matrix contains both judge modes in a single episode: the task
+    # check is deterministic while the attack check is LLM-as-judge.
+    row = db.list_episodes(domain="customer-service", threat_model="direct")["items"][0]
+    judges = load_episode_bundle(row["artifact_path"])["judges"]
+    assert [item["source"] for item in judges["components"]] == [
+        "deterministic",
+        "llm_as_judge",
+    ]
+    assert judges["components"][1]["metadata"]["llm_model"] == "deepseek-v4-flash"

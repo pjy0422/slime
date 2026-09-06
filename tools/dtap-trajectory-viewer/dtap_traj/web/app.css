@@ -85,5 +85,19 @@ button { color: inherit; }
 .lane-title { position:sticky; top:-14px; z-index:2; background:#0d1118; padding:8px 2px 10px; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.1em; }
 .diff { margin:0; white-space:pre; overflow:auto; font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#0b0f15; border:1px solid var(--line); padding:14px; border-radius:10px; }
 .diff .add { color:#86efac; } .diff .del { color:#fda4af; } .diff .hdr { color:#93c5fd; }
+.judges { display:grid; gap:12px; }
+.judge-card { border:1px solid #222b36; border-radius:10px; background:#111720; padding:14px; }
+.judge-card.firewall { border-color:#3b4758; background:#101721; }
+.judge-card.error { border-color:#7f1d1d; }
+.judge-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.judge-head h3 { margin:0 auto 0 0; font-size:13px; text-transform:capitalize; }
+.judge-source,.judge-outcome { border:1px solid var(--line); border-radius:999px; padding:3px 7px; font-size:9px; font-weight:700; }
+.judge-source.llm_as_judge { color:var(--violet); border-color:#514376; }
+.judge-source.deterministic { color:var(--accent); border-color:#31576b; }
+.judge-source.trusted { color:var(--amber); border-color:#765b24; }
+.judge-message { color:#cbd3df; margin-top:12px; white-space:pre-wrap; line-height:1.5; }
+.judge-card details { margin-top:12px; }
+.judge-card summary { color:var(--muted); cursor:pointer; font-size:10px; }
+.judge-card pre { margin:9px 0 0; padding:11px; max-height:430px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; background:#0b0f15; border:1px solid var(--line); border-radius:8px; color:#bdc6d3; font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .loading { color:var(--muted); padding:20px; }
 @media (max-width: 1100px) { .workspace { grid-template-columns: 190px 330px 1fr; } .statline { display:none; } }

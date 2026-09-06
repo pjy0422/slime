@@ -29,11 +29,12 @@ async function loadDetail(){
   const key = ep.episode_id;
   if (state.cache.has(key)) { renderDetail(); return; }
   $('#viewer').innerHTML = '<div class="loading">Loading trajectory…</div>';
-  const [traj, config] = await Promise.all([
+  const [traj, config, judges] = await Promise.all([
     api(`/api/episodes/${encodeURIComponent(key)}/trajectory?view=combined`),
     api(`/api/episodes/${encodeURIComponent(key)}/config`),
+    api(`/api/episodes/${encodeURIComponent(key)}/judges`),
   ]);
-  state.cache.set(key,{...traj, config: config.comparison}); renderDetail();
+  state.cache.set(key,{...traj, config: config.comparison, judges: judges.judges}); renderDetail();
 }
 function options(items, selected, all='All') {
   return `<option value="">${all}</option>${(items||[]).map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(selected)?'selected':''}>${esc(x.value)} · ${x.count}</option>`).join('')}`;
@@ -74,7 +75,7 @@ function detailShell(){
   return `<main class="detail"><div class="detailhead">
       <div class="detail-title"><h1>${esc(ep.domain||'Episode')}</h1><span class="badge">${esc(ep.threat_model||'unknown')}</span><span class="badge">${esc(ep.status||ep.episode_status||'unknown')}</span></div>
       <div class="metrics"><span class="metric">episode <b>${esc(ep.episode_id)}</b></span><span class="metric">policy <b>${ep.policy_events??'—'}</b></span><span class="metric">victim <b>${ep.victim_events??'—'}</b></span><span class="metric">placements <b>${ep.placements_verified??0}</b></span><span class="metric">attack <b class="${ep.attack_success?'bad':'ok'}">${ep.attack_success?'success':'contained'}</b></span></div>
-    </div><div class="tabs">${['policy','victim','combined','config'].map(t=>`<button data-tab="${t}" class="${state.tab===t?'active':''}">${t==='config'?'Config Diff':t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div><div class="viewer" id="viewer"></div></main>`;
+    </div><div class="tabs">${['policy','victim','combined','judges','config'].map(t=>`<button data-tab="${t}" class="${state.tab===t?'active':''}">${t==='config'?'Config Diff':t==='judges'?'DTAP Judges':t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div><div class="viewer" id="viewer"></div></main>`;
 }
 function eventCard(e,i){
   const kind=e.kind||'event'; const tool=[e.server,e.tool].filter(Boolean).join(':');
@@ -91,6 +92,26 @@ function diffHtml(diff){
     return `<span class="${c}">${line}</span>`;
   }).join('\n')}</pre>`;
 }
+function judgeOutcome(component){
+  if(component.success === null || component.success === undefined) return ['unknown','neutral'];
+  if(component.name === 'attack') return [component.success?'attack succeeded':'attack contained',component.success?'bad':'ok'];
+  return [component.success?'task succeeded':'task failed',component.success?'ok':'bad'];
+}
+function judgeCard(component){
+  const [outcome,outcomeClass]=judgeOutcome(component);
+  const source=component.source==='llm_as_judge'?'LLM-as-judge':'Deterministic';
+  const metadata=component.metadata&&Object.keys(component.metadata).length
+    ? `<details><summary>Judge metadata</summary><pre>${esc(JSON.stringify(component.metadata,null,2))}</pre></details>`:'';
+  return `<article class="judge-card"><div class="judge-head"><h3>${esc(component.name)} judge</h3><span class="judge-source ${esc(component.source)}">${source}</span><span class="judge-outcome ${outcomeClass}">${esc(outcome)}</span></div>${component.message?`<div class="judge-message">${esc(component.message)}</div>`:''}${metadata}</article>`;
+}
+function judgesHtml(judges){
+  if(!judges||!judges.available) return '<div class="empty">No DTAP judge artifacts found.</div>';
+  const cards=(judges.components||[]).map(judgeCard).join('');
+  const firewall=judges.reward_firewall&&Object.keys(judges.reward_firewall).length
+    ? `<article class="judge-card firewall"><div class="judge-head"><h3>Reward firewall verdict</h3><span class="judge-source trusted">Trusted projection</span></div><pre>${esc(JSON.stringify(judges.reward_firewall,null,2))}</pre></article>`:'';
+  const error=judges.error?`<article class="judge-card error"><div class="judge-head"><h3>Judge error</h3></div><div class="judge-message">${esc(judges.error)}</div></article>`:'';
+  return `<div class="judges">${cards}${firewall}${error}</div>`;
+}
 function renderDetail(){
   const viewer=$('#viewer'); if(!viewer||!state.selected) return;
   const data=state.cache.get(state.selected.episode_id);
@@ -98,6 +119,7 @@ function renderDetail(){
   if(state.tab==='policy') viewer.innerHTML=timeline(data.policy);
   else if(state.tab==='victim') viewer.innerHTML=timeline(data.victim);
   else if(state.tab==='combined') viewer.innerHTML=`<div class="lanes"><section><div class="lane-title">Policy trajectory · ${(data.policy||[]).length}</div>${timeline(data.policy)}</section><section><div class="lane-title">Victim trajectory · ${(data.victim||[]).length}</div>${timeline(data.victim)}</section></div>`;
+  else if(state.tab==='judges') viewer.innerHTML=judgesHtml(data.judges);
   else viewer.innerHTML=diffHtml(data.config?.diff);
 }
 function bind(){
