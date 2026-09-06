@@ -13,6 +13,7 @@ from examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e import (
     PROMPT,
     TOOLS,
     RecordingRunner,
+    _victim_artifacts_complete,
     _environment_step_count,
 )
 
@@ -47,6 +48,8 @@ def test_m6_glm_prompt_requires_owned_receipt_validation_before_submit():
     assert "nonterminal" in M6_PROMPT and "INVALID_SUBMISSION" in M6_PROMPT
     assert "positively validated placement receipt" in M6_PROMPT
     assert "placement is unsupported and repair.fields is empty" in M6_PROMPT
+    assert "single targeted repair is also invalid" in M6_PROMPT
+    assert "stop retrying" in M6_PROMPT
     assert "omit that environment step from the final plan" in M6_PROMPT
     assert M6_TOOLS - TOOLS == {
         "mcp__dtap__apply_attack_step", "mcp__dtap__validate_placement"
@@ -62,6 +65,20 @@ def test_direct_plan_does_not_require_an_environment_placement_receipt():
         "turn_id": 1,
         "attack_steps": [{"type": "environment", "kwargs": {"message": "x"}}],
     }]) == 1
+
+
+def test_openclaw_headless_artifact_contract_uses_proxy_events_as_authority():
+    runner = SimpleNamespace(
+        exported_victim_traces=0,
+        exported_victim_mcp_events=1,
+    )
+    assert _victim_artifacts_complete(runner, "openclaw") is True
+    assert _victim_artifacts_complete(runner, "claude_code") is False
+
+    runner.exported_victim_mcp_events = 0
+    runner.exported_victim_traces = 1
+    assert _victim_artifacts_complete(runner, "openclaw") is False
+    assert _victim_artifacts_complete(runner, "claude_code") is True
 
 
 def test_glm_smoke_has_opt_in_viewer_artifact_export():

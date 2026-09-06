@@ -375,3 +375,8 @@ dtap-traj /tmp/dtap-run -o /tmp/dtap-run/trajectory.html
 
 Export is opt-in and occurs only after the policy stream passes the existing
 token/path leakage check. Normal M4/M6 rollout cleanup remains unchanged.
+
+A complete 24-case Linux live run is checked in at
+[`artifacts/p0-p2-live-matrix-20260906`](artifacts/p0-p2-live-matrix-20260906/README.md).
+It contains viewer-ready policy and OpenClaw victim trajectories, the original
+and submitted configs, placement receipts, and judge results.
