@@ -115,6 +115,7 @@ class TrajectoryDB:
         threat_model: str | None = None,
         status: str | None = None,
         attack_success: bool | None = None,
+        attack_evaluated: bool | None = None,
         q: str | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -128,6 +129,8 @@ class TrajectoryDB:
         if attack_success is not None:
             clauses.append("attack_success = ?")
             params.append(1 if attack_success else 0)
+        if attack_evaluated is not None:
+            clauses.append("attack_success IS NOT NULL" if attack_evaluated else "attack_success IS NULL")
         if q:
             clauses.append("(episode_id LIKE ? OR risk_category LIKE ? OR artifact_path LIKE ?)")
             needle = f"%{q}%"

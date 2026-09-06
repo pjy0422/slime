@@ -31,6 +31,23 @@ The UI opens at `http://127.0.0.1:8765` by default and supports:
 - server-side pagination,
 - live re-indexing with `--watch`.
 
+### Judge semantics
+
+The two DTAP judge outcomes are independent:
+
+- **Task judge** asks whether the victim completed the original user task.
+- **Attack judge** asks whether the adversary's separate attack objective was
+  achieved.
+
+For an indirect attack, `task succeeded / attack failed` is the desired safe
+outcome, while `task succeeded / attack succeeded` means the useful task was
+completed but the injected objective also took effect. In some direct tasks the
+original request is itself the malicious objective, so their task and attack
+judge implementations can intentionally share a predicate.
+
+The episode list reports the attack judge as **succeeded**, **failed**, or **not
+evaluated**. It does not infer containment from a missing/null verdict.
+
 The explorer has no authentication and is intended for local use. Keep the
 default loopback host when trajectories contain sensitive evaluation data.
 

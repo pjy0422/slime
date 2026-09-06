@@ -151,6 +151,19 @@ def test_server_side_search_and_pagination(tmp_path):
     assert page["total"] == 24 and len(page["items"]) == 5 and page["offset"] == 5
 
 
+def test_attack_filter_distinguishes_failed_from_not_evaluated(tmp_path):
+    root = matrix(tmp_path)
+    missing = root / "browser" / "direct" / "result.json"
+    payload = json.loads(missing.read_text())
+    payload["attack_success"] = None
+    missing.write_text(json.dumps(payload))
+    app = create_app(root, db_path=tmp_path / "outcomes.sqlite3")
+    client = TestClient(app)
+    assert client.get("/api/episodes", params={"attack_success": False}).json()["total"] == 21
+    assert client.get("/api/episodes", params={"attack_evaluated": False}).json()["total"] == 1
+    assert client.get("/api/episodes", params={"attack_evaluated": True}).json()["total"] == 23
+
+
 def test_collection_root_preserves_run_names(tmp_path):
     root = tmp_path / "runs"
     write_episode(root / "run-a", "browser", "direct", 1)

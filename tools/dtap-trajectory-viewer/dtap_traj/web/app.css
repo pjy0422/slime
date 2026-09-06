@@ -38,6 +38,7 @@ button { color: inherit; }
 .filter label { color:#aab3c0; display:block; font-size:11px; margin-bottom:6px; }
 .filter select { width:100%; border:1px solid var(--line); border-radius:8px; background:#0d1219; color:var(--text); padding:8px 9px; }
 .toggle { display:flex; gap:6px; }
+.attack-toggle { display:grid; grid-template-columns:1fr 1fr; }
 .toggle button { flex:1; border:1px solid var(--line); background:#0d1219; border-radius:8px; padding:7px 4px; font-size:11px; cursor:pointer; }
 .toggle button.active { border-color:#456578; background:#132330; color:var(--accent); }
 .reset { width:100%; border:1px solid var(--line); background:transparent; border-radius:8px; padding:8px; cursor:pointer; color:var(--muted); }
@@ -58,6 +59,7 @@ button { color: inherit; }
 .dot { width:6px; height:6px; border-radius:50%; display:inline-block; margin-right:4px; }
 .ok { color:var(--green); } .ok .dot { background:var(--green); }
 .bad { color:var(--red); } .bad .dot { background:var(--red); }
+.neutral { color:var(--muted); } .neutral .dot { background:var(--muted); }
 .pager { padding:10px; display:flex; gap:8px; border-top:1px solid var(--line); }
 .pager button { flex:1; border:1px solid var(--line); background:#0d1219; border-radius:7px; padding:7px; cursor:pointer; color:var(--muted); }
 .detailhead { padding:18px 20px 14px; border-bottom:1px solid var(--line); }

@@ -1,6 +1,6 @@
 const state = {
   facets: null, episodes: [], total: 0, selected: null, tab: 'policy',
-  page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', q:''},
+  page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', attack_evaluated:'', q:''},
   cache: new Map(), loading: false,
 };
 const $ = (s, root=document) => root.querySelector(s);
@@ -47,20 +47,27 @@ function sidebar(){
     <div class="filter"><label>Domain</label><select data-filter="domain">${options(f.domains,s.domain)}</select></div>
     <div class="filter"><label>Threat model</label><select data-filter="threat_model">${options(f.threat_models,s.threat_model)}</select></div>
     <div class="filter"><label>Status</label><select data-filter="status">${options(f.statuses,s.status)}</select></div>
-    <div class="filter"><label>Attack success</label><div class="toggle">
-      <button data-attack="" class="${s.attack_success===''?'active':''}">All</button>
-      <button data-attack="true" class="${s.attack_success==='true'?'active':''}">Yes</button>
-      <button data-attack="false" class="${s.attack_success==='false'?'active':''}">No</button>
+    <div class="filter"><label>Attack judge result</label><div class="toggle attack-toggle">
+      <button data-attack="" class="${s.attack_success===''&&s.attack_evaluated===''?'active':''}">All</button>
+      <button data-attack="true" class="${s.attack_success==='true'?'active':''}">Succeeded</button>
+      <button data-attack="false" class="${s.attack_success==='false'?'active':''}">Failed</button>
+      <button data-attack="null" class="${s.attack_evaluated==='false'?'active':''}">Not evaluated</button>
     </div></div>
     <button class="reset" id="resetFilters">Reset filters</button>
   </aside>`;
 }
+function attackLabel(value, compact=false){
+  if(value===true) return [compact?'succeeded':'attack succeeded','bad'];
+  if(value===false) return [compact?'failed':'attack failed','ok'];
+  return [compact?'not evaluated':'attack not evaluated','neutral'];
+}
 function episodeRow(ep){
   const active=state.selected?.episode_id===ep.episode_id;
+  const [attackText,attackClass]=attackLabel(ep.attack_success);
   return `<div class="episode ${active?'active':''}" data-episode="${esc(ep.episode_id)}">
     <div class="ep-top"><span class="domain">${esc(ep.domain||'unknown')}</span><span class="threat">${esc(ep.threat_model||'—')}</span></div>
     <div class="ep-id">${esc(ep.episode_id)}</div>
-    <div class="ep-meta"><span class="${ep.attack_success?'bad':'ok'}"><i class="dot"></i>${ep.attack_success?'attack success':'contained'}</span><span>${ep.policy_events??'—'} policy</span><span>${ep.victim_events??'—'} victim</span></div>
+    <div class="ep-meta"><span class="${attackClass}"><i class="dot"></i>${attackText}</span><span>${ep.policy_events??'—'} policy</span><span>${ep.victim_events??'—'} victim</span></div>
   </div>`;
 }
 function listPane(){
@@ -72,9 +79,10 @@ function listPane(){
 function detailShell(){
   const ep=state.selected;
   if(!ep) return `<main class="detail"><div class="empty"><div><strong>No trajectory selected</strong>Adjust filters or index a run.</div></div></main>`;
+  const [attackText,attackClass]=attackLabel(ep.attack_success,true);
   return `<main class="detail"><div class="detailhead">
       <div class="detail-title"><h1>${esc(ep.domain||'Episode')}</h1><span class="badge">${esc(ep.threat_model||'unknown')}</span><span class="badge">${esc(ep.status||ep.episode_status||'unknown')}</span></div>
-      <div class="metrics"><span class="metric">episode <b>${esc(ep.episode_id)}</b></span><span class="metric">policy <b>${ep.policy_events??'—'}</b></span><span class="metric">victim <b>${ep.victim_events??'—'}</b></span><span class="metric">placements <b>${ep.placements_verified??0}</b></span><span class="metric">attack <b class="${ep.attack_success?'bad':'ok'}">${ep.attack_success?'success':'contained'}</b></span></div>
+      <div class="metrics"><span class="metric">episode <b>${esc(ep.episode_id)}</b></span><span class="metric">policy <b>${ep.policy_events??'—'}</b></span><span class="metric">victim <b>${ep.victim_events??'—'}</b></span><span class="metric">placements <b>${ep.placements_verified??0}</b></span><span class="metric">attack judge <b class="${attackClass}">${attackText}</b></span></div>
     </div><div class="tabs">${['policy','victim','combined','judges','config'].map(t=>`<button data-tab="${t}" class="${state.tab===t?'active':''}">${t==='config'?'Config Diff':t==='judges'?'DTAP Judges':t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div><div class="viewer" id="viewer"></div></main>`;
 }
 function eventCard(e,i){
@@ -94,7 +102,7 @@ function diffHtml(diff){
 }
 function judgeOutcome(component){
   if(component.success === null || component.success === undefined) return ['unknown','neutral'];
-  if(component.name === 'attack') return [component.success?'attack succeeded':'attack contained',component.success?'bad':'ok'];
+  if(component.name === 'attack') return attackLabel(component.success);
   return [component.success?'task succeeded':'task failed',component.success?'ok':'bad'];
 }
 function judgeCard(component){
@@ -127,12 +135,17 @@ function bind(){
   $('[data-filter="domain"]')?.addEventListener('change',filterChange);
   $('[data-filter="threat_model"]')?.addEventListener('change',filterChange);
   $('[data-filter="status"]')?.addEventListener('change',filterChange);
-  document.querySelectorAll('[data-attack]').forEach(b=>b.addEventListener('click',()=>{state.filters.attack_success=b.dataset.attack; state.page=0; loadEpisodes();}));
+  document.querySelectorAll('[data-attack]').forEach(b=>b.addEventListener('click',()=>{
+    const value=b.dataset.attack;
+    state.filters.attack_success=value==='null'?'':value;
+    state.filters.attack_evaluated=value==='null'?'false':'';
+    state.page=0; loadEpisodes();
+  }));
   document.querySelectorAll('[data-episode]').forEach(el=>el.addEventListener('click',()=>{state.selected=state.episodes.find(x=>x.episode_id===el.dataset.episode); render(); loadDetail();}));
   document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{state.tab=b.dataset.tab; document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b)); renderDetail();}));
   $('#prev')?.addEventListener('click',()=>{if(state.page>0){state.page--;loadEpisodes();}});
   $('#next')?.addEventListener('click',()=>{if((state.page+1)*state.limit<state.total){state.page++;loadEpisodes();}});
-  $('#resetFilters')?.addEventListener('click',()=>{state.filters={run_name:'',domain:'',threat_model:'',status:'',attack_success:'',q:''};state.page=0;$('#globalSearch').value='';loadEpisodes();});
+  $('#resetFilters')?.addEventListener('click',()=>{state.filters={run_name:'',domain:'',threat_model:'',status:'',attack_success:'',attack_evaluated:'',q:''};state.page=0;$('#globalSearch').value='';loadEpisodes();});
   $('#globalSearch')?.addEventListener('input',debounce(e=>{state.filters.q=e.target.value.trim();state.page=0;loadEpisodes();},250));
 }
 function filterChange(e){state.filters[e.target.dataset.filter]=e.target.value;state.page=0;loadEpisodes();}
