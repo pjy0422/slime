@@ -57,7 +57,7 @@ class DtapAttemptRunner:
 
     A subprocess is deliberately used as the reset primitive: DTAP module globals,
     ResourceManager state, victim context, and Docker-pool lifetime are not shared
-    between macro submissions.
+    between H-counted victim executions.
     """
 
     def __init__(

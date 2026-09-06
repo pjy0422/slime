@@ -71,13 +71,44 @@ def load_judge_results(root: str | Path) -> dict[str, Any]:
     }
 
 
-def load_episode_bundle(path: str | Path) -> dict[str, Any]:
+def _attempt_directories(root: Path) -> list[tuple[int, Path]]:
+    attempts_root = root / "attempts"
+    found: list[tuple[int, Path]] = []
+    if not attempts_root.is_dir():
+        return found
+    for candidate in attempts_root.glob("attempt-*"):
+        if not candidate.is_dir():
+            continue
+        try:
+            index = int(candidate.name.removeprefix("attempt-"))
+        except ValueError:
+            continue
+        found.append((index, candidate))
+    return sorted(found)
+
+
+def load_episode_bundle(
+    path: str | Path, *, attempt_index: int | None = None
+) -> dict[str, Any]:
     root = Path(path).expanduser().resolve()
-    victim = find_victim_trace(root)
+    attempt_directories = _attempt_directories(root)
+    if attempt_index is not None and not any(
+        index == attempt_index for index, _ in attempt_directories
+    ):
+        raise ValueError(f"attempt {attempt_index} not found")
+    selected_index, selected_root = (
+        next(item for item in attempt_directories if item[0] == attempt_index)
+        if attempt_index is not None
+        else (attempt_directories[-1] if attempt_directories else (None, root))
+    )
+    victim = find_victim_trace(selected_root)
     policy = find_policy_trace(root)
-    mcp = find_victim_mcp_events(root)
+    mcp = find_victim_mcp_events(selected_root)
     original = _first(root, ("original-config.yaml", "original_config.yaml"))
-    submitted = _first(root, ("submitted-config.yaml", "submitted_config.yaml", "attack.yaml"))
+    submitted = _first(
+        selected_root,
+        ("submitted-config.yaml", "submitted_config.yaml", "attack.yaml"),
+    )
     prompt = _first(root, ("policy-prompt.txt", "policy_prompt.txt"))
     manifest = _read_json(_first(root, ("episode-manifest.json",)))
     meta = {"episode_id": str(manifest.get("episode_id"))} if manifest.get("episode_id") else {}
@@ -91,7 +122,7 @@ def load_episode_bundle(path: str | Path) -> dict[str, Any]:
         victim_mcp_events_path=mcp,
     )
     result = _read_json(_first(root, ("result.json",)))
-    judges = load_judge_results(root)
+    judges = load_judge_results(selected_root)
     evaluation = {
         key: result[key]
         for key in (
@@ -114,4 +145,14 @@ def load_episode_bundle(path: str | Path) -> dict[str, Any]:
     if evaluation:
         data["evaluation"] = evaluation
     data["judges"] = judges
+    data["attempt_index"] = selected_index
+    data["attempts"] = [
+        {
+            "index": index,
+            "attack_success": _read_json(
+                _first(directory, ("judge-verdict.json", ".m4-verdict.json"))
+            ).get("attack_success"),
+        }
+        for index, directory in attempt_directories
+    ]
     return data

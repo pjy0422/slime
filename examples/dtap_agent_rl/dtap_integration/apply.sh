@@ -24,6 +24,8 @@ patches=(
   "$script_dir/patches/m6-domain-placement.patch"
   "$script_dir/patches/m6-openclaw-deepseek.patch"
   "$script_dir/patches/p0-p2-linux-stabilization.patch"
+  "$script_dir/patches/p3-judge-reliability.patch"
+  "$script_dir/patches/p4-h2-live-stability.patch"
 )
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.
@@ -32,7 +34,8 @@ overlay_digest=$(
     sha256sum "$patch_file" | cut -d' ' -f1
   done | sha256sum | cut -d' ' -f1
 )
-marker=$(git -C "$dtap_root" rev-parse --git-path dtap-agent-rl-overlay.sha256)
+marker=$(git -C "$dtap_root" rev-parse \
+  --path-format=absolute --git-path dtap-agent-rl-overlay.sha256)
 if [[ -f "$marker" ]] && [[ $(<"$marker") == "$overlay_digest" ]]; then
   echo "DTAP agent RL overlay already applied"
   exit 0

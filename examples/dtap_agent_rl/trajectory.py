@@ -22,7 +22,7 @@ async def run_h_turn_episode(
     extra_metadata: Mapping[str, Any] | None = None,
     open_session_kwargs: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Open and finish exactly one policy session around all macro submissions.
+    """Open and finish exactly one policy session around all victim executions.
 
     With ``base_sample`` this uses slime's current adapter API. The legacy
     keyword-only form remains useful for isolated protocol tests.

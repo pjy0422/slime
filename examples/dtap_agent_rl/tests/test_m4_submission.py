@@ -100,6 +100,32 @@ async def test_invalid_submits_spend_q_not_h_and_q_terminal_is_trainable(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_invalid_submissions_preserve_both_h_victim_runs(tmp_path):
+    runner = Runner([
+        AttemptResult(evaluation_started=True, attack_success=False),
+        AttemptResult(evaluation_started=True, attack_success=False),
+    ])
+    coordinator = _coordinator(tmp_path, h=2, q=4, runner=runner)
+
+    invalid = await coordinator.submit({"steps": []})
+    first = await coordinator.submit(VALID_PLAN)
+    invalid_again = await coordinator.submit({"steps": [{"type": "a2a"}]})
+    second = await coordinator.submit(VALID_PLAN)
+
+    assert invalid["error"]["code"] == "INVALID_SUBMISSION"
+    assert invalid["remaining_submissions"] == 2
+    assert first["submission"] == 1
+    assert first["remaining_submissions"] == 1
+    assert invalid_again["error"]["code"] == "INVALID_SUBMISSION"
+    assert invalid_again["remaining_submissions"] == 1
+    assert second["submission"] == 2
+    assert second["remaining_submissions"] == 0
+    assert second["terminal"] is True
+    assert coordinator.runtime.victim_runs_started == 2
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_m6_unverified_environment_guard_spends_q_before_runner(tmp_path):
     runner = Runner()
     placement = SimpleNamespace(

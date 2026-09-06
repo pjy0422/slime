@@ -1,5 +1,6 @@
 const state = {
   facets: null, episodes: [], total: 0, selected: null, tab: 'policy',
+  attempt: null,
   page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', attack_evaluated:'', q:''},
   cache: new Map(), loading: false,
 };
@@ -21,18 +22,23 @@ async function loadEpisodes(){
   state.loading = true; render();
   const data = await api(`/api/episodes?${qsFilters()}`);
   state.episodes = data.items; state.total = data.total; state.loading = false;
-  if (!state.selected || !state.episodes.some(x => x.episode_id === state.selected.episode_id)) state.selected = state.episodes[0] || null;
+  if (!state.selected || !state.episodes.some(x => x.episode_id === state.selected.episode_id)) {
+    state.selected = state.episodes[0] || null;
+    state.attempt = null;
+  }
   render(); if (state.selected) loadDetail();
 }
 async function loadDetail(){
   const ep = state.selected; if (!ep) return;
-  const key = ep.episode_id;
+  const suffix=state.attempt===null?'':`?attempt=${state.attempt}`;
+  const join=state.attempt===null?'?':'&';
+  const key = `${ep.episode_id}@${state.attempt??'latest'}`;
   if (state.cache.has(key)) { renderDetail(); return; }
   $('#viewer').innerHTML = '<div class="loading">Loading trajectory…</div>';
   const [traj, config, judges] = await Promise.all([
-    api(`/api/episodes/${encodeURIComponent(key)}/trajectory?view=combined`),
-    api(`/api/episodes/${encodeURIComponent(key)}/config`),
-    api(`/api/episodes/${encodeURIComponent(key)}/judges`),
+    api(`/api/episodes/${encodeURIComponent(ep.episode_id)}/trajectory${suffix}${join}view=combined`),
+    api(`/api/episodes/${encodeURIComponent(ep.episode_id)}/config${suffix}`),
+    api(`/api/episodes/${encodeURIComponent(ep.episode_id)}/judges${suffix}`),
   ]);
   state.cache.set(key,{...traj, config: config.comparison, judges: judges.judges}); renderDetail();
 }
@@ -120,15 +126,31 @@ function judgesHtml(judges){
   const error=judges.error?`<article class="judge-card error"><div class="judge-head"><h3>Judge error</h3></div><div class="judge-message">${esc(judges.error)}</div></article>`:'';
   return `<div class="judges">${cards}${firewall}${error}</div>`;
 }
+function detailData(){
+  if(!state.selected) return null;
+  return state.cache.get(`${state.selected.episode_id}@${state.attempt??'latest'}`);
+}
+function attemptBar(data){
+  const attempts=data?.attempts||[];
+  if(attempts.length<2) return '';
+  const selected=state.attempt??data.attempt_index;
+  return `<div class="attemptbar"><label>Submission attempt</label><select id="attemptSelect">${attempts.map(item=>{
+    const verdict=item.attack_success===true?' · attack succeeded':item.attack_success===false?' · attack failed':' · not evaluated';
+    return `<option value="${item.index}" ${item.index===selected?'selected':''}>H=${item.index}${verdict}</option>`;
+  }).join('')}</select><span>${attempts.length} accepted submissions retained</span></div>`;
+}
 function renderDetail(){
   const viewer=$('#viewer'); if(!viewer||!state.selected) return;
-  const data=state.cache.get(state.selected.episode_id);
+  const data=detailData();
   if(!data){ viewer.innerHTML='<div class="loading">Loading trajectory…</div>'; return; }
-  if(state.tab==='policy') viewer.innerHTML=timeline(data.policy);
-  else if(state.tab==='victim') viewer.innerHTML=timeline(data.victim);
-  else if(state.tab==='combined') viewer.innerHTML=`<div class="lanes"><section><div class="lane-title">Policy trajectory · ${(data.policy||[]).length}</div>${timeline(data.policy)}</section><section><div class="lane-title">Victim trajectory · ${(data.victim||[]).length}</div>${timeline(data.victim)}</section></div>`;
-  else if(state.tab==='judges') viewer.innerHTML=judgesHtml(data.judges);
-  else viewer.innerHTML=diffHtml(data.config?.diff);
+  let body;
+  if(state.tab==='policy') body=timeline(data.policy);
+  else if(state.tab==='victim') body=timeline(data.victim);
+  else if(state.tab==='combined') body=`<div class="lanes"><section><div class="lane-title">Policy trajectory · ${(data.policy||[]).length}</div>${timeline(data.policy)}</section><section><div class="lane-title">Victim trajectory · ${(data.victim||[]).length}</div>${timeline(data.victim)}</section></div>`;
+  else if(state.tab==='judges') body=judgesHtml(data.judges);
+  else body=diffHtml(data.config?.diff);
+  viewer.innerHTML=attemptBar(data)+body;
+  $('#attemptSelect')?.addEventListener('change',e=>{state.attempt=Number(e.target.value);loadDetail();});
 }
 function bind(){
   $('[data-filter="run_name"]')?.addEventListener('change',filterChange);
@@ -141,7 +163,7 @@ function bind(){
     state.filters.attack_evaluated=value==='null'?'false':'';
     state.page=0; loadEpisodes();
   }));
-  document.querySelectorAll('[data-episode]').forEach(el=>el.addEventListener('click',()=>{state.selected=state.episodes.find(x=>x.episode_id===el.dataset.episode); render(); loadDetail();}));
+  document.querySelectorAll('[data-episode]').forEach(el=>el.addEventListener('click',()=>{state.selected=state.episodes.find(x=>x.episode_id===el.dataset.episode);state.attempt=null;render();loadDetail();}));
   document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>{state.tab=b.dataset.tab; document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b)); renderDetail();}));
   $('#prev')?.addEventListener('click',()=>{if(state.page>0){state.page--;loadEpisodes();}});
   $('#next')?.addEventListener('click',()=>{if((state.page+1)*state.limit<state.total){state.page++;loadEpisodes();}});

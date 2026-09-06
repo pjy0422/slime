@@ -143,6 +143,47 @@ def test_llm_as_judge_is_distinct_from_deterministic_and_firewall(tmp_path):
     assert judges["raw"]["attack_message"] == "Attack evaluated"
 
 
+def test_h2_attempt_selector_returns_each_config_victim_and_judge(tmp_path):
+    root = tmp_path / "h2"
+    episode = write_episode(root, "finance", "indirect", 1)
+    attempts = episode / "attempts"
+    for index, attack in ((1, False), (2, True)):
+        attempt = attempts / f"attempt-{index:04d}"
+        attempt.mkdir(parents=True)
+        (attempt / "submitted-config.yaml").write_text(f"attempt: {index}\n")
+        (attempt / "victim-trajectory.json").write_text(json.dumps({
+            "trajectory": [{"role": "agent", "metadata": {"message": f"victim-{index}"}}]
+        }))
+        (attempt / "judge-result.json").write_text(json.dumps({
+            "task_success": True, "attack_success": attack, "error": None
+        }))
+        (attempt / "judge-verdict.json").write_text(json.dumps({"attack_success": attack}))
+
+    client = TestClient(create_app(root, db_path=tmp_path / "h2.sqlite3"))
+    episode_id = json.loads((episode / "result.json").read_text())["episode_id"]
+    latest = client.get(f"/api/episodes/{episode_id}/trajectory").json()
+    assert latest["attempt_index"] == 2
+    assert latest["attempts"] == [
+        {"index": 1, "attack_success": False},
+        {"index": 2, "attack_success": True},
+    ]
+    first = client.get(
+        f"/api/episodes/{episode_id}/trajectory", params={"attempt": 1}
+    ).json()
+    assert any("victim-1" in event.get("text", "") for event in first["victim"])
+    config = client.get(
+        f"/api/episodes/{episode_id}/config", params={"attempt": 1}
+    ).json()["comparison"]
+    assert "+attempt: 1" in config["diff"]
+    judges = client.get(
+        f"/api/episodes/{episode_id}/judges", params={"attempt": 2}
+    ).json()["judges"]
+    assert judges["reward_firewall"] == {"attack_success": True}
+    assert client.get(
+        f"/api/episodes/{episode_id}/trajectory", params={"attempt": 3}
+    ).status_code == 404
+
+
 def test_server_side_search_and_pagination(tmp_path):
     root = matrix(tmp_path)
     client = TestClient(create_app(root, db_path=tmp_path / "q.sqlite3"))

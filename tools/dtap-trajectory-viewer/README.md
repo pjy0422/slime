@@ -107,7 +107,16 @@ episode/
 ├── original-config.yaml
 ├── submitted-config.yaml
 ├── judge-result.json
-└── judge-verdict.json
+├── judge-verdict.json
+└── attempts/
+    ├── attempt-0001/  # submitted config, victim trajectory, judges
+    └── attempt-0002/
 ```
 
-The explorer does not rewrite or duplicate these files. It indexes metadata and loads the selected bundle through the existing `dtap_traj.parser` implementation.
+For an H-loop, use the submission-attempt selector above the detail view to
+switch the submitted config, victim trajectory, and DTAP judges together. The
+policy tab remains the complete episode policy trajectory. Top-level artifact
+files are treated as latest-attempt compatibility aliases.
+
+The explorer does not rewrite these files. It indexes metadata and loads the
+selected bundle through the existing `dtap_traj.parser` implementation.

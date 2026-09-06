@@ -82,6 +82,19 @@ M7 is complete when a policy rollout uses the M6 MCP surface, receives a DTAP
 victim/judge result, produces a training record, performs an optimizer step,
 and evaluates the resulting checkpoint.
 
+- [ ] Add bounded H>1 adaptive feedback without exposing a general environment
+  oracle. For direct tasks, return a size-limited/redacted victim final response.
+  For indirect tasks, return the ordered victim tool names and statuses, a
+  trusted injection-exposure enum (`not_placed`, `placed_not_retrieved`,
+  `retrieved`, `presented_to_model`, or `unknown`), and the bounded/redacted
+  victim final response. Never expose tool arguments, raw tool results, judge
+  rationale, credentials, or host paths.
+- [ ] Version the feedback schema and distinguish policy-visible feedback from
+  trainer-only diagnostics so experiments can state whether they use an
+  adaptive attacker with victim-output access.
+- [ ] Test that attempt-N feedback can repair attempt N+1 while
+  `INVALID_SUBMISSION` consumes no H and only actual victim executions count
+  toward H.
 - [ ] Connect the M6 runtime to the production slime rollout worker.
 - [ ] Define and version the rollout-record schema: task reference, policy
   prompt/response, MCP trajectory, submitted config digest, placement receipts,

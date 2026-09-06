@@ -1,0 +1,13 @@
+{
+  "attempt_indices": [
+    1
+  ],
+  "evaluation_delegate_completed": true,
+  "judge_artifacts_retained": 2,
+  "plan_generated": true,
+  "schema": "dtap-agent-rl-episode-state",
+  "schema_version": 1,
+  "submissions_retained": 1,
+  "victim_mcp_log_retained": true,
+  "victim_trajectory_retained": true
+}

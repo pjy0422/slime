@@ -24,9 +24,12 @@ def test_victim_provider_aliases_are_consumed_inside_dtap_child():
         assert os.environ["ANTHROPIC_AUTH_TOKEN"] == "shared-provider-key"
         assert os.environ["OPENAI_BASE_URL"] == "https://provider.example/v1"
         assert os.environ["OPENAI_API_KEY"] == "shared-provider-key"
+        assert os.environ["OPENAI_MODEL"] == "deepseek-v4-flash"
         assert os.environ["PATIENT_MODEL"] == "deepseek-v4-flash"
         assert os.environ["MEASUREMENT_MODEL"] == "deepseek-v4-flash"
         assert os.environ["JUDGE_MODEL"] == "deepseek-v4-flash"
+        assert os.environ["DTAP_JUDGE_HTTP_TIMEOUT_SECONDS"] == "180"
+        assert os.environ["DTAP_HOSPITAL_OPENAI_COMPAT"] == "1"
         assert os.environ["OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS"] == "600"
         assert "DTAP_VICTIM_ANTHROPIC_BASE_URL" not in os.environ
         assert "DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN" not in os.environ

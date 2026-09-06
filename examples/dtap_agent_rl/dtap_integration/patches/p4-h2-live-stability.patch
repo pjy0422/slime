@@ -1,0 +1,132 @@
+diff --git a/dt_arena/src/env_verification.py b/dt_arena/src/env_verification.py
+--- a/dt_arena/src/env_verification.py
++++ b/dt_arena/src/env_verification.py
+@@ -1263,6 +1263,15 @@ async def verify_placement(injection: Mapping[str, Any], result: Mapping[str, An
+     }:
+         symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
+         article_id = kwargs.get("article_id")
++        if tool == "create_news" and article_id is None:
++            raw_result = str(result.get("result") or "")
++            generated = re.search(r"Article ID:\s*(\d+)", raw_result)
++            if generated is not None:
++                article_id = generated.group(1)
++                target = PlacementTarget(
++                    f"finance:news#symbol={symbol}&article_id={article_id}",
++                    ("kwargs.symbol",),
++                )
+         path = (
+             f"/news/{symbol}/article/{quote(str(article_id), safe='')}/"
+             if article_id is not None else f"/news/{symbol}/"
+diff --git a/utils/judge_helpers.py b/utils/judge_helpers.py
+--- a/utils/judge_helpers.py
++++ b/utils/judge_helpers.py
+@@ -1,10 +1,44 @@
+ import importlib.util
+ import inspect
++import os
+ import sys
++from contextlib import contextmanager
+ from pathlib import Path
+ from typing import Optional, Dict, Any, List
+ 
+ 
++@contextmanager
++def _judge_http_timeout():
++    """Raise explicit Requests timeouts only while a task judge is running."""
++
++    raw = os.getenv("DTAP_JUDGE_HTTP_TIMEOUT_SECONDS", "").strip()
++    try:
++        minimum = float(raw)
++    except ValueError:
++        minimum = 0.0
++    if minimum <= 0:
++        yield
++        return
++    try:
++        import requests
++    except ImportError:
++        yield
++        return
++    original = requests.sessions.Session.request
++
++    def request(session, method, url, **kwargs):
++        timeout = kwargs.get("timeout")
++        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool):
++            kwargs["timeout"] = max(float(timeout), minimum)
++        return original(session, method, url, **kwargs)
++
++    requests.sessions.Session.request = request
++    try:
++        yield
++    finally:
++        requests.sessions.Session.request = original
++
++
+ def load_judge_module(task_dir: Path):
+     """
+     Dynamically load the judge.py module from a task directory.
+@@ -152,16 +186,17 @@ def run_judge(
+             """Call `method(agent_responses, trajectory=...)` only if the
+             method's signature declares a `trajectory` parameter. Otherwise
+             call without it. Lets new and legacy judges coexist."""
+-            try:
+-                sig = inspect.signature(method)
+-            except (TypeError, ValueError):
++            with _judge_http_timeout():
++                try:
++                    sig = inspect.signature(method)
++                except (TypeError, ValueError):
++                    return method(agent_responses)
++                params = sig.parameters
++                if "trajectory" in params or any(
++                    p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
++                ):
++                    return method(agent_responses, trajectory=trajectory)
+                 return method(agent_responses)
+-            params = sig.parameters
+-            if "trajectory" in params or any(
+-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+-            ):
+-                return method(agent_responses, trajectory=trajectory)
+-            return method(agent_responses)
+ 
+         # Run eval_task check
+         if check_task:
+diff --git a/tests/test_env_verification.py b/tests/test_env_verification.py
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -769,6 +769,34 @@ class PlacementTests(unittest.IsolatedAsyncioTestCase):
+             "GET", "http://127.0.0.1:5000/news/AAPL/"
+         )
+ 
++    async def test_finance_create_news_uses_generated_article_detail_for_readback(self):
++        injection = {
++            "server_name": "finance-injection",
++            "tool_name": "create_news",
++            "kwargs": {
++                "symbol": "AAPL",
++                "title": "Injected headline",
++                "summary": "Injected summary",
++            },
++        }
++        request = AsyncMock(return_value=b"Injected headline Injected summary")
++        with patch("dt_arena.src.env_verification._http", new=request):
++            proof = await verify_placement(
++                injection,
++                {"success": True, "result": "Fake news created\nArticle ID: 47291"},
++                {"FINANCE_WEB_PORT": "5000"},
++                Docker([]),
++            )
++        self.assertIs(proof.status, PlacementStatus.VERIFIED)
++        self.assertEqual(
++            request.await_args.args[1],
++            "http://127.0.0.1:5000/news/AAPL/article/47291/",
++        )
++        self.assertEqual(
++            proof.locator,
++            "finance:news#symbol=AAPL&article_id=47291",
++        )
++
+     async def test_legal_and_travel_use_independent_read_endpoints(self):
+         cases = (
+             ({"server_name": "legal-injection", "tool_name": "inject_into_matter",

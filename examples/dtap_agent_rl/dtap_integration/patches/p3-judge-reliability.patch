@@ -1,0 +1,147 @@
+diff --git a/dt_arena/envs/hospital/docker-compose-hub.yml b/dt_arena/envs/hospital/docker-compose-hub.yml
+--- a/dt_arena/envs/hospital/docker-compose-hub.yml
++++ b/dt_arena/envs/hospital/docker-compose-hub.yml
+@@ -9,10 +9,14 @@ services:
+       - HOSPITAL_PORT=12001
+       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
++      - DTAP_HOSPITAL_OPENAI_COMPAT=${DTAP_HOSPITAL_OPENAI_COMPAT:-0}
+       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+       - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
+       - PATIENT_MODEL=${PATIENT_MODEL:-gpt-5.1-2025-11-13}
+       - MEASUREMENT_MODEL=${MEASUREMENT_MODEL:-gpt-5.1-2025-11-13}
+       - JUDGE_MODEL=${JUDGE_MODEL:-gpt-5.1-2025-11-13}
++    command: ["python", "/app/dtap_hospital_compat.py"]
++    volumes:
++      - ./hospital_compat.py:/app/dtap_hospital_compat.py:ro
+     ports:
+       - "${HOSPITAL_PORT:-12001}:12001"
+diff --git a/dt_arena/envs/hospital/docker-compose.yml b/dt_arena/envs/hospital/docker-compose.yml
+--- a/dt_arena/envs/hospital/docker-compose.yml
++++ b/dt_arena/envs/hospital/docker-compose.yml
+@@ -11,12 +11,15 @@ services:
+       - HOSPITAL_PORT=12001
+       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
++      - DTAP_HOSPITAL_OPENAI_COMPAT=${DTAP_HOSPITAL_OPENAI_COMPAT:-0}
+       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+       - REPLICATE_API_TOKEN=${REPLICATE_API_TOKEN:-}
+       - PATIENT_MODEL=${PATIENT_MODEL:-gpt-5.1-2025-11-13}
+       - MEASUREMENT_MODEL=${MEASUREMENT_MODEL:-gpt-5.1-2025-11-13}
+       - JUDGE_MODEL=${JUDGE_MODEL:-gpt-5.1-2025-11-13}
++    command: ["python", "/app/dtap_hospital_compat.py"]
+     ports:
+       - "${HOSPITAL_PORT:-12001}:12001"
+     volumes:
++      - ./hospital_compat.py:/app/dtap_hospital_compat.py:ro
+       - ./data:/app/data:ro
+diff --git a/dt_arena/envs/hospital/hospital_compat.py b/dt_arena/envs/hospital/hospital_compat.py
+new file mode 100644
+--- /dev/null
++++ b/dt_arena/envs/hospital/hospital_compat.py
+@@ -0,0 +1,64 @@
++"""OpenAI-compatible entrypoint for the published DTAP Hospital image.
++
++The upstream image dispatches providers from a small model-name allowlist.  A
++release run may intentionally use another model through an OpenAI-compatible
++endpoint, so opt in explicitly without changing the image or exposing keys.
++"""
++
++from __future__ import annotations
++
++import json
++import multiprocessing
++import os
++
++from openai import OpenAI
++from waitress import serve
++
++import main as hospital
++
++
++def _query_openai_compatible(
++    model_str,
++    prompt,
++    system_prompt,
++    tries=3,
++    timeout=20.0,
++    max_tokens=200,
++):
++    del tries
++    client = OpenAI(
++        api_key=os.environ["OPENAI_API_KEY"],
++        base_url=os.environ["OPENAI_BASE_URL"],
++        timeout=max(float(timeout), 60.0),
++    )
++    response = client.chat.completions.create(
++        model=str(model_str),
++        messages=[
++            {"role": "system", "content": str(system_prompt)},
++            {"role": "user", "content": str(prompt)},
++        ],
++        max_tokens=max_tokens,
++    )
++    content = response.choices[0].message.content
++    if isinstance(content, str):
++        return content.strip()
++    return json.dumps(content, ensure_ascii=False)
++
++
++if os.getenv("DTAP_HOSPITAL_OPENAI_COMPAT") == "1":
++    if not os.getenv("OPENAI_API_KEY") or not os.getenv("OPENAI_BASE_URL"):
++        raise RuntimeError("Hospital OpenAI-compatible provider is not configured")
++    hospital.query_model = _query_openai_compatible
++
++
++if __name__ == "__main__":
++    cores = multiprocessing.cpu_count()
++    serve(
++        hospital.app,
++        host=os.getenv("HOSPITAL_HOST", "0.0.0.0"),
++        port=int(os.getenv("HOSPITAL_PORT", "12001")),
++        threads=max(4, cores // 2),
++        expose_tracebacks=True,
++        channel_timeout=60,
++        cleanup_interval=10,
++    )
+diff --git a/dt_arena/src/types/judge.py b/dt_arena/src/types/judge.py
+index 25547b7c..aa69d8d4 100644
+--- a/dt_arena/src/types/judge.py
++++ b/dt_arena/src/types/judge.py
+@@ -1,4 +1,5 @@
+ from abc import ABC, abstractmethod
++import os
+ from typing import List, Tuple, Dict, Any, Optional, Union
+ 
+ 
+@@ -6,9 +7,9 @@ class BaseJudge(ABC):
+     """Base class for judges that evaluate agent behavior.
+     """
+ 
+-    def __init__(self, domain: str, judge_model: str = "gpt-5.4"):
++    def __init__(self, domain: str, judge_model: Optional[str] = None):
+         self.domain = domain
+-        self.judge_model = judge_model
++        self.judge_model = judge_model or os.getenv("JUDGE_MODEL", "gpt-5.4")
+         self.trajectory: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+ 
+     def _find_calls(self, env: str, tool: str, **arg_filters: Any) -> List[Dict[str, Any]]:
+diff --git a/dt_arena/utils/research/helpers.py b/dt_arena/utils/research/helpers.py
+--- a/dt_arena/utils/research/helpers.py
++++ b/dt_arena/utils/research/helpers.py
+@@ -144,7 +144,14 @@ def gpt_score_report(report_text: str) -> Dict[str, Any]:
+         "response_format": {"type": "json_object"},
+     }
+ 
++    # OpenAI SDK-compatible configuration commonly includes the /v1 suffix,
++    # while older DTAP examples supplied only the origin. Accept both forms.
++    completions_url = (
++        base_url + "/chat/completions"
++        if base_url.endswith("/v1")
++        else base_url + "/v1/chat/completions"
++    )
+     req = urllib.request.Request(
+-        base_url + "/v1/chat/completions",
++        completions_url,
+         data=json.dumps(body).encode("utf-8"),
+         headers={

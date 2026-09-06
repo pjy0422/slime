@@ -88,6 +88,9 @@ button { color: inherit; }
 .diff { margin:0; white-space:pre; overflow:auto; font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:#0b0f15; border:1px solid var(--line); padding:14px; border-radius:10px; }
 .diff .add { color:#86efac; } .diff .del { color:#fda4af; } .diff .hdr { color:#93c5fd; }
 .judges { display:grid; gap:12px; }
+.attemptbar { display:flex; align-items:center; gap:10px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; background:#101620; color:var(--muted); font-size:10px; }
+.attemptbar label { color:#d7deea; font-weight:700; }
+.attemptbar select { background:#0b1119; color:#d7deea; border:1px solid #303b49; border-radius:6px; padding:5px 8px; }
 .judge-card { border:1px solid #222b36; border-radius:10px; background:#111720; padding:14px; }
 .judge-card.firewall { border-color:#3b4758; background:#101721; }
 .judge-card.error { border-color:#7f1d1d; }

@@ -108,14 +108,23 @@ def create_app(
         return episode_or_404(episode_id)
 
     @app.get("/api/episodes/{episode_id}/trajectory")
-    def trajectory(episode_id: str, view: Literal["policy", "victim", "combined"] = "combined"):
+    def trajectory(
+        episode_id: str,
+        view: Literal["policy", "victim", "combined"] = "combined",
+        attempt: int | None = Query(None, ge=1),
+    ):
         item = episode_or_404(episode_id)
-        data = load_episode_bundle(artifact_dir_or_404(item))
+        try:
+            data = load_episode_bundle(artifact_dir_or_404(item), attempt_index=attempt)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
         payload = {
             "episode": item,
             "evaluation": data.get("evaluation") or {},
             "payloads": data.get("payloads") or [],
             "warnings": data.get("trajectory_warnings") or [],
+            "attempt_index": data.get("attempt_index"),
+            "attempts": data.get("attempts") or [],
         }
         if view in {"policy", "combined"}:
             payload["policy"] = data.get("policy_timeline") or []
@@ -124,15 +133,21 @@ def create_app(
         return payload
 
     @app.get("/api/episodes/{episode_id}/config")
-    def config(episode_id: str):
+    def config(episode_id: str, attempt: int | None = Query(None, ge=1)):
         item = episode_or_404(episode_id)
-        data = load_episode_bundle(artifact_dir_or_404(item))
+        try:
+            data = load_episode_bundle(artifact_dir_or_404(item), attempt_index=attempt)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
         return {"episode": item, "comparison": data.get("config_comparison")}
 
     @app.get("/api/episodes/{episode_id}/judges")
-    def judges(episode_id: str):
+    def judges(episode_id: str, attempt: int | None = Query(None, ge=1)):
         item = episode_or_404(episode_id)
-        data = load_episode_bundle(artifact_dir_or_404(item))
+        try:
+            data = load_episode_bundle(artifact_dir_or_404(item), attempt_index=attempt)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
         return {"episode": item, "judges": data.get("judges")}
 
     if _WEB.is_dir():

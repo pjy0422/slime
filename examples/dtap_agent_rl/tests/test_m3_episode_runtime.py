@@ -28,6 +28,8 @@ def test_only_started_dtap_evaluation_consumes_h():
     assert attempt == 1
     assert state.submissions_used == 1
     assert state.remaining_submissions == 1
+    assert state.victim_runs_started == 1
+    assert state.remaining_victim_runs == 1
 
 
 def test_success_terminates_immediately_without_spending_remaining_budget():
