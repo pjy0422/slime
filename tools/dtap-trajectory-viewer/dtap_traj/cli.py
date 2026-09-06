@@ -1,20 +1,15 @@
-"""Command-line interface for the self-contained DTAP trajectory viewer."""
+"""Command-line interface for DTAP trajectory export and explorer."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import threading
 import webbrowser
 from pathlib import Path
 
-from .parser import (
-    build_timeline,
-    find_policy_trace,
-    find_victim_mcp_events,
-    find_victim_trace,
-)
-from .render import write_html
+from .parser import build_timeline, find_policy_trace, find_victim_mcp_events, find_victim_trace
 
 
 def _first(root: Path, names: tuple[str, ...]) -> Path | None:
@@ -65,9 +60,15 @@ def _guess_evaluation(root: Path) -> dict:
             payload = {}
         if isinstance(payload, dict):
             for key in (
-                "status", "evaluation_completed", "failure_class", "attack_success",
-                "episode_status", "placement_applicable", "placement_covered",
-                "placement_actions", "placements_verified",
+                "status",
+                "evaluation_completed",
+                "failure_class",
+                "attack_success",
+                "episode_status",
+                "placement_applicable",
+                "placement_covered",
+                "placement_actions",
+                "placements_verified",
             ):
                 if key in payload:
                     evaluation[key] = payload[key]
@@ -101,10 +102,7 @@ def _build(src: Path, args: argparse.Namespace) -> dict:
         submitted = submitted or _guess_submitted(src)
         original = original or _guess_original(src)
     policy_prompt = policy_prompt or _guess_policy_prompt(src)
-    victim_mcp_events = (
-        _resolve_optional(args.victim_mcp_events)
-        or (find_victim_mcp_events(src) if src.is_dir() else None)
-    )
+    victim_mcp_events = _resolve_optional(args.victim_mcp_events) or (find_victim_mcp_events(src) if src.is_dir() else None)
     if victim_trace is None and policy_trace is None:
         raise FileNotFoundError(f"no victim or policy trace found under {src}")
     data = build_timeline(
@@ -120,24 +118,61 @@ def _build(src: Path, args: argparse.Namespace) -> dict:
     if evaluation:
         data["evaluation"] = evaluation
         if "judge" in evaluation:
-            data["timeline"].append({
-                "kind": "judge",
-                "text": json.dumps(evaluation["judge"], ensure_ascii=False, indent=2),
-            })
+            data["timeline"].append({"kind": "judge", "text": json.dumps(evaluation["judge"], ensure_ascii=False, indent=2)})
     return data
 
 
+def _explorer_main(argv: list[str]) -> int:
+    command = argv[0]
+    parser = argparse.ArgumentParser(prog=f"dtap-traj {command}")
+    parser.add_argument("path", help="artifact root containing episode bundles")
+    parser.add_argument("--db", help="SQLite index path (default: <path>/.dtap-traj.sqlite3)")
+    if command == "serve":
+        parser.add_argument("--host", default="127.0.0.1")
+        parser.add_argument("--port", type=int, default=8765)
+        parser.add_argument("--watch", action="store_true", help="continuously index completed/updated episode bundles")
+        parser.add_argument("--refresh-seconds", type=float, default=2.0)
+        parser.add_argument("--open", action="store_true", help="open the explorer in a browser")
+    args = parser.parse_args(argv[1:])
+    root = Path(args.path).expanduser().resolve()
+    if not root.exists():
+        parser.error(f"no such path: {root}")
+    db_path = Path(args.db).expanduser().resolve() if args.db else root / ".dtap-traj.sqlite3"
+    from .db import TrajectoryDB
+    from .indexer import index_root
+
+    result = index_root(root, TrajectoryDB(db_path))
+    if command == "index":
+        print(f"✓ indexed {result['scanned']} episodes ({result['updated']} updated) → {db_path}")
+        return 0
+    from .server import create_app
+    import uvicorn
+
+    url = f"http://{args.host}:{args.port}"
+    print(f"✓ DTAP Explorer: {url} ({result['scanned']} episodes indexed)")
+    if args.open:
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    uvicorn.run(
+        create_app(root, db_path=db_path, watch=args.watch, refresh_seconds=args.refresh_seconds),
+        host=args.host,
+        port=args.port,
+        log_level="info",
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] in {"serve", "index"}:
+        return _explorer_main(raw)
+
     parser = argparse.ArgumentParser(
         prog="dtap-traj",
         description="View a DTAP victim trace, policy trace, and config diff together.",
     )
     parser.add_argument("path", help="run directory, victim trace, or policy stream-json")
     parser.add_argument("--victim-trace", help="explicit DTAP OpenClaw JSONL")
-    parser.add_argument(
-        "--victim-mcp-events",
-        help="explicit redacted OpenClaw MCP proxy event JSONL",
-    )
+    parser.add_argument("--victim-mcp-events", help="explicit redacted OpenClaw MCP proxy event JSONL")
     parser.add_argument("--policy-trace", help="explicit Claude policy stream-json JSONL")
     parser.add_argument("--policy-prompt", help="policy instruction text shown as the first event")
     parser.add_argument("--original-yaml", help="original benchmark config.yaml")
@@ -148,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print viewer data as JSON")
     parser.add_argument("--open", action="store_true", help="open generated HTML")
     parser.add_argument("--no-yaml", action="store_true", help="disable YAML auto-discovery")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw)
     src = Path(args.path).expanduser().resolve()
     if not src.exists():
         parser.error(f"no such path: {src}")
@@ -160,13 +195,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0
+    from .render import write_html
+
     output = Path(args.out).expanduser().resolve()
     write_html(data, output, title=args.title)
-    print(
-        f"✓ {len(data['policy_timeline'])} policy events, "
-        f"{len(data['timeline'])} victim events, "
-        f"{len(data['payloads'])} submitted payloads → {output}"
-    )
+    print(f"✓ {len(data['policy_timeline'])} policy events, {len(data['timeline'])} victim events, {len(data['payloads'])} submitted payloads → {output}")
     if args.open:
         webbrowser.open(output.as_uri())
     return 0
