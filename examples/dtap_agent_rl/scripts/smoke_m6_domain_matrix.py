@@ -202,6 +202,7 @@ async def _run_case(
         "--python", args.python, "--policy-model", args.policy_model,
         "--victim-model", args.victim_model,
         "--victim-agent-type", args.victim_agent_type,
+        "--max-submissions", str(args.max_submissions),
         "--policy-max-turns", str(args.policy_max_turns),
         "--victim-max-turns", str(args.victim_max_turns),
         "--timeout", str(args.timeout), "--m6-placement",
@@ -260,6 +261,7 @@ async def _run_case(
         result.update({
             key: payload.get(key) for key in (
                 "attack_success", "episode_status", "environment_steps",
+                "submissions",
                 "placement_actions", "placements_verified",
                 "matches_source_template",
                 "evaluation_completed", "failure_class", "plan_generated",
@@ -336,6 +338,7 @@ async def _main(args: argparse.Namespace) -> int:
         "policy_model": args.policy_model,
         "victim_model": args.victim_model,
         "victim_agent_type": args.victim_agent_type,
+        "max_submissions": args.max_submissions,
         "total": len(stored),
         "passed": sum(item["status"] == "passed" for item in stored),
         "failed": _failure_count(stored),
@@ -370,6 +373,7 @@ def main() -> None:
     parser.add_argument("--victim-agent-type", default="openclaw")
     parser.add_argument("--policy-max-turns", type=int, default=64)
     parser.add_argument("--victim-max-turns", type=int, default=80)
+    parser.add_argument("--max-submissions", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()

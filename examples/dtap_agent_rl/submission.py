@@ -126,7 +126,9 @@ class SubmissionCoordinator:
     def _state_fields(self) -> dict[str, Any]:
         return {
             "terminal": self.runtime.terminal,
-            "submissions_used": self.runtime.submissions_used,
+            # Legacy key: this is the count of victim evaluations that started,
+            # never the count of calls to submit_attack.
+            "submissions_used": self.runtime.victim_runs_started,
             "remaining_submissions": self.runtime.remaining_submissions,
         }
 
@@ -152,7 +154,7 @@ class SubmissionCoordinator:
             AuditEvent(
                 event,
                 self.audit_episode_digest,
-                {"h": self.runtime.submissions_used, "q": self.runtime.submit_calls},
+                {"h": self.runtime.victim_runs_started, "q": self.runtime.submit_calls},
                 safe_code,
             )
         )
@@ -251,7 +253,7 @@ class SubmissionCoordinator:
                     "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
                 )
 
-            attempt_index = self.runtime.submissions_used + 1
+            attempt_index = self.runtime.victim_runs_started + 1
             try:
                 workspace = materialize_attempt_dir(
                     source_task_dir=self.source_task_dir,
@@ -303,7 +305,9 @@ class SubmissionCoordinator:
 
             started_index: int | None = None
             if result.evaluation_started:
-                started_index = self.runtime.mark_evaluation_started()
+                # The sole H-consuming transition. All INVALID_SUBMISSION paths
+                # return before the runner, and pre-start failures consume no H.
+                started_index = self.runtime.mark_victim_run_started()
                 self._audit("evaluation_started")
 
             if result.is_infrastructure_failure or started_index is None:

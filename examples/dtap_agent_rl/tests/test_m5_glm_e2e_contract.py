@@ -46,6 +46,7 @@ def test_m6_glm_prompt_requires_owned_receipt_validation_before_submit():
     assert "max_apply_attack_step_calls" in M6_PROMPT
     assert "clear_" in M6_PROMPT and "reset_" in M6_PROMPT
     assert "nonterminal" in M6_PROMPT and "INVALID_SUBMISSION" in M6_PROMPT
+    assert "INVALID_SUBMISSION does not consume H" in M6_PROMPT
     assert "positively validated placement receipt" in M6_PROMPT
     assert "placement is unsupported and repair.fields is empty" in M6_PROMPT
     assert "single targeted repair is also invalid" in M6_PROMPT
@@ -90,12 +91,13 @@ def test_glm_smoke_has_opt_in_viewer_artifact_export():
     assert '"victim-trajectory.json"' in source
     assert '"victim-mcp-events.jsonl"' in source
     assert '"judge-result.json"' in source
+    assert '"attempts"' in source
     assert '"episode-state.json"' in source
     assert '"matches_source_template"' in source
     assert "generated plan unexpectedly equals" not in source
     assert '"timeout": (args.timeout + 60) * 1000' in source
     assert "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT" in source
-    assert 'DTAP_MEDICAL_AUX_MODE": "deterministic"' in source
+    assert "max_submissions=args.max_submissions" in source
 
 
 @pytest.mark.asyncio
@@ -136,6 +138,42 @@ async def test_recording_runner_exports_submitted_config_and_victim_trace(tmp_pa
     assert (artifacts / "victim-trajectory.json").read_text() == trace.read_text()
     assert (artifacts / "victim-mcp-events.jsonl").is_file()
     assert (artifacts / "judge-result.json").read_text() == judge.read_text()
+    assert (artifacts / "attempts/attempt-0001/submitted-config.yaml").is_file()
+    assert (artifacts / "attempts/attempt-0001/judge-result.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_recording_runner_retains_each_h_submission(tmp_path):
+    class Delegate:
+        async def run(self, workspace):
+            output = workspace.output_root / "judge_result.json"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                '{"attack_success":' + ("true" if workspace.attempt_index == 2 else "false") + '}\n'
+            )
+            return workspace.attempt_index
+
+    artifacts = tmp_path / "artifacts"
+    runner = RecordingRunner(Delegate(), artifacts_dir=artifacts)
+    for index in (1, 2):
+        task = tmp_path / f"task-{index}"
+        task.mkdir()
+        config = task / "config.yaml"
+        config.write_text(
+            f"Attack:\n  attack_turns:\n    - attack_steps:\n        - type: prompt\n          content: attempt-{index}\n"
+        )
+        await runner.run(SimpleNamespace(
+            attempt_index=index,
+            config_path=config,
+            output_root=tmp_path / f"results-{index}",
+        ))
+
+    assert len(runner.plans) == 2
+    assert "attempt-1" in (artifacts / "attempts/attempt-0001/submitted-config.yaml").read_text()
+    assert "attempt-2" in (artifacts / "attempts/attempt-0002/submitted-config.yaml").read_text()
+    assert (artifacts / "attempts/attempt-0001/judge-result.json").is_file()
+    assert (artifacts / "attempts/attempt-0002/judge-result.json").is_file()
+    assert "attempt-2" in (artifacts / "submitted-config.yaml").read_text()
 
 
 @pytest.mark.asyncio

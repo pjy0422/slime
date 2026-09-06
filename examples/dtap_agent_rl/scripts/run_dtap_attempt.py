@@ -15,6 +15,44 @@ VICTIM_AUTH_FROM_API_KEY_ENV = "DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN"
 MEDICAL_AUX_MODE_ENV = "DTAP_MEDICAL_AUX_MODE"
 
 
+_JUDGE_FAILURE_MARKERS = (
+    "credentials unavailable",
+    "llm judge unavailable",
+    "llm judge not enabled",
+    "llm judge failed",
+    "returned http 5",
+    "failed to call",
+    "error running eval_",
+)
+
+
+def judge_infrastructure_error(result: object) -> str | None:
+    """Return a content-free stage when a judge did not produce a verdict.
+
+    DTAP's legacy judge adapter converts several transport/provider failures to
+    ``False``.  That is unsafe at the reward boundary: unavailable judging is
+    infrastructure failure, not evidence that an attack was blocked.
+    """
+
+    if not isinstance(result, dict):
+        return "judge_result"
+    if result.get("error"):
+        return "judge_error"
+    for name in ("task", "attack"):
+        message = str(result.get(f"{name}_message") or "").lower()
+        metadata = result.get(f"{name}_metadata")
+        values = [message]
+        if isinstance(metadata, dict):
+            values.extend(
+                str(value).lower()
+                for key, value in metadata.items()
+                if "error" in str(key).lower() and value
+            )
+        if any(marker in value for marker in _JUDGE_FAILURE_MARKERS for value in values):
+            return "judge_unavailable"
+    return None
+
+
 def _configure_victim_provider(model: str) -> None:
     """Translate trusted runner-only aliases inside the isolated DTAP child.
 
@@ -40,9 +78,12 @@ def _configure_victim_provider(model: str) -> None:
         if base_url:
             os.environ["OPENAI_API_KEY"] = api_key
             os.environ["OPENAI_BASE_URL"] = f"{base_url.rstrip('/')}/v1"
+            os.environ["OPENAI_MODEL"] = model
             os.environ["PATIENT_MODEL"] = model
             os.environ["MEASUREMENT_MODEL"] = model
             os.environ["JUDGE_MODEL"] = model
+            os.environ["DTAP_HOSPITAL_OPENAI_COMPAT"] = "1"
+            os.environ["DTAP_JUDGE_HTTP_TIMEOUT_SECONDS"] = "180"
             os.environ["OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS"] = "600"
 
 
@@ -103,12 +144,11 @@ async def _run(args) -> int:
         getattr(task_cfg, "domain", None) == "medical"
         and auxiliary_mode == "deterministic"
     ):
-        # The published Medical image supports only GPT/Claude/Gemini model
-        # names. Its built-in no-credential path derives deterministic patient
-        # replies from the scenario. Keep policy/victim credentials available
-        # to OpenClaw, but hide them while TaskExecutor creates the auxiliary
-        # patient container so an unsupported hosted model cannot enter its
-        # 30 x 20-second retry loop.
+        # Retained for compatibility with an unpatched DTAP checkout. The
+        # managed Hospital compatibility entrypoint accepts arbitrary
+        # OpenAI-compatible model names, so release runs no longer select this
+        # mode. Hiding credentials also disables the diagnosis judge because it
+        # lives in the same container as the patient simulator.
         for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "REPLICATE_API_TOKEN"):
             value = os.environ.pop(name, None)
             if value is not None:
@@ -141,6 +181,10 @@ async def _run(args) -> int:
             matches = list(output_root.rglob("judge_result.json"))
             if len(matches) == 1 and matches[0].is_file() and not matches[0].is_symlink():
                 judge = json.loads(matches[0].read_bytes())
+                failure_stage = judge_infrastructure_error(judge)
+                if failure_stage is not None:
+                    print(f"[DTAP_STATUS] phase=judge_unavailable stage={failure_stage}")
+                    return 2
                 verdict = judge.get("attack_success") if isinstance(judge, dict) else None
                 if isinstance(verdict, bool):
                     args.verdict_path.parent.mkdir(parents=True, exist_ok=True)

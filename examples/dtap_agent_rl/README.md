@@ -177,7 +177,7 @@ that the source config did not change.
 
 ## M4: reward and isolation hardening
 
-M4 keeps the same four policy tools and H-turn semantics. Production M4 uses a
+M4 keeps the same four policy tools and H victim-run semantics. Production M4 uses a
 separate MCP capability, atomic episode authority, Q submit-call budget, typed
 receipts, bounded judge firewall, whole-task manifests, explicit child environment,
 strict Claude configuration, sandbox attestation, and one worker-scoped scheduler.
@@ -368,13 +368,22 @@ For a viewer-ready real M6 bundle, add an explicit trusted artifact directory:
 
 ```bash
 python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
-  ... --m6-placement --artifacts-dir /tmp/dtap-run
+  ... --m6-placement --max-submissions 2 --artifacts-dir /tmp/dtap-run
 
 dtap-traj /tmp/dtap-run -o /tmp/dtap-run/trajectory.html
 ```
 
 Export is opt-in and occurs only after the policy stream passes the existing
 token/path leakage check. Normal M4/M6 rollout cleanup remains unchanged.
+H counts only DTAP evaluations for which the victim execution actually starts.
+`INVALID_SUBMISSION`, schema/placement rejection, and pre-victim infrastructure
+failure do not decrement H. Q remains a separate bounded submit-call guard.
+
+Each H-consuming victim run is retained under
+`attempts/attempt-0001`, `attempts/attempt-0002`, and so on. The top-level
+submitted config, victim trace, and judge files remain latest-attempt aliases
+for older tooling. The explorer exposes an attempt selector and keeps the one
+policy trajectory shared across the full H-loop.
 
 A complete 24-case Linux live run is checked in at
 [`artifacts/p0-p2-live-matrix-20260906`](artifacts/p0-p2-live-matrix-20260906/README.md).

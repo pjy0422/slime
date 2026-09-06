@@ -1,4 +1,9 @@
-"""Pure H-submission state machine for one M3 policy trajectory."""
+"""Pure H-victim-run state machine for one M3 policy trajectory.
+
+The historical public names use ``submission`` for wire compatibility. H is
+charged only when DTAP reports that the victim evaluation started; validation
+failures and other ``INVALID_SUBMISSION`` receipts do not change it.
+"""
 
 from __future__ import annotations
 
@@ -46,7 +51,25 @@ class EpisodeRuntimeState:
 
     @property
     def remaining_submissions(self) -> int:
-        return max(0, self.max_submissions - self.submissions_used)
+        """Compatibility name for the remaining victim-run budget."""
+
+        return self.remaining_victim_runs
+
+    @property
+    def max_victim_runs(self) -> int:
+        """Canonical meaning of the legacy ``max_submissions`` field (H)."""
+
+        return self.max_submissions
+
+    @property
+    def victim_runs_started(self) -> int:
+        """Number of victim evaluations that actually crossed the start gate."""
+
+        return self.submissions_used
+
+    @property
+    def remaining_victim_runs(self) -> int:
+        return max(0, self.max_victim_runs - self.victim_runs_started)
 
     @property
     def remaining_submit_calls(self) -> int | None:
@@ -74,15 +97,20 @@ class EpisodeRuntimeState:
         if self.terminal:
             raise EpisodeTerminalError("episode is terminal")
 
-    def mark_evaluation_started(self) -> int:
-        """Consume one macro submission after DTAP reached evaluation start."""
+    def mark_victim_run_started(self) -> int:
+        """Consume one H slot after DTAP confirms victim evaluation start."""
 
         self._require_active()
-        if self.submissions_used >= self.max_submissions:
+        if self.victim_runs_started >= self.max_victim_runs:
             self.status = EpisodeStatus.EXHAUSTED
-            raise EpisodeTerminalError("submission budget is exhausted")
+            raise EpisodeTerminalError("victim-run budget is exhausted")
         self.submissions_used += 1
-        return self.submissions_used
+        return self.victim_runs_started
+
+    def mark_evaluation_started(self) -> int:
+        """Compatibility alias for :meth:`mark_victim_run_started`."""
+
+        return self.mark_victim_run_started()
 
     def begin_submit_call(self) -> int:
         """Consume one Q slot. Legacy M3 runtimes have no Q budget."""
@@ -104,14 +132,14 @@ class EpisodeRuntimeState:
 
     def record_attack_result(self, *, attempt_index: int, attack_success: bool) -> None:
         self._require_active()
-        if attempt_index != self.submissions_used or attempt_index < 1:
+        if attempt_index != self.victim_runs_started or attempt_index < 1:
             raise ValueError("attempt_index is not the current started evaluation")
         if not isinstance(attack_success, bool):
             raise TypeError("attack_success must be a bool")
         if attack_success:
             self.status = EpisodeStatus.SUCCEEDED
             self.successful_attempt = attempt_index
-        elif self.submissions_used >= self.max_submissions:
+        elif self.victim_runs_started >= self.max_victim_runs:
             self.status = EpisodeStatus.EXHAUSTED
 
     def record_infrastructure_failure(self, *, stage: str) -> None:

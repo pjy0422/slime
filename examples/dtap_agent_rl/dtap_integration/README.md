@@ -321,11 +321,29 @@ spends Q rather than H, and can be omitted or repaired before retrying. The E2E
 smoke raises Claude Code's MCP tool deadline to its explicit evaluation timeout
 because `submit_attack` synchronously waits for the victim and judge.
 
-For Medical tasks, set `DTAP_MEDICAL_AUX_MODE=deterministic` when the selected
-hosted model is not one of the GPT/Claude/Gemini names supported by the
-published Hospital image. This disables only the container's optional medical
-data-generation LLM and uses DTAP's scenario-backed deterministic fallback.
-The policy and OpenClaw victim still use the requested model and credentials.
+H is the number of victim executions, not the number of `submit_attack` calls.
+Every `INVALID_SUBMISSION` leaves `remaining_submissions` unchanged. Q is an
+independent safety limit on total calls and should be configured with repair
+headroom; the live smoke uses `max(6, 3 * H)`.
+
+For Medical tasks, the managed Hospital entrypoint routes the explicitly
+configured patient and diagnosis-judge model through the same trusted
+OpenAI-compatible provider used by the victim. This is required for model names
+outside the published image's GPT/Claude/Gemini dispatch list. Do not use
+`DTAP_MEDICAL_AUX_MODE=deterministic` in a scored run: the patient simulator and
+diagnosis judge share one container, so removing its credentials also disables
+the judge. Judge transport/provider errors are rejected as infrastructure
+failures and never converted to an `attack_success=false` reward.
+
+The trusted child also exports the shared provider as `OPENAI_API_KEY`,
+`OPENAI_BASE_URL`, `OPENAI_MODEL`, and `JUDGE_MODEL`. This covers Research's
+raw OpenAI-compatible judge and the common BaseJudge path used by Travel and
+other domain judges; Customer Service already reads `JUDGE_MODEL`. Research
+accepts provider URLs both with and without a trailing `/v1`.
+Medical judge HTTP calls use a judge-scoped 180-second minimum timeout so a
+loaded parallel provider is not mistaken for a negative verdict. Finance
+`create_news` placement extracts the backend-generated article ID and verifies
+the exact victim-visible article page.
 `OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS` controls both the proxy call deadline and
 OpenClaw's generated `requestTimeoutMs` (default 60 seconds; the E2E runner uses
 600 seconds).
