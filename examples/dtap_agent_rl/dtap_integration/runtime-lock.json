@@ -36,6 +36,32 @@
     "decodingtrustagent/slack:ui-latest": "decodingtrustagent/slack@sha256:6c724579bb4e0b72457f3aceb2c434c0acaac147278eab8908f781a958265026",
     "decodingtrustagent/telecom:latest": "decodingtrustagent/telecom@sha256:7ddf07739ec4db8878fc7d6734fbadff3c19573514f3e68840e2bbeb9e9ece1b",
     "decodingtrustagent/travel:latest": "decodingtrustagent/travel@sha256:7be2cbe677725f7b15ca74c8666e07a7ab2f7041d60a39d1dd50dabbb02992d8",
+    "decodingtrustagent/windows:latest": "decodingtrustagent/windows@sha256:8eb3c18ebd7d76e5fdf642bd09ebb430c39d56a10157467d3ef9ebee7709f8ee",
+    "decodingtrustagent/macos:latest": "decodingtrustagent/macos@sha256:eddad7712803278e4d81ac0d3255a5273a3b86b06fdec7a414881707b75a7855",
     "postgres:16": "postgres@sha256:4b7183ac05f8ef417db21fd72d71047a4238340c261d3cc3ddb6d579ab5071ae"
+  },
+  "guest_disks": {
+    "windows": {
+      "repository": "AI-Secure/decodingtrust-windows-qcow2",
+      "revision": "0c92c06dde9c46b17deb9c41af70578cb2e93d3b",
+      "root_env": "WINDOWS_DATA_DIR",
+      "files": {
+        "data.qcow2": {
+          "size": 47980150784,
+          "sha256": "e06774ff31b0bb936f64ce968b0316056656957ae538937ca69ade24ef72def4"
+        }
+      }
+    },
+    "macos": {
+      "repository": "AI-Secure/decodingtrust-macos-qcow2",
+      "revision": "cba7037345f75cc277220802e2029047aee3e750",
+      "root_env": "MACOS_DATA_DIR",
+      "files": {
+        "14/data.qcow2": {
+          "size": 22134915072,
+          "sha256": "880a2fb4b120a7b594d5e47932fd73a8ea67cd88d2c837047b788b39a9e2f34d"
+        }
+      }
+    }
   }
 }

@@ -202,6 +202,31 @@ def _dataset_suffix(source: Path) -> Path:
     return Path(*source.parts[indices[-1] :])
 
 
+def _materialize_guest_setup_helper(source: Path, attempt_dir: Path) -> None:
+    """Provide the one trusted helper expected by legacy guest setup scripts.
+
+    Windows/macOS setup.sh files derive PROJECT_ROOT by walking upward from the
+    task. An isolated candidate deliberately lives outside the DTAP checkout,
+    so recreate only the expected helper path instead of symlinking or copying
+    the repository into the policy-owned attempt tree.
+    """
+    indices = [index for index, part in enumerate(source.parts) if part == "dataset"]
+    if not indices:
+        raise CandidateConfigError("source task must be below a dataset directory")
+    dataset_index = indices[-1]
+    suffix = source.parts[dataset_index:]
+    if len(suffix) < 2 or suffix[1] not in {"windows", "macos"}:
+        return
+    platform = suffix[1]
+    repository_root = Path(*source.parts[:dataset_index])
+    helper = repository_root / "dt_arena" / "utils" / platform / "env_setup.py"
+    if helper.is_symlink() or not helper.is_file() or not stat.S_ISREG(helper.stat().st_mode):
+        raise CandidateConfigError(f"trusted {platform} setup helper is unavailable")
+    target = attempt_dir / "dt_arena" / "utils" / platform / "env_setup.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(helper, target)
+
+
 def materialize_attempt_dir(
     *,
     source_task_dir: Path | str,
@@ -240,6 +265,7 @@ def materialize_attempt_dir(
             safe_copy_tree(source, destination, expected_manifest=manifest)
         except IntegrityError as exc:
             raise CandidateConfigError("source task tree failed integrity validation") from exc
+        _materialize_guest_setup_helper(source, attempt_dir)
         raw = yaml.safe_load((source / "config.yaml").read_bytes()) or {}
         rendered = render_candidate_config(raw, steps)
         validator = candidate_validator or validate_candidate_config

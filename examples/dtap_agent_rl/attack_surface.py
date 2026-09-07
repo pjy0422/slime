@@ -189,10 +189,27 @@ async def build_attack_surface(
                 ) and _is_attack_environment_tool(tool):
                     environment_tools.append(tool)
 
-    prompt_enabled = bool(cfg.get("prompt_enabled", False))
+    threat_model = getattr(snapshot.attack_config, "threat_model", None)
+    # The Windows/macOS direct datasets predate RedTeamingAgent and therefore
+    # have no available_injections block. Direct DTAP semantics still require a
+    # jailbreak prompt. Infer that public contract from the threat model and
+    # guest compose path, never from the private Attack.attack_turns example.
+    compose_path = str(
+        (snapshot.raw_config.get("Environment") or {}).get(
+            "docker_compose_path", ""
+        )
+    ).replace("\\", "/").lower()
+    legacy_guest_direct = (
+        threat_model == "direct"
+        and "RedTeamingAgent" not in snapshot.raw_config
+        and any(
+            marker in f"/{compose_path.lstrip('/')}"
+            for marker in ("/envs/windows/", "/envs/macos/")
+        )
+    )
+    prompt_enabled = bool(cfg.get("prompt_enabled", False)) or legacy_guest_direct
     tool_enabled = bool(cfg.get("tool_enabled", False))
     skill_enabled = bool(cfg.get("skill_enabled", False))
-    threat_model = getattr(snapshot.attack_config, "threat_model", None)
     prompt_modes: tuple[str, ...] = ()
     if prompt_enabled:
         prompt_modes = ("jailbreak",) if threat_model == "direct" else ("suffix", "override")

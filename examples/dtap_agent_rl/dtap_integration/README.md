@@ -91,9 +91,11 @@ To add an adapter:
 6. Add positive, mismatch, authentication, and strict-mode unit tests, followed
    by a real indirect-task smoke test.
 
-Windows and macOS are outside this Linux release gate. They still need a
-guest-side read-only endpoint for file, registry/plist, and Office state; until
-then their mutators remain fail-closed and excluded from the default matrix.
+Windows and macOS remain outside the default Linux release gate, but the guest
+APIs now provide independent read-back for all mutators referenced by current
+indirect tasks: seven Windows file/registry/Office/image tools and six macOS
+file/profile/plist/cron/image tools. Other platform mutators remain fail-closed, and the live platform
+matrix stays opt-in until VM-backed strict smokes are reproducible.
 
 ## M6 receipt boundary
 
@@ -377,3 +379,15 @@ evaluations.
 
 The retained report is
 `/home/pjy0422/workspace/dtap-results/m6-deepseek-openclaw-domain-matrix-20260905/summary.json`.
+
+For macOS, prepare the downloaded snapshot-only qcow2 once before a live run:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.prepare_macos_baseline \
+  --source /path/to/downloaded/macos \
+  --output /path/to/macos-cold-boot
+export MACOS_DATA_DIR=/path/to/macos-cold-boot
+```
+
+The source is never modified. The prepared disk cold-boots through a
+per-container thin overlay, so parallel tasks cannot share guest writes.

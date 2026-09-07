@@ -16,7 +16,7 @@ def _dtap_root() -> Path:
     return Path(os.environ.get("DTAP_ROOT", default)).resolve()
 
 
-def test_default_matrix_explicitly_excludes_guest_platforms():
+def test_default_matrix_keeps_vm_platforms_opt_in():
     assert EXCLUDED_PLATFORM_DOMAINS == {"macos", "windows"}
     assert "macos" not in DOMAINS
     assert "windows" not in DOMAINS
@@ -67,11 +67,11 @@ def test_enabled_adapter_inventory_is_consistent():
     result = audit(_dtap_root())
     assert result["status"] == "passed"
     assert result["missing_implementations"] == []
-    assert result["verified_mutators"] == 115
-    assert result["unsupported_mutators"] == 0
-    assert not any(
-        row["server"] in {"windows-injection", "macos-injection"}
-        for row in result["servers"]
+    assert result["verified_mutators"] == 128
+    assert result["guest_platforms"]["windows-injection"]["verified"] == 7
+    assert result["guest_platforms"]["macos-injection"]["verified"] == 6
+    assert result["unsupported_mutators"] == sum(
+        item["unsupported"] for item in result["guest_platforms"].values()
     )
 
 
@@ -81,6 +81,12 @@ def test_runtime_lock_schema_and_non_image_checks():
     payload = json.loads(lock.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert all("@sha256:" in value for value in payload["container_images"].values())
+    assert set(payload["guest_disks"]) == {"windows", "macos"}
+    assert all(
+        len(file["sha256"]) == 64 and file["size"] > 1_000_000_000
+        for guest in payload["guest_disks"].values()
+        for file in guest["files"].values()
+    )
     assert payload["system_tools"]["jq"]["version"] == "jq-1.8.2"
     assert len(payload["system_tools"]["jq"]["sha256"]) == 64
     result = verify(

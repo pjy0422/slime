@@ -171,6 +171,10 @@ class RecordingRunner:
             shutil.copy2(event_logs[0], attempt_dir / "victim-mcp-events.jsonl")
             shutil.copy2(event_logs[0], self.artifacts_dir / "victim-mcp-events.jsonl")
             self.exported_victim_mcp_events = 1
+        diagnostic = workspace.output_root / ".dtap-stderr.log"
+        if diagnostic.is_file():
+            shutil.copy2(diagnostic, attempt_dir / "dtap-stderr.log")
+            shutil.copy2(diagnostic, self.artifacts_dir / "dtap-stderr.log")
         (self.artifacts_dir / "episode-state.json").write_text(
             json.dumps({
                 "schema": "dtap-agent-rl-episode-state", "schema_version": 1,
@@ -303,6 +307,8 @@ async def _main(args) -> None:
             "DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN",
             "DTAP_ENV_VERIFICATION",
             "DTAP_ENV_VERIFICATION_STRICT",
+            "WINDOWS_DATA_DIR",
+            "MACOS_DATA_DIR",
         ),
     )
     scheduler = AttemptScheduler(max_parallel=1, max_queued=1, wait_timeout=args.timeout)

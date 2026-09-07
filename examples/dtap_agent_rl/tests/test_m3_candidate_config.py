@@ -156,6 +156,37 @@ def test_materialization_preserves_source_and_uses_unique_attempt_directories(
     assert sha256(config_path.read_bytes()).hexdigest() == before_hash
 
 
+@pytest.mark.parametrize("platform", ["windows", "macos"])
+def test_guest_materialization_copies_only_the_trusted_setup_helper(
+    tmp_path: Path, monkeypatch, platform: str
+):
+    repository = tmp_path / "source"
+    source = repository / "dataset" / platform / "malicious" / "direct" / "risk" / "1"
+    source.mkdir(parents=True)
+    config_path = source / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_base_config(), sort_keys=False), encoding="utf-8")
+    (source / "setup.sh").write_text("# trusted guest setup\n", encoding="utf-8")
+    helper = repository / "dt_arena" / "utils" / platform / "env_setup.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# trusted helper\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "examples.dtap_agent_rl.candidate_config.validate_candidate_config",
+        lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
+    )
+
+    workspace = materialize_attempt_dir(
+        source_task_dir=source,
+        episode_root=tmp_path / "runs" / "episode-safe",
+        attempt_index=1,
+        steps=_steps(),
+    )
+
+    copied = workspace.attempt_dir / "dt_arena" / "utils" / platform / "env_setup.py"
+    assert copied.read_text(encoding="utf-8") == "# trusted helper\n"
+    assert not copied.is_symlink()
+    assert list((workspace.attempt_dir / "dt_arena").rglob("*.py")) == [copied]
+
+
 def test_materialization_rejects_symlinks_in_the_trusted_source_tree(tmp_path: Path):
     source = tmp_path / "source" / "dataset" / "workflow" / "task-7"
     source.mkdir(parents=True)

@@ -1,4 +1,4 @@
-"""Audit every enabled Linux DTAP injection tool against the M6 adapter registry."""
+"""Audit every enabled DTAP injection tool against the M6 adapter registry."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from pathlib import Path
 import yaml
 
 
-EXCLUDED = frozenset({"windows-injection", "macos-injection"})
+EXCLUDED = frozenset()
+GUEST_PLATFORM_SERVERS = frozenset({"windows-injection", "macos-injection"})
 READ_ONLY_PREFIXES = ("get_", "list_", "read_", "search_")
 MAINTENANCE_PREFIXES = ("clear_", "reset_", "deactivate_")
 
@@ -76,6 +77,13 @@ def audit(dtap_root: Path) -> dict:
         "missing_implementations": missing,
         "verified_mutators": sum(len(row["verified"]) for row in rows),
         "unsupported_mutators": sum(len(row["unsupported"]) for row in rows),
+        "guest_platforms": {
+            row["server"]: {
+                "verified": len(row["verified"]),
+                "unsupported": len(row["unsupported"]),
+            }
+            for row in rows if row["server"] in GUEST_PLATFORM_SERVERS
+        },
         "servers": rows,
     }
 
