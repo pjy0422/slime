@@ -281,8 +281,10 @@ The slime-managed DTAP patch adds a zero-target-LLM auxiliary gate. Route mode
 TaskExecutor project and live Docker container, supporting both published bridge
 ports and DTAP's host-network containers. Placement mode additionally performs
 independent read-back for every enabled Linux injection mutator. The synchronized
-registry currently covers 115 tools across 25 injection MCPs; Windows and macOS
-remain explicitly excluded until guest-side read-only evidence exists.
+registry covers 115 Linux tools plus seven Windows and six macOS placement
+mutators (including every tool referenced by current platform indirect tasks).
+Guest platforms remain opt-in for live matrices
+until their VM-backed strict smokes are green on the runner.
 
 ```bash
 export DTAP_ENV_VERIFICATION=placement
@@ -389,3 +391,36 @@ A complete 24-case Linux live run is checked in at
 [`artifacts/p0-p2-live-matrix-20260906`](artifacts/p0-p2-live-matrix-20260906/README.md).
 It contains viewer-ready policy and OpenClaw victim trajectories, the original
 and submitted configs, placement receipts, and judge results.
+
+Windows/macOS contract tests run with the normal deterministic suite. To run the
+VM-backed platform slice explicitly, use the same provider credentials as the
+Linux matrix and select the two domains:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.prepare_macos_baseline \
+  --source /path/to/downloaded/macos \
+  --output /path/to/macos-cold-boot
+export MACOS_DATA_DIR=/path/to/macos-cold-boot
+
+python -m examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --artifacts-root /tmp/dtap-platform-matrix \
+  --domains windows macos --threat-models direct indirect \
+  --max-parallel 1
+```
+
+The preparation is a one-time operation requiring about 22 GiB of additional
+space. It preserves the downloaded image, applies its internal `booted` disk
+snapshot to a copy, removes host-specific saved VM state, and lets each task
+continue to use a disposable thin overlay. Both a root containing `14/` and the
+`14/` directory itself are accepted as `--source`.
+
+Start with one worker: the DTAP environment definitions impose guest resource
+limits, and each case must independently boot/reset its VM before placement,
+victim, and judge execution.
+
+The retained DeepSeek/OpenClaw H=2 platform run is
+[`artifacts/p5-platform-live-20260907-r5`](artifacts/p5-platform-live-20260907-r5/summary.json):
+all four Windows/macOS direct/indirect cases completed, both indirect cases had
+independent positive placement evidence, and no case had an infrastructure,
+victim, judge, validation, or placement failure.

@@ -6,6 +6,7 @@ import asyncio
 import itertools
 import json
 import os
+import re
 import signal
 import sys
 from dataclasses import dataclass
@@ -151,6 +152,28 @@ class DtapAttemptRunner:
             process.kill()
         await process.wait()
 
+    @staticmethod
+    def _retain_stderr_diagnostic(
+        workspace: AttemptWorkspace, stderr: bytes, env: Mapping[str, str]
+    ) -> None:
+        """Keep a bounded trusted diagnostic without retaining credentials."""
+        if not stderr:
+            return
+        text = stderr.decode("utf-8", errors="replace")[-32_768:]
+        for name, value in env.items():
+            if (
+                value
+                and len(value) >= 6
+                and re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", name, re.I)
+            ):
+                text = text.replace(value, "<redacted>")
+        text = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{12,}", r"\1<redacted>", text
+        )
+        (workspace.output_root / ".dtap-stderr.log").write_text(
+            text, encoding="utf-8"
+        )
+
     async def _run_once(self, workspace: AttemptWorkspace) -> AttemptResult:
         workspace.output_root.mkdir(parents=True, exist_ok=True)
         if self.security_policy is None:
@@ -187,9 +210,9 @@ class DtapAttemptRunner:
                 runtime_identity = str(process.pid)
                 communicate = process.communicate()
                 if self.timeout_seconds is None:
-                    stdout, _stderr = await communicate
+                    stdout, stderr = await communicate
                 else:
-                    stdout, _stderr = await asyncio.wait_for(
+                    stdout, stderr = await asyncio.wait_for(
                         communicate, timeout=self.timeout_seconds
                     )
         except asyncio.TimeoutError:
@@ -214,6 +237,7 @@ class DtapAttemptRunner:
                 )
 
         output = stdout.decode("utf-8", errors="replace")
+        self._retain_stderr_diagnostic(workspace, stderr, env)
         if self.security_policy is None:
                 evaluation_started = "[DTAP_STATUS] phase=running" in output
                 try:

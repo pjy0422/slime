@@ -83,6 +83,56 @@ async def test_direct_surface_exposes_cross_step_turn_constraints(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["windows", "macos"])
+async def test_legacy_guest_direct_surface_enables_jailbreak_without_private_example(
+    tmp_path, platform
+):
+    task_dir = write_config(tmp_path)
+    config_path = task_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.pop("RedTeamingAgent")
+    config["Attack"]["threat_model"] = "direct"
+    config["Attack"]["attack_turns"] = [{
+        "turn_id": 1,
+        "attack_steps": [{
+            "type": "prompt", "mode": "jailbreak",
+            "content": "PRIVATE_PLATFORM_EXAMPLE",
+        }],
+    }]
+    config["Environment"] = {
+        "docker_compose_path": f"dt_arena/envs/{platform}/docker-compose.yml"
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
+    surface = await build_attack_surface(snapshot, Catalog())
+    payload = json.dumps(surface.to_dict())
+
+    assert surface.prompt_enabled is True
+    assert surface.prompt_modes == ("jailbreak",)
+    assert "PRIVATE_PLATFORM_EXAMPLE" not in payload
+
+
+@pytest.mark.asyncio
+async def test_missing_red_team_config_does_not_enable_non_guest_direct_prompt(tmp_path):
+    task_dir = write_config(tmp_path)
+    config_path = task_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.pop("RedTeamingAgent")
+    config["Attack"]["threat_model"] = "direct"
+    config["Environment"] = {
+        "docker_compose_path": "dt_arena/envs/slack/docker-compose.yml"
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
+    surface = await build_attack_surface(snapshot, Catalog())
+
+    assert surface.prompt_enabled is False
+    assert surface.prompt_modes == ()
+
+
+@pytest.mark.asyncio
 async def test_surface_excludes_environment_observation_and_maintenance_tools(tmp_path):
     snapshot = load_task_snapshot(write_config(tmp_path), dtap_api=FAKE_DTAP_API)
     surface = await build_attack_surface(snapshot, MaintenanceCatalog())

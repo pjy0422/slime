@@ -68,6 +68,12 @@ def test_direct_plan_does_not_require_an_environment_placement_receipt():
     }]) == 1
 
 
+def test_guest_disk_paths_are_explicitly_allowlisted_for_vm_runs():
+    source = inspect.getsource(smoke_m5_glm_e2e._main)
+    assert '"WINDOWS_DATA_DIR"' in source
+    assert '"MACOS_DATA_DIR"' in source
+
+
 def test_openclaw_headless_artifact_contract_uses_proxy_events_as_authority():
     runner = SimpleNamespace(
         exported_victim_traces=0,

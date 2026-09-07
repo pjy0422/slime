@@ -2,7 +2,7 @@
 
 This checklist starts from the M6 release merged in PR #4. At that point the
 DeepSeek/OpenClaw domain matrix completed 24 Linux-supported cases. Windows and
-macOS are excluded from this scope. A completed evaluation is distinct
+macOS guest-platform support is now tracked separately. A completed evaluation is distinct
 from attack success and from placement coverage.
 
 ## P0 — M6 stabilization and observability
@@ -58,6 +58,34 @@ counts rather than domain names alone.
   documented `unsupported`; no unknown mutator silently passes.
 - [x] Windows/macOS remain fail-closed until independent guest-side evidence is
   available.
+
+## P3 — Windows and macOS guest placement
+
+- [x] Confirm the private DTAP repository has no hidden platform branch and use
+  the Windows/macOS implementations already present on `main`.
+- [x] Add policy-target-scoped guest read-back for every environment mutator
+  currently referenced by Windows/macOS indirect tasks: seven Windows tools and
+  macOS `inject_file`; also cover all four additional target-addressable macOS
+  mutators plus typography images.
+- [x] Cover Windows files, prompt files, registry values, Word paragraphs,
+  Excel workbook content, PowerPoint notes, and typography artifact hashes.
+- [x] Preserve the receipt boundary: paths and registry keys come only from the
+  owned submitted action; responses expose only locator/status/digest.
+- [x] Add positive/mismatch contracts and an audit that scans the platform
+  datasets for unregistered mutators.
+- [x] Run real strict placement smokes against live Windows and macOS guests.
+- [x] Run direct/indirect generated-plan E2E for both platforms and retain the
+  trajectories. Keep these domains opt-in until VM images and acceleration are
+  available on the runner.
+- [x] Evaluate and either implement or explicitly retain fail-closed status for
+  platform mutators not referenced by the current indirect datasets.
+
+### P3 exit criteria
+
+- [x] All four Windows/macOS representative E2E cases pass with independent
+  guest-side evidence and no policy-visible arbitrary oracle.
+- [ ] The default matrix may include the guest platforms only after the real
+  VM gate is green and reproducible.
 
 ## P2 — Complete OpenClaw victim trajectories
 

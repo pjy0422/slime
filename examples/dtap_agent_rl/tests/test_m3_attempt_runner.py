@@ -59,6 +59,31 @@ async def test_runner_missing_judge_is_infrastructure_error_not_attack_failure(t
 
 
 @pytest.mark.asyncio
+async def test_runner_retains_bounded_redacted_stderr_for_infrastructure_failure(
+    tmp_path,
+):
+    executable = _executable(
+        tmp_path,
+        'printf "%s\\n" "diagnostic=$DIAGNOSTIC_SECRET" >&2\nexit 7\n',
+    )
+    runner = DtapAttemptRunner(
+        python_executable=str(executable),
+        model="fake",
+        extra_env={"DIAGNOSTIC_SECRET": "do-not-retain-this-value"},
+    )
+    workspace = _workspace(tmp_path)
+
+    result = await runner.run(workspace)
+    diagnostic = (workspace.output_root / ".dtap-stderr.log").read_text(
+        encoding="utf-8"
+    )
+
+    assert result.infrastructure_stage == "judge_result"
+    assert "do-not-retain-this-value" not in diagnostic
+    assert "diagnostic=<redacted>" in diagnostic
+
+
+@pytest.mark.asyncio
 async def test_runner_timeout_kills_process_and_returns_no_reward_verdict(tmp_path):
     executable = _executable(tmp_path, "sleep 10\n")
     runner = DtapAttemptRunner(
