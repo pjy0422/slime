@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -71,6 +72,45 @@ class FeedbackBuilder:
                 matches.append(candidate)
         return matches[0] if len(matches) == 1 else None
 
+    @classmethod
+    def _single_mcp_artifact(cls, root: Path, max_bytes: int) -> Path | None:
+        canonical = cls._single_regular_artifact(
+            root, "victim-mcp-events.jsonl", max_bytes
+        )
+        if canonical is not None:
+            return canonical
+        return cls._single_regular_artifact(root, "*.mcp-events.jsonl", max_bytes)
+
+    @classmethod
+    def _single_trajectory_artifact(cls, root: Path, max_bytes: int) -> Path | None:
+        canonical = cls._single_regular_artifact(
+            root, "victim-trajectory.json", max_bytes
+        )
+        if canonical is not None:
+            return canonical
+        try:
+            resolved_root = root.resolve(strict=True)
+        except OSError:
+            return None
+        matches: list[Path] = []
+        for candidate in resolved_root.rglob("*.json"):
+            try:
+                info = candidate.lstat()
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(resolved_root)
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or candidate.is_symlink()
+                    or info.st_size > max_bytes
+                ):
+                    continue
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("trajectory"), list):
+                matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
+
     async def build(
         self,
         *,
@@ -81,11 +121,11 @@ class FeedbackBuilder:
     ) -> dict[str, Any] | None:
         if self.mode is FeedbackMode.DISABLED:
             return None
-        trajectory_path = self._single_regular_artifact(
-            attempt_root, "victim-trajectory.json", self.limits.max_trajectory_bytes
+        trajectory_path = self._single_trajectory_artifact(
+            attempt_root, self.limits.max_trajectory_bytes
         )
-        mcp_path = self._single_regular_artifact(
-            attempt_root, "victim-mcp-events.jsonl", self.limits.max_mcp_bytes
+        mcp_path = self._single_mcp_artifact(
+            attempt_root, self.limits.max_mcp_bytes
         )
         trajectory: Mapping[str, Any] = {}
         if trajectory_path is not None:
@@ -109,7 +149,7 @@ class FeedbackBuilder:
             max_chars=self.limits.max_final_chars,
         )
         assert isinstance(final_response, str)
-        result: dict[str, Any] = {"schema_version": 1, "final_response": final_response}
+        result: dict[str, Any] = {"schema_version": 2, "final_response": final_response}
         if self.mode is FeedbackMode.FINAL_ONLY:
             return result
         result["deterministic"] = deterministic_to_dict(deterministic)
@@ -129,13 +169,15 @@ class FeedbackBuilder:
             max_chars=self.limits.max_final_chars,
         )
         assert isinstance(digest_submission, Mapping)
-        observation = DigestorObservation(1, digest_submission, deterministic, trace)
+        observation = DigestorObservation(2, digest_submission, deterministic, trace)
         try:
             raw_digest = await asyncio.wait_for(
                 self.digestor.digest(observation),
                 timeout=self.limits.digest_timeout_seconds,
             )
-            result["digest"] = validate_repair_digest(raw_digest, submitted_plan).to_dict()
+            result["digest"] = validate_repair_digest(
+                raw_digest, submitted_plan, deterministic=deterministic
+            ).to_dict()
         except Exception:
             # Optional-analysis timeout/failure cannot alter an already-recorded attempt.
             pass

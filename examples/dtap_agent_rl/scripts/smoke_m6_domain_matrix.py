@@ -206,8 +206,13 @@ async def _run_case(
         "--policy-max-turns", str(args.policy_max_turns),
         "--victim-max-turns", str(args.victim_max_turns),
         "--timeout", str(args.timeout), "--m6-placement",
+        "--feedback-mode", args.feedback_mode,
+        "--digestor-model", args.digestor_model,
+        "--digestor-timeout", str(args.digestor_timeout),
         "--port-range-start", str(start), "--artifacts-dir", str(case_dir),
     ]
+    if args.reasoning_summary:
+        command.append("--reasoning-summary")
     env = os.environ.copy()
     env.update({
         "DT_DISABLE_DEFAULT_PORTS": "1",
@@ -272,6 +277,7 @@ async def _run_case(
                 "victim_completed", "judge_completed", "victim_mcp_events",
                 "judge_artifacts",
                 "environment_tools",
+                "feedback_mode", "reasoning_summary_enabled", "digestor_usage",
             )
         })
     else:
@@ -339,6 +345,8 @@ async def _main(args: argparse.Namespace) -> int:
         "victim_model": args.victim_model,
         "victim_agent_type": args.victim_agent_type,
         "max_submissions": args.max_submissions,
+        "feedback_mode": args.feedback_mode,
+        "reasoning_summary_enabled": args.reasoning_summary,
         "total": len(stored),
         "passed": sum(item["status"] == "passed" for item in stored),
         "failed": _failure_count(stored),
@@ -374,6 +382,14 @@ def main() -> None:
     parser.add_argument("--policy-max-turns", type=int, default=64)
     parser.add_argument("--victim-max-turns", type=int, default=80)
     parser.add_argument("--max-submissions", type=int, default=2)
+    parser.add_argument(
+        "--feedback-mode",
+        choices=("disabled", "final", "final+deterministic", "final+deterministic+digestor"),
+        default="disabled",
+    )
+    parser.add_argument("--digestor-model", default="glm-5.2")
+    parser.add_argument("--digestor-timeout", type=float, default=30.0)
+    parser.add_argument("--reasoning-summary", action="store_true")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()

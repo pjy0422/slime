@@ -31,6 +31,12 @@ M7_OBSERVABILITY_PATCH = (
     / "patches"
     / "m7-feedback-observability.patch"
 )
+M7_FEEDBACK_V2_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-feedback-v2.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -107,6 +113,28 @@ def test_m7_completion_marker_requires_a_healthy_normally_stopped_sink():
     assert "if self._healthy and not self._completed" in text
     assert "stopped_cleanly = True" in text
     assert "if self._event_sink and stopped_cleanly" in text
+
+
+def test_m7_v2_overlay_observes_provider_boundaries_without_retaining_payloads():
+    text = M7_FEEDBACK_V2_PATCH.read_text(encoding="utf-8")
+
+    assert '"feedback.observed"' in text
+    assert "build_static_feedback_probes" in text
+    assert 'event_type == "prompt.submitted"' in text
+    assert 'event_type == "context.compiled"' in text
+    assert 'data.get("availableTools")' in text
+    assert 'data.get("systemPrompt")' in text
+    assert "payload_values" in text
+    assert "never written to the retained MCP event stream" in text
+
+
+def test_m7_v2_overlay_explicitly_covers_linux_registry_only():
+    text = M7_FEEDBACK_V2_PATCH.read_text(encoding="utf-8")
+
+    assert "SUPPORTED_FEEDBACK_TOOLS" in text
+    assert "assert len(SUPPORTED_FEEDBACK_TOOLS) == 25" in text
+    assert "assert checked == 115" in text
+    assert 'if server not in {"windows-injection", "macos-injection"}' in text
 
 
 def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources():

@@ -19,6 +19,7 @@ class ParsedMCPTrace:
     started: tuple[Mapping[str, Any], ...]
     completed: Mapping[str, Mapping[str, Any]]
     trace_complete: bool
+    feedback_observations: Mapping[int, Mapping[str, Any]] | None = None
 
 
 def parse_mcp_events(path: Path, *, max_bytes: int = 4 * 1024 * 1024) -> ParsedMCPTrace:
@@ -30,6 +31,7 @@ def parse_mcp_events(path: Path, *, max_bytes: int = 4 * 1024 * 1024) -> ParsedM
     seen_started: set[str] = set()
     completion_is_last = False
     parse_healthy = True
+    feedback_observations: dict[int, Mapping[str, Any]] = {}
     for raw_line in data.splitlines():
         if not raw_line.strip():
             continue
@@ -48,6 +50,18 @@ def parse_mcp_events(path: Path, *, max_bytes: int = 4 * 1024 * 1024) -> ParsedM
             if completion_is_last:
                 parse_healthy = False
             completion_is_last = True
+            continue
+        if event_type == "feedback.observed":
+            step_index = event.get("step_index")
+            if (
+                not isinstance(step_index, int)
+                or isinstance(step_index, bool)
+                or step_index < 0
+                or step_index in feedback_observations
+            ):
+                parse_healthy = False
+            else:
+                feedback_observations[step_index] = event
             continue
         if completion_is_last:
             parse_healthy = False
@@ -74,7 +88,10 @@ def parse_mcp_events(path: Path, *, max_bytes: int = 4 * 1024 * 1024) -> ParsedM
     started_ids = {str(item["call_id"]) for item in started}
     if not set(completed).issubset(started_ids):
         parse_healthy = False
-    return ParsedMCPTrace(tuple(started), completed, completion_is_last and parse_healthy)
+    return ParsedMCPTrace(
+        tuple(started), completed, completion_is_last and parse_healthy,
+        feedback_observations,
+    )
 
 
 def _qualified(event: Mapping[str, Any]) -> str:
@@ -105,6 +122,119 @@ def _matches(pattern: AccessPattern, event: Mapping[str, Any]) -> bool:
         if observed.get("sha256") != expected:
             return False
     return True
+
+
+_UNKNOWN_REASONS = {
+    "trace_incomplete", "adapter_unsupported", "identity_unavailable",
+    "result_incomplete", "result_truncated", "message_boundary_unavailable",
+    "skill_event_unavailable", "instrumentation_unavailable",
+}
+_MATCH_BASES = {
+    "qualified_tool", "exact_hashed_arguments", "injection_receipt",
+    "payload_probe", "message_correlation", "structured_skill_event",
+    "not_supported", "not_applicable",
+}
+
+
+def _state(value: bool | None, positive: str, negative: str, *, applicable: bool) -> str:
+    if not applicable:
+        return "not_applicable"
+    if value is True:
+        return positive
+    if value is False:
+        return negative
+    return "unknown"
+
+
+def _apply_feedback_observation(
+    item: InjectionObservation,
+    raw: Mapping[str, Any] | None,
+    call_indices: Mapping[str, int],
+) -> InjectionObservation:
+    if raw is None:
+        reasons: tuple[str, ...]
+        if item.injection_type == "environment" and item.match_basis == "not_supported":
+            reasons = ("adapter_unsupported",)
+        elif item.injection_type == "skill":
+            reasons = ("skill_event_unavailable",)
+        elif item.injection_type in {"prompt", "tool", "environment"}:
+            reasons = ("instrumentation_unavailable",)
+        else:
+            reasons = ()
+        response_applicable = item.injection_type == "environment"
+        presentation_applicable = item.injection_type in {"prompt", "tool", "environment", "skill"}
+        return InjectionObservation(
+            **{
+                **item.__dict__,
+                "response_match_state": _state(
+                    item.response_contains_injection, "matched", "not_matched",
+                    applicable=response_applicable,
+                ),
+                "presentation_state": _state(
+                    item.presented_to_model, "presented", "not_presented",
+                    applicable=presentation_applicable,
+                ),
+                "skill_use_state": "unknown" if item.injection_type == "skill" else "not_applicable",
+                "unknown_reasons": reasons,
+            }
+        )
+
+    def optional_bool(name: str, fallback: bool | None) -> bool | None:
+        value = raw.get(name, fallback)
+        return value if value is None or isinstance(value, bool) else fallback
+
+    call_ids = raw.get("call_ids", ())
+    evidence = tuple(
+        call_indices[value]
+        for value in call_ids
+        if isinstance(call_ids, list) and isinstance(value, str) and value in call_indices
+    )
+    response = optional_bool("response_contains_injection", item.response_contains_injection)
+    presented = optional_bool("presented_to_model", item.presented_to_model)
+    skill_used = optional_bool("skill_used", None)
+    basis = raw.get("match_basis", item.match_basis)
+    if basis not in _MATCH_BASES:
+        basis = item.match_basis
+    reasons_raw = raw.get("unknown_reasons", ())
+    reasons = tuple(
+        value for value in reasons_raw
+        if isinstance(reasons_raw, list) and value in _UNKNOWN_REASONS
+    )
+    locator = optional_bool("locator_targeted", item.locator_targeted)
+    access_status = raw.get("access_call_status", item.access_call_status)
+    if access_status not in {"ok", "error", "incomplete", "not_observed", "not_applicable"}:
+        access_status = item.access_call_status
+    accessed = locator is True and access_status == "ok"
+    injected_target_accessed = accessed if locator is not None and access_status != "incomplete" else None
+    access_state = "accessed" if accessed else "not_accessed" if locator is False else "unknown"
+    matched_tool = raw.get("matched_tool", item.matched_tool)
+    if not isinstance(matched_tool, str):
+        matched_tool = item.matched_tool
+    return InjectionObservation(
+        **{
+            **item.__dict__,
+            "injected_target_accessed": injected_target_accessed,
+            "access_state": access_state,
+            "matched_tool": matched_tool,
+            "match_basis": basis,
+            "locator_targeted": locator,
+            "access_call_status": access_status,
+            "response_contains_injection": response,
+            "presented_to_model": presented,
+            "evidence_call_indices": evidence,
+            "response_match_state": _state(
+                response, "matched", "not_matched",
+                applicable=item.injection_type == "environment",
+            ),
+            "presentation_state": _state(
+                presented, "presented", "not_presented", applicable=True,
+            ),
+            "skill_use_state": _state(
+                skill_used, "used", "not_used", applicable=item.injection_type == "skill",
+            ),
+            "unknown_reasons": reasons,
+        }
+    )
 
 
 def extract_deterministic_feedback(
@@ -205,4 +335,12 @@ def extract_deterministic_feedback(
                 presented_to_model=None,
             )
         )
-    return DeterministicFeedback(sequence, tuple(injections), trace.trace_complete)
+    call_indices = {
+        str(event["call_id"]): index for index, event in enumerate(trace.started)
+    }
+    observations = trace.feedback_observations or {}
+    enriched = tuple(
+        _apply_feedback_observation(item, observations.get(item.step_index), call_indices)
+        for item in injections
+    )
+    return DeterministicFeedback(sequence, enriched, trace.trace_complete)
