@@ -44,6 +44,7 @@ class InjectionObservation:
     matched_tool: str | None = None
     match_basis: Literal[
         "qualified_tool", "exact_hashed_arguments", "injection_receipt",
+        "exact_locator", "collection_locator",
         "payload_probe", "message_correlation", "structured_skill_event",
         "not_supported", "not_applicable"
     ] | None = None

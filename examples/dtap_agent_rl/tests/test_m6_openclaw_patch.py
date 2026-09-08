@@ -37,6 +37,15 @@ M7_FEEDBACK_V2_PATCH = (
     / "patches"
     / "m7-feedback-v2.patch"
 )
+M7_EXACT_LOCATORS_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-exact-locators.patch"
+)
+M7_DOMAIN_FEEDBACK_PATCH = (
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-domain-feedback.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -126,6 +135,34 @@ def test_m7_v2_overlay_observes_provider_boundaries_without_retaining_payloads()
     assert 'data.get("systemPrompt")' in text
     assert "payload_values" in text
     assert "never written to the retained MCP event stream" in text
+
+
+def test_m7_exact_locator_overlay_uses_receipt_ids_and_rejects_ambiguous_names():
+    text = M7_EXACT_LOCATORS_PATCH.read_text(encoding="utf-8")
+
+    assert "def _exact_locator_patterns(" in text
+    assert '"tool": "salesforce:get_record"' in text
+    assert '"tool": "legal:get_matter"' in text
+    assert '"tool": "travel:query_flight"' in text
+    assert '"tool": "telecom:query_email"' in text
+    assert '"filepath": kwargs[source_field]' in text
+    assert "test_salesforce_without_receipt_id_does_not_claim_exact_name_locator" in text
+    assert "test_filtered_or_paginated_result_does_not_count_as_payload_read" in text
+    assert "test_stale_record_with_same_locator_does_not_match_current_payload" in text
+
+
+def test_m7_domain_feedback_distinguishes_exact_collection_and_payload_proofs():
+    text = M7_DOMAIN_FEEDBACK_PATCH.read_text(encoding="utf-8")
+
+    assert 'return "collection_locator"' in text
+    assert 'return "exact_locator"' in text
+    assert '"tool": "calendar:get_event"' in text
+    assert '"tool": "zoom:meetings_get"' in text
+    assert '"tool": "whatsapp:get_whatsapp_chat"' in text
+    assert '"tool": "github:get_issue"' in text
+    assert "self._match_basis.get(index" in text
+    assert "_PAYLOAD_READ_PATTERNS" in text
+    assert "test_payload_only_adapter_ignores_same_service_write_echo" in text
 
 
 def test_m7_v2_overlay_explicitly_covers_linux_registry_only():

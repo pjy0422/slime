@@ -128,26 +128,35 @@ M6 placement coverage does not automatically provide M7 victim-access coverage:
 placement proves that an injection was written, while M7 needs the corresponding
 victim read tool, result, and provider-message boundary.
 
+The per-environment proof levels and remaining receipt limitations are tracked
+in [M7_DOMAIN_FEEDBACK.md](M7_DOMAIN_FEEDBACK.md).
+
 - [x] Add exact M7 access adapters for Finance first: map injected quote,
   analysis, and news identifiers to `browse_stock`, `browse_article`, and other
   read paths, including generated record IDs where the submitted action alone
   cannot name the eventual victim locator.
-- [ ] Add stable exact-locator adapters for Gmail, Legal, Travel, Research,
-  CRM/Salesforce, Customer Service, Hospital, Telecom, and the remaining Linux
-  environments when their victim APIs expose a correlation key. M7 v2 already
+- [x] Add stable exact-locator adapters where the victim API and injection
+  receipt expose a correlation key: Legal, Travel, Research, CRM/Salesforce,
+  Customer Service, Telecom, Slack, Google Docs, and OS Filesystem. M7 v2 already
   classifies every mutator and can prove payload inclusion from explicitly
   mapped victim MCP results, but deliberately leaves ambiguous locators
-  `unknown`.
+  `unknown`. The first exact-locator expansion covers receipt IDs, entity keys,
+  query keys, Slack channels, Google Docs IDs, and sandbox file paths. Gmail and
+  Hospital remain payload-correlated because their current injection receipts
+  do not expose the eventual message/patient ID; Customer Service stays exact
+  only where its receipt exposes case/order IDs.
 - [x] Correlate an injection receipt with a returned result item so
   `response_contains_injection` can be set without storing raw tool results.
-- [ ] Add backend-specific regression fixtures for filtering, pagination,
+- [x] Add backend-specific regression fixtures for filtering, pagination,
   duplicate names, and stale records as exact-locator adapters are expanded.
 - [x] Instrument the victim message assembly boundary so `presented_to_model`
   reflects the actual provider request rather than a successful MCP call.
 - [x] Keep skill use explicitly `unknown` until OpenClaw exposes a trusted
   structured skill-use event; skill presentation is independently observable.
-- [ ] Extend loss-aware trace completion beyond the managed OpenClaw MCP proxy
-  if another victim harness becomes part of release runs.
+- [x] Audit whether loss-aware trace completion must extend beyond the managed
+  OpenClaw MCP proxy. The Linux and platform release gates currently require
+  `--victim-agent-type openclaw`; no second victim harness is part of release
+  runs, so no speculative adapter is added. Reopen this item when that changes.
 - [x] Wire a configured GLM/hosted Digestor and the independently switchable
   reasoning summarizer into the live runner, including token/cost/timeout
   accounting and sanitized retained outputs.

@@ -118,6 +118,7 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
                 raise PolicyContractViolation("invalid feedback schema")
             if item["match_basis"] not in {
                 "qualified_tool", "exact_hashed_arguments", "injection_receipt",
+                "exact_locator", "collection_locator",
                 "payload_probe", "message_correlation", "structured_skill_event",
                 "not_supported", "not_applicable", None,
             }:
