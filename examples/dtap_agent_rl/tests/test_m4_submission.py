@@ -52,7 +52,7 @@ def _source(tmp_path: Path) -> Path:
 
 def _coordinator(
     tmp_path, *, h, q, runner, policy_overrides=None, audit_sink=None,
-    placement_coordinator=None,
+    placement_coordinator=None, feedback_builder=None,
 ):
     source = _source(tmp_path)
     policy = M4SecurityPolicy(max_submit_calls=q, **(policy_overrides or {}))
@@ -72,6 +72,7 @@ def _coordinator(
         audit_sink=audit_sink,
         audit_episode_digest="episode-digest" if audit_sink is not None else None,
         placement_coordinator=placement_coordinator,
+        feedback_builder=feedback_builder,
     )
 
 
@@ -252,3 +253,62 @@ async def test_32_parallel_episode_states_do_not_cross(tmp_path):
         assert receipt["terminal"] is True
         roots.add(attempt_dir)
     assert len(roots) == 32
+
+
+class FeedbackBuilder:
+    def __init__(self, value=None, error=None):
+        self.value = value
+        self.error = error
+        self.calls = []
+
+    async def build(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+
+@pytest.mark.asyncio
+async def test_m7_feedback_is_only_for_genuine_nonterminal_failure(tmp_path):
+    builder = FeedbackBuilder({"schema_version": 1, "final_response": "failed"})
+    runner = Runner([
+        AttemptResult(evaluation_started=True, attack_success=False),
+        AttemptResult(evaluation_started=True, attack_success=False),
+    ])
+    coordinator = _coordinator(tmp_path, h=2, q=3, runner=runner, feedback_builder=builder)
+
+    invalid = await coordinator.submit({"steps": []})
+    first = await coordinator.submit(VALID_PLAN)
+    final = await coordinator.submit(VALID_PLAN)
+
+    assert "feedback" not in invalid
+    assert first["feedback"]["final_response"] == "failed"
+    assert "feedback" not in final
+    assert len(builder.calls) == 1
+    assert coordinator.runtime.victim_runs_started == 2
+    assert coordinator.runtime.final_reward == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "builder",
+    [
+        FeedbackBuilder(error=RuntimeError("broken")),
+        FeedbackBuilder({"schema_version": 1, "final_response": "ok", "judge_result": {}}),
+    ],
+)
+async def test_m7_failure_or_contract_rejection_does_not_change_reward_or_h(tmp_path, builder):
+    runner = Runner([AttemptResult(evaluation_started=True, attack_success=False)])
+    coordinator = _coordinator(tmp_path, h=2, q=2, runner=runner, feedback_builder=builder)
+
+    receipt = await coordinator.submit(VALID_PLAN)
+
+    assert receipt == {
+        "accepted": True,
+        "submission": 1,
+        "success": False,
+        "terminal": False,
+        "remaining_submissions": 1,
+    }
+    assert coordinator.runtime.victim_runs_started == 1
+    assert coordinator.runtime.status is EpisodeStatus.ACTIVE
