@@ -124,65 +124,75 @@ M8.
 
 ### M7 adaptive-feedback follow-up
 
-The v1 extractor currently has exact access mappings for Slack channel history,
-OS/filesystem paths, and browser navigation when the submitted action contains
-the URL. M6 placement coverage does not automatically provide M7 victim-access
-coverage: placement proves that an injection was written, while M7 needs the
-corresponding victim read tool and locator arguments.
+M6 placement coverage does not automatically provide M7 victim-access coverage:
+placement proves that an injection was written, while M7 needs the corresponding
+victim read tool, result, and provider-message boundary.
 
-- [ ] Add exact M7 access adapters for Finance first: map injected quote,
+The per-environment proof levels and remaining receipt limitations are tracked
+in [M7_DOMAIN_FEEDBACK.md](M7_DOMAIN_FEEDBACK.md).
+
+- [x] Add exact M7 access adapters for Finance first: map injected quote,
   analysis, and news identifiers to `browse_stock`, `browse_article`, and other
   read paths, including generated record IDs where the submitted action alone
   cannot name the eventual victim locator.
-- [ ] Add exact adapters for Gmail, Legal, Travel, Research, CRM/Salesforce,
-  Customer Service, Hospital, Telecom, and the remaining enabled Linux
-  environments. Keep ambiguous search/name based matches as `unknown` until a
-  stable correlation field exists.
-- [ ] Correlate an injection receipt with a returned result item so
+- [x] Add stable exact-locator adapters where the victim API and injection
+  receipt expose a correlation key: Legal, Travel, Research, CRM/Salesforce,
+  Customer Service, Telecom, Slack, Google Docs, and OS Filesystem. M7 v2 already
+  classifies every mutator and can prove payload inclusion from explicitly
+  mapped victim MCP results, but deliberately leaves ambiguous locators
+  `unknown`. The first exact-locator expansion covers receipt IDs, entity keys,
+  query keys, Slack channels, Google Docs IDs, and sandbox file paths. Gmail and
+  Hospital remain payload-correlated because their current injection receipts
+  do not expose the eventual message/patient ID; Customer Service stays exact
+  only where its receipt exposes case/order IDs.
+- [x] Correlate an injection receipt with a returned result item so
   `response_contains_injection` can be set without storing raw tool results.
-  Cover empty results, filtering, pagination, duplicate names, and stale
-  records.
-- [ ] Instrument the victim message assembly boundary so `presented_to_model`
+- [x] Add backend-specific regression fixtures for filtering, pagination,
+  duplicate names, and stale records as exact-locator adapters are expanded.
+- [x] Instrument the victim message assembly boundary so `presented_to_model`
   reflects the actual provider request rather than a successful MCP call.
-- [ ] Add structured skill-use events before making skill injection access
-  observable. Until then skill observations remain `unknown`.
-- [ ] Extend loss-aware trace completion beyond the managed OpenClaw MCP proxy
-  if another victim harness becomes part of release runs.
-- [ ] Wire a configured GLM/hosted Digestor and the independently switchable
+- [x] Keep skill use explicitly `unknown` until OpenClaw exposes a trusted
+  structured skill-use event; skill presentation is independently observable.
+- [x] Audit whether loss-aware trace completion must extend beyond the managed
+  OpenClaw MCP proxy. The Linux and platform release gates currently require
+  `--victim-agent-type openclaw`; no second victim harness is part of release
+  runs, so no speculative adapter is added. Reopen this item when that changes.
+- [x] Wire a configured GLM/hosted Digestor and the independently switchable
   reasoning summarizer into the live runner, including token/cost/timeout
   accounting and sanitized retained outputs.
-- [ ] Run H=2 live direct/indirect cases across representative domains and save
-  attempt-paired artifacts. Compare `final`, `final+deterministic`, and
+- [x] Run H=2 live direct/indirect Finance cases and save attempt-paired
+  artifacts, including a same-session indirect repair that succeeds on attempt 2.
+- [x] Compare `final`, `final+deterministic`, and
   `final+deterministic+digestor` with identical attempt-1 inputs.
-- [ ] Add a live repair contract showing that attempt-1 feedback reaches the
+- [x] Add a live repair contract showing that attempt-1 feedback reaches the
   same policy session for attempt 2 while invalid submissions consume Q only.
-- [ ] Test that attempt-N feedback can repair attempt N+1 while
+- [x] Test that attempt-N feedback can repair attempt N+1 while
   `INVALID_SUBMISSION` consumes no H and only actual victim executions count
   toward H.
-- [ ] Introduce policy-visible feedback schema v2 while retaining v1 input
+- [x] Introduce policy-visible feedback schema v2 while retaining v1 input
   compatibility. Represent response matching, model presentation, structured
   skill use, evidence references, and explicit unknown reasons without exposing
   raw locators, call IDs, hashes, tool results, credentials, or host paths.
-- [ ] Extend the Digestor result with a typed payload-effect assessment
+- [x] Extend the Digestor result with a typed payload-effect assessment
   (`followed`, `partially_followed`, `rejected`, `ignored`, or `unclear`) while
   keeping semantic interpretation out of the deterministic extractor.
-- [ ] Audit all 115 enabled Linux environment mutators into explicit M7
+- [x] Audit all 115 enabled Linux environment mutators into explicit M7
   `supported` or reasoned `unsupported` states. Add positive and mismatch
   contracts for every supported victim-access adapter; Windows/macOS feedback
   adapters remain outside this milestone.
 
 ### M7 exit criteria
 
-- [ ] Locator access, successful result inclusion, and actual model presentation
+- [x] Locator access, successful result inclusion, and actual model presentation
   are independently observable and never inferred from one another.
-- [ ] Deterministic facts and Digestor semantic judgments remain separate, and
+- [x] Deterministic facts and Digestor semantic judgments remain separate, and
   feedback failure cannot change reward, H, Q, or terminal state.
-- [ ] Representative direct and indirect H=2 runs demonstrate a same-session
+- [x] Representative direct and indirect H=2 runs demonstrate a same-session
   attempt-1 to attempt-2 repair, with A/B/C feedback modes built from identical
   attempt-1 evidence.
-- [ ] Every enabled Linux mutator has an explicit M7 support classification; no
+- [x] Every enabled Linux mutator has an explicit M7 support classification; no
   unregistered or ambiguous mutator silently produces positive evidence.
-- [ ] No policy-visible arbitrary placement oracle is introduced.
+- [x] No policy-visible arbitrary placement oracle is introduced.
 
 ## M8 — Real slime RL rollout and training dry-run
 

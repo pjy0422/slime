@@ -28,6 +28,9 @@ patches=(
   "$script_dir/patches/p4-h2-live-stability.patch"
   "$script_dir/patches/p5-windows-macos-placement.patch"
   "$script_dir/patches/m7-feedback-observability.patch"
+  "$script_dir/patches/m7-feedback-v2.patch"
+  "$script_dir/patches/m7-exact-locators.patch"
+  "$script_dir/patches/m7-domain-feedback.patch"
 )
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.

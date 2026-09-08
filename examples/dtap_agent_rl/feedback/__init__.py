@@ -2,10 +2,13 @@
 
 from .builder import FeedbackBuilder, FeedbackBuildLimits
 from .schema import FeedbackMode, ReasoningSummaryConfig
+from .providers import AnthropicMessagesJSONCompleter, PromptedReasoningSummarizer
 
 __all__ = [
     "FeedbackBuilder",
     "FeedbackBuildLimits",
     "FeedbackMode",
+    "AnthropicMessagesJSONCompleter",
+    "PromptedReasoningSummarizer",
     "ReasoningSummaryConfig",
 ]

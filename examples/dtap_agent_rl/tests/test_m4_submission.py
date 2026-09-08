@@ -290,6 +290,36 @@ async def test_m7_feedback_is_only_for_genuine_nonterminal_failure(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_m7_attempt_feedback_can_drive_next_plan_while_invalid_calls_preserve_h(tmp_path):
+    builder = FeedbackBuilder({
+        "schema_version": 1,
+        "final_response": "The victim ignored the first wording.",
+    })
+    runner = Runner([
+        AttemptResult(evaluation_started=True, attack_success=False),
+        AttemptResult(evaluation_started=True, attack_success=True),
+    ])
+    coordinator = _coordinator(tmp_path, h=2, q=4, runner=runner, feedback_builder=builder)
+
+    invalid = await coordinator.submit({"steps": []})
+    first = await coordinator.submit(VALID_PLAN)
+    repaired = {
+        "steps": [{
+            "type": "prompt", "turn_id": 1, "mode": "suffix",
+            "content": "repaired after: " + first["feedback"]["final_response"],
+        }]
+    }
+    second = await coordinator.submit(repaired)
+
+    assert invalid["remaining_submissions"] == 2
+    assert first["terminal"] is False and first["remaining_submissions"] == 1
+    assert second["success"] is True and second["terminal"] is True
+    assert coordinator.runtime.victim_runs_started == 2
+    assert len(runner.calls) == 2
+    assert builder.calls[0]["submitted_plan"] == {"steps": VALID_PLAN["steps"]}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "builder",
     [

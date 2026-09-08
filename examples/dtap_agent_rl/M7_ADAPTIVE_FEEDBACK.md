@@ -1,4 +1,4 @@
-# M7 adaptive feedback v1
+# M7 adaptive feedback v2
 
 M7 gives an H>1 policy bounded evidence from the preceding genuine failed
 victim execution. It is disabled by default and does not participate in the
@@ -46,17 +46,28 @@ The MCP event sink is best-effort. The M7 DTAP overlay writes
 succeeded. Absence can be converted to `false` only with that marker; otherwise
 it remains `unknown`.
 
-The current exact-locator registry covers Slack workspace/channel, filesystem
-path aliases, and browser URL when the injection action itself supplies a URL.
-Other environment mutators return `unknown`; no name-based heuristic is used.
+The M7 registry explicitly classifies all 115 enabled Linux mutators across 25
+injection MCPs. Finance generated IDs support exact victim-read correlation.
+Other Linux adapters can prove payload inclusion in a successful result from an
+explicitly mapped victim MCP, but keep locator targeting `unknown` when the
+backend does not expose a stable correlation field. Windows/macOS are outside
+this milestone. No unregistered or name-derived fallback is used.
+
+Prompt, tool-description, and skill presentation is observed at the provider
+request boundary: `prompt.submitted`, `context.compiled.availableTools`, and
+`context.compiled.systemPrompt`, respectively. Skill execution itself remains
+`unknown` until OpenClaw provides a trusted structured skill-use event.
 
 ## Artifact and leakage boundary
 
-Feedback reads exactly one regular, non-symlink artifact of each known name
-under the current attempt root. Ambiguous, oversized, malformed, escaping, or
-missing artifacts degrade to empty/unknown evidence. Raw MCP arguments, hashes,
-result digests, call IDs, timestamps, judge data, runtime identity, benchmark
-metadata, credentials, and host paths are not projected.
+Feedback reads exactly one regular, non-symlink artifact of each expected type
+under the current attempt root. It recognizes both viewer-canonical
+`victim-*.json*` names and DTAP's native OpenClaw trajectory and
+`*.mcp-events.jsonl` names, because feedback is built before the optional viewer
+export. Ambiguous, oversized, malformed, escaping, or missing artifacts degrade
+to empty/unknown evidence. Raw MCP arguments, hashes, result digests, call IDs,
+timestamps, judge data, runtime identity, benchmark metadata, credentials, and
+host paths are not projected.
 
 The Digestor sees an allowlisted evidence view rather than the raw trajectory.
 Trace text is still untrusted injection-controlled input. Digest and reasoning
@@ -83,7 +94,13 @@ await run_m4_episode(
 
 Digestor mode requires a `Digestor` implementation. `PromptedLLMDigestor`
 accepts an injected async JSON-completion callable, so core orchestration does
-not depend on one model SDK.
+not depend on one model SDK. The included trusted Anthropic-compatible provider
+supports hosted GLM, keeps credentials in headers, and records only bounded
+call/failure/token/latency metrics. The reasoning summarizer is independently
+enabled and cannot infer hidden reasoning. Hosted-model outputs receive one
+schema-only retry when the first decoded JSON object has invalid field types or
+pointers; transport and truncated-JSON failures still fail closed. The CLI
+timeout applies per hosted request and the builder bounds the two-call retry.
 
 Apply the DTAP marker and run tests:
 
@@ -102,3 +119,27 @@ pytest -q \
 
 pytest -q examples/dtap_agent_rl/tests
 ```
+
+Run a generated H=2 OpenClaw episode with deterministic feedback:
+
+```bash
+export ANTHROPIC_API_KEY='...'
+export DTAP_POLICY_ANTHROPIC_BASE_URL=https://provider.example
+export DTAP_VICTIM_ANTHROPIC_BASE_URL=https://provider.example
+
+python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
+  --task-dir /path/to/DecodingTrust-Agent/dataset/finance/malicious/indirect/... \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --python /home/pjy0422/workspace/dtap/bin/python \
+  --policy-model glm-5.2 --victim-model glm-5.2 \
+  --victim-agent-type openclaw --max-submissions 2 --m6-placement \
+  --feedback-mode final+deterministic \
+  --artifacts-dir /tmp/m7-finance-indirect
+```
+
+The retained 2026-09-08 checks are under
+`artifacts/m7-h2-feedback-native-fix-20260908` (direct) and
+`artifacts/m7-h2-feedback-digestor-20260908` (indirect). Both exercised H=2 in
+one policy session. The indirect policy used attempt-1 access/tool evidence to
+repair the carrier and succeeded on attempt 2. Its post-fix hosted-GLM replay
+also records the A/B/C invariants and a validated typed digest.

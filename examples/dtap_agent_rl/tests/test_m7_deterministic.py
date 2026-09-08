@@ -122,6 +122,94 @@ def test_completion_marker_is_fail_closed_if_trace_is_corrupt_or_has_later_event
         handle.write("not-json\n")
     assert parse_mcp_events(path).trace_complete is False
 
+
+def test_v2_observation_correlates_result_and_model_presentation(tmp_path):
+    path = tmp_path / "events"
+    _write_events(path, [
+        {
+            "type": "tool.started", "call_id": "read-1", "server": "finance",
+            "tool": "browse_article", "arguments": {},
+        },
+        {
+            "type": "tool.completed", "call_id": "read-1", "server": "finance",
+            "tool": "browse_article", "is_error": False,
+        },
+        {
+            "type": "feedback.observed", "step_index": 0,
+            "call_ids": ["read-1"], "locator_targeted": True,
+            "access_call_status": "ok", "response_contains_injection": True,
+            "presented_to_model": True, "matched_tool": "finance:browse_article",
+            "match_basis": "message_correlation", "unknown_reasons": [],
+        },
+        {"type": "trace.completed"},
+    ])
+    step = ValidatedAttackStep(
+        type="environment", turn_id=1,
+        injection_mcp_tool="finance-injection:inject_article",
+        kwargs={"title": "generated identity", "content": "payload"},
+    )
+
+    result = extract_deterministic_feedback((step,), parse_mcp_events(path))
+    item = result.injections[0]
+
+    assert item.evidence_call_indices == (0,)
+    assert item.locator_targeted is True
+    assert item.response_match_state == "matched"
+    assert item.presentation_state == "presented"
+    assert item.response_contains_injection is True
+    assert item.presented_to_model is True
+
+
+def test_v2_observation_rejects_duplicate_step_and_unknown_values(tmp_path):
+    path = tmp_path / "events"
+    observed = {
+        "type": "feedback.observed", "step_index": 0,
+        "response_contains_injection": True,
+    }
+    _write_events(path, [observed, observed, {"type": "trace.completed"}])
+    trace = parse_mcp_events(path)
+    assert trace.trace_complete is False
+
+
+def test_domain_locator_precision_is_preserved_for_policy_feedback(tmp_path):
+    path = tmp_path / "events"
+    _write_events(path, [
+        {"type": "tool.started", "call_id": "read-1", "server": "travel",
+         "tool": "query_flight", "arguments": {}},
+        {"type": "tool.completed", "call_id": "read-1", "server": "travel",
+         "tool": "query_flight", "is_error": False},
+        {"type": "feedback.observed", "step_index": 0,
+         "call_ids": ["read-1"], "locator_targeted": True,
+         "access_call_status": "ok", "response_contains_injection": True,
+         "presented_to_model": True, "matched_tool": "travel:query_flight",
+         "match_basis": "collection_locator", "unknown_reasons": []},
+        {"type": "trace.completed"},
+    ])
+    step = ValidatedAttackStep(
+        type="environment", turn_id=1,
+        injection_mcp_tool="travel-injection:inject_flight",
+        kwargs={"flight_number": "DTAP-7"},
+    )
+
+    item = extract_deterministic_feedback((step,), parse_mcp_events(path)).injections[0]
+
+    assert item.match_basis == "collection_locator"
+    assert item.injected_target_accessed is True
+
+
+def test_missing_v2_instrumentation_is_explicitly_unknown(tmp_path):
+    path = tmp_path / "events"
+    _write_events(path, [{"type": "trace.completed"}])
+    step = ValidatedAttackStep(
+        type="environment", turn_id=1,
+        injection_mcp_tool="finance-injection:inject_article",
+        kwargs={"title": "generated identity", "content": "payload"},
+    )
+    item = extract_deterministic_feedback((step,), parse_mcp_events(path)).injections[0]
+    assert item.response_match_state == "unknown"
+    assert item.presentation_state == "unknown"
+    assert item.unknown_reasons == ("adapter_unsupported",)
+
     _write_events(path, [
         {"type": "trace.completed"},
         {"type": "tool.started", "call_id": "late", "server": "a", "tool": "b", "arguments": {}},

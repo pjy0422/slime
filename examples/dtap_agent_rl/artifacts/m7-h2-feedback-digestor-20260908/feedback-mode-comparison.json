@@ -1,0 +1,12 @@
+{
+  "deterministic_equal_for_modes_b_and_c": true,
+  "deterministic_sha256": "b9f605f5bf67b911a00d4e748e0f09361c50da5e1089148cb71e2a4dbe868fbe",
+  "final_response_equal_for_modes_a_b_and_c": true,
+  "final_response_sha256": "cf4ad27a0835b796f0665ef563a233d0d9085b44b4c3aa0e7c9cb1452d714c03",
+  "modes": [
+    "final",
+    "final+deterministic",
+    "final+deterministic+digestor"
+  ],
+  "source_attempt": "finance/indirect/attempts/attempt-0001"
+}

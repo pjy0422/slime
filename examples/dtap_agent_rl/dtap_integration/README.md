@@ -22,7 +22,14 @@ The patch is based on DecodingTrust-Agent commit
   Medical auxiliary-model fallback for providers whose model names the
   published Hospital image does not recognize; and
 - M7's loss-aware `trace.completed` marker for deterministic negative victim
-  tool/access observations. The marker is omitted after any sink write failure.
+  tool/access observations. The marker is omitted after any sink write failure;
+  and
+- M7 v2's in-memory probes for all 115 enabled Linux mutators. Finance uses
+  generated IDs and exact victim read locators; the remaining adapters report
+  payload inclusion from an explicitly mapped victim MCP without claiming an
+  exact locator. Prompt, tool, and skill presentation is observed at OpenClaw's
+  provider-request assembly boundary. Raw locators and payloads are never
+  retained in MCP events.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
 Gmail verification resolves Mailpit list entries to the message-detail endpoint
@@ -126,7 +133,22 @@ This lets slime distinguish a proven absence from missing telemetry. The policy
 projection and exact field meanings are documented in
 `examples/dtap_agent_rl/M7_ADAPTIVE_FEEDBACK.md`.
 
-## Reproducing M0 through M6
+The v2 registry explicitly classifies the same 25 Linux injection MCPs and 115
+mutators as M6. Finance covers all HTML variants, `create_news`,
+`create_comment`, and `inject_news`; a generated article ID remains in memory
+and can match a later `browse_article` call. Other Linux adapters use explicit
+per-mutator payload fields and victim MCP mappings to prove whether a successful
+result contained the injected payload. Their locator remains `unknown` unless a
+stable correlation field exists. A bounded `feedback.observed` event contains
+only the submitted step index, public tool-sequence references, nullable facts,
+and reason codes. Unknown tools remain unsupported; there is no name heuristic.
+
+For prompt, tool-description, and skill injections, presentation is checked
+only against `prompt.submitted`, `context.compiled.availableTools`, or
+`context.compiled.systemPrompt`. Skill use remains `unknown` because OpenClaw
+does not emit a trusted structured skill-use event.
+
+## Reproducing M0 through M7
 
 Start from the DTAP virtual environment and apply the slime-managed overlay:
 
@@ -159,6 +181,9 @@ Run the deterministic suites:
 ```bash
 pytest -q examples/dtap_agent_rl/tests
 pytest -q /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_env_verification.py
+pytest -q \
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_openclaw_mcp_events.py \
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_observation.py
 ```
 
 Run real M5 indirect-task smokes without a victim LLM or judge:
@@ -211,8 +236,20 @@ python -m examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e \
   --dtap-root /home/pjy0422/workspace/DecodingTrust-Agent \
   --python /home/pjy0422/workspace/dtap/bin/python \
   --policy-model glm-5.2 \
-  --victim-model glm-5.2
+  --victim-model glm-5.2 \
+  --victim-agent-type openclaw \
+  --max-submissions 2 \
+  --m6-placement \
+  --feedback-mode final+deterministic
 ```
+
+For the optional semantic mode, set
+`DTAP_DIGESTOR_ANTHROPIC_BASE_URL` (or reuse the policy base URL) and run with
+`--feedback-mode final+deterministic+digestor`. `--reasoning-summary` is a
+separate opt-in and is valid only in that mode. The summary reports only an
+explicitly retained reasoning/rationale source; it never reconstructs hidden
+chain-of-thought. Provider usage reports calls, failures, tokens, and latency;
+cost remains unknown unless an external pinned price table is introduced.
 
 This prompt contains no plan or payload. It requires the policy to inspect the
 live task/surface, author and validate every step, and submit exactly once. An

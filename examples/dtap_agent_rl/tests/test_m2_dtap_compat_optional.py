@@ -42,6 +42,7 @@ def test_validated_steps_preserve_current_dtap_helper_semantics():
     assert env == [{
         "server_name": "slack-injection", "tool_name": "inject_slack_message",
         "kwargs": {"channel_name": "general", "message": "ENV"}, "turn_id": 1,
+        "feedback_step_index": 2,
     }]
     skill = build_skill_injections_from_config(cfg)["payments"][0]
     assert skill.mode == "append" and skill.content == "SKILL" and skill.row == -1

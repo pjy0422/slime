@@ -43,7 +43,10 @@ class InjectionObservation:
     access_state: Literal["accessed", "not_accessed", "unknown", "not_applicable"]
     matched_tool: str | None = None
     match_basis: Literal[
-        "qualified_tool", "exact_hashed_arguments", "not_supported", "not_applicable"
+        "qualified_tool", "exact_hashed_arguments", "injection_receipt",
+        "exact_locator", "collection_locator",
+        "payload_probe", "message_correlation", "structured_skill_event",
+        "not_supported", "not_applicable"
     ] | None = None
     # These fields prevent `accessed` from being mistaken for content exposure.
     locator_targeted: bool | None = None
@@ -52,6 +55,21 @@ class InjectionObservation:
     ] = "not_applicable"
     response_contains_injection: bool | None = None
     presented_to_model: bool | None = None
+    evidence_call_indices: tuple[int, ...] = ()
+    response_match_state: Literal[
+        "matched", "not_matched", "unknown", "not_applicable"
+    ] = "not_applicable"
+    presentation_state: Literal[
+        "presented", "not_presented", "unknown", "not_applicable"
+    ] = "not_applicable"
+    skill_use_state: Literal[
+        "used", "not_used", "unknown", "not_applicable"
+    ] = "not_applicable"
+    unknown_reasons: tuple[Literal[
+        "trace_incomplete", "adapter_unsupported", "identity_unavailable",
+        "result_incomplete", "result_truncated", "message_boundary_unavailable",
+        "skill_event_unavailable", "instrumentation_unavailable",
+    ], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,10 @@ class RepairDigest:
     preserve: tuple[str, ...]
     reconsider: tuple[str, ...]
     confidence: Literal["low", "medium", "high"]
+    payload_effect: Literal[
+        "followed", "partially_followed", "rejected", "ignored", "unclear"
+    ] = "unclear"
+    evidence_refs: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

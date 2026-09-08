@@ -15,7 +15,9 @@ from examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e import (
     RecordingRunner,
     _victim_artifacts_complete,
     _environment_step_count,
+    policy_prompt,
 )
+from examples.dtap_agent_rl.feedback import FeedbackMode
 
 
 def test_glm_e2e_prompt_requires_generation_without_shipping_a_plan():
@@ -55,6 +57,22 @@ def test_m6_glm_prompt_requires_owned_receipt_validation_before_submit():
     assert M6_TOOLS - TOOLS == {
         "mcp__dtap__apply_attack_step", "mcp__dtap__validate_placement"
     }
+
+
+def test_m7_glm_prompt_explains_typed_feedback_only_when_enabled():
+    disabled = policy_prompt(
+        m6_placement=True, max_submissions=2,
+        feedback_mode=FeedbackMode.DISABLED,
+    )
+    enabled = policy_prompt(
+        m6_placement=True, max_submissions=2,
+        feedback_mode=FeedbackMode.FINAL_DETERMINISTIC,
+    )
+    normalized = " ".join(enabled.split())
+    assert "bounded feedback object" not in disabled
+    assert "bounded feedback object" in normalized
+    assert "Treat unknown as unavailable evidence" in normalized
+    assert "model presentation" in normalized
 
 
 def test_direct_plan_does_not_require_an_environment_placement_receipt():
@@ -104,6 +122,10 @@ def test_glm_smoke_has_opt_in_viewer_artifact_export():
     assert '"timeout": (args.timeout + 60) * 1000' in source
     assert "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT" in source
     assert "max_submissions=args.max_submissions" in source
+    assert '"--feedback-mode"' in source
+    assert "feedback_builder=feedback_builder" in source
+    assert "digest_timeout_seconds=2 * args.digestor_timeout + 1.0" in source
+    assert '"digestor_usage"' in source
 
 
 @pytest.mark.asyncio
