@@ -104,11 +104,13 @@ counts rather than domain names alone.
 - [x] A failed episode can be classified as policy, validation, placement,
   victim, judge, or infrastructure failure from retained artifacts alone.
 
-## M7 — Real slime RL rollout and training dry-run
+## M7 — Adaptive feedback completion
 
-M7 is complete when a policy rollout uses the M6 MCP surface, receives a DTAP
-victim/judge result, produces a training record, performs an optimizer step,
-and evaluates the resulting checkpoint.
+M7 is complete when an H>1 policy can use bounded evidence from one genuine
+failed victim execution to make a local repair on its next submission. This
+milestone covers feedback observability, projection, and live repair behavior;
+production slime rollout and optimizer integration are tracked separately in
+M8.
 
 - [x] Add bounded H>1 adaptive feedback without exposing a general environment
   oracle. For direct tasks, return a size-limited/redacted victim final response.
@@ -154,16 +156,42 @@ corresponding victim read tool and locator arguments.
   `final+deterministic+digestor` with identical attempt-1 inputs.
 - [ ] Add a live repair contract showing that attempt-1 feedback reaches the
   same policy session for attempt 2 while invalid submissions consume Q only.
-
-- [ ] Add trainer-only feedback diagnostics to the rollout record so experiments
-  can state whether they use an adaptive attacker with victim-output access.
 - [ ] Test that attempt-N feedback can repair attempt N+1 while
   `INVALID_SUBMISSION` consumes no H and only actual victim executions count
   toward H.
-- [ ] Connect the M6 runtime to the production slime rollout worker.
+- [ ] Introduce policy-visible feedback schema v2 while retaining v1 input
+  compatibility. Represent response matching, model presentation, structured
+  skill use, evidence references, and explicit unknown reasons without exposing
+  raw locators, call IDs, hashes, tool results, credentials, or host paths.
+- [ ] Extend the Digestor result with a typed payload-effect assessment
+  (`followed`, `partially_followed`, `rejected`, `ignored`, or `unclear`) while
+  keeping semantic interpretation out of the deterministic extractor.
+- [ ] Audit all 115 enabled Linux environment mutators into explicit M7
+  `supported` or reasoned `unsupported` states. Add positive and mismatch
+  contracts for every supported victim-access adapter; Windows/macOS feedback
+  adapters remain outside this milestone.
+
+### M7 exit criteria
+
+- [ ] Locator access, successful result inclusion, and actual model presentation
+  are independently observable and never inferred from one another.
+- [ ] Deterministic facts and Digestor semantic judgments remain separate, and
+  feedback failure cannot change reward, H, Q, or terminal state.
+- [ ] Representative direct and indirect H=2 runs demonstrate a same-session
+  attempt-1 to attempt-2 repair, with A/B/C feedback modes built from identical
+  attempt-1 evidence.
+- [ ] Every enabled Linux mutator has an explicit M7 support classification; no
+  unregistered or ambiguous mutator silently produces positive evidence.
+- [ ] No policy-visible arbitrary placement oracle is introduced.
+
+## M8 — Real slime RL rollout and training dry-run
+
+- [ ] Add trainer-only feedback diagnostics to the rollout record so experiments
+  can state whether they use an adaptive attacker with victim-output access.
+- [ ] Connect the M6/M7 runtime to the production slime rollout worker.
 - [ ] Define and version the rollout-record schema: task reference, policy
   prompt/response, MCP trajectory, submitted config digest, placement receipts,
-  victim/judge status, reward, and failure classification.
+  victim/judge status, reward, failure classification, and feedback mode.
 - [ ] Store accepted training records atomically and make interrupted collection
   resumable.
 - [ ] Exclude infrastructure-invalid and unsupported-placement episodes from
@@ -177,14 +205,14 @@ corresponding victim read tool and locator arguments.
 - [ ] Load the checkpoint and run a fresh DTAP evaluation.
 - [ ] Confirm the full path works without fixed/template candidate plans.
 
-### M7 exit criteria
+### M8 exit criteria
 
 - [ ] `rollout -> validated submission -> victim -> judge -> reward -> training
   record -> optimizer step -> checkpoint -> evaluation` passes from one command.
 - [ ] Reward-zero and infrastructure-invalid samples are observably different.
-- [ ] No policy-visible arbitrary placement oracle is introduced.
+- [ ] The saved checkpoint can be loaded for a fresh DTAP evaluation.
 
-## M8 — Evaluation and ablation
+## M9 — Evaluation and ablation
 
 - [ ] Compare fixed-template, untrained generated, and RL-trained policies.
 - [ ] Compare placement validation disabled, M5 auxiliary, and M6 receipt-gated
@@ -197,7 +225,7 @@ corresponding victim read tool and locator arguments.
 - [ ] Record model/provider versions and total evaluation cost.
 - [ ] Publish a machine-readable result manifest alongside the human report.
 
-### M8 exit criteria
+### M9 exit criteria
 
 - [ ] Results are reproducible from pinned inputs and distinguish security
   effectiveness from harness reliability.
@@ -210,5 +238,7 @@ corresponding victim read tool and locator arguments.
   README cleanup.
 - [x] PR B scope: Linux placement adapters; all 115 enabled mutators covered.
 - [x] PR C scope: complete OpenClaw structured victim trajectories and viewer support.
-- [ ] PR D: M7 rollout record and tiny training dry-run.
-- [ ] PR E: M8 evaluation harness and ablation report.
+- [ ] PR D: M7 feedback observability, schema v2, and Linux access adapters.
+- [ ] PR E: M7 live H=2 repair and A/B/C feedback gate.
+- [ ] PR F: M8 rollout record, optimizer step, and checkpoint evaluation.
+- [ ] PR G: M9 evaluation harness and ablation report.
