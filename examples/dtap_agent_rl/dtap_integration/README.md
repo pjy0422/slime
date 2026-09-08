@@ -20,7 +20,9 @@ The patch is based on DecodingTrust-Agent commit
   dialogue-trajectory fallback for detached headless sessions; and
 - configurable inner and outer OpenClaw MCP deadlines, plus a deterministic
   Medical auxiliary-model fallback for providers whose model names the
-  published Hospital image does not recognize.
+  published Hospital image does not recognize; and
+- M7's loss-aware `trace.completed` marker for deterministic negative victim
+  tool/access observations. The marker is omitted after any sink write failure.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
 Gmail verification resolves Mailpit list entries to the message-detail endpoint
@@ -115,6 +117,14 @@ Each apply uses a disposable sandbox and a sealed result file. Unknown fields,
 symlinks, oversized output, missing results, and non-placement exceptions fail
 closed as `EVALUATION_UNAVAILABLE`. Receipts are held only in the episode's
 authority and disappear when that authority is unregistered.
+
+## M7 victim-access evidence
+
+The overlay's MCP event log remains best-effort. M7 adds an explicit completion
+marker emitted only on normal proxy shutdown after a loss-free event stream.
+This lets slime distinguish a proven absence from missing telemetry. The policy
+projection and exact field meanings are documented in
+`examples/dtap_agent_rl/M7_ADAPTIVE_FEEDBACK.md`.
 
 ## Reproducing M0 through M6
 

@@ -110,16 +110,53 @@ M7 is complete when a policy rollout uses the M6 MCP surface, receives a DTAP
 victim/judge result, produces a training record, performs an optimizer step,
 and evaluates the resulting checkpoint.
 
-- [ ] Add bounded H>1 adaptive feedback without exposing a general environment
+- [x] Add bounded H>1 adaptive feedback without exposing a general environment
   oracle. For direct tasks, return a size-limited/redacted victim final response.
   For indirect tasks, return the ordered victim tool names and statuses, a
-  trusted injection-exposure enum (`not_placed`, `placed_not_retrieved`,
-  `retrieved`, `presented_to_model`, or `unknown`), and the bounded/redacted
-  victim final response. Never expose tool arguments, raw tool results, judge
-  rationale, credentials, or host paths.
-- [ ] Version the feedback schema and distinguish policy-visible feedback from
-  trainer-only diagnostics so experiments can state whether they use an
-  adaptive attacker with victim-output access.
+  per-step split between locator targeting, call completion, response inclusion,
+  model presentation, and `unknown`, plus the bounded/redacted victim final
+  response. Never expose tool arguments, raw tool results, judge rationale,
+  credentials, or host paths.
+- [x] Version the policy-visible feedback schema and keep its projection
+  separate from raw/internal evidence.
+
+### M7 adaptive-feedback follow-up
+
+The v1 extractor currently has exact access mappings for Slack channel history,
+OS/filesystem paths, and browser navigation when the submitted action contains
+the URL. M6 placement coverage does not automatically provide M7 victim-access
+coverage: placement proves that an injection was written, while M7 needs the
+corresponding victim read tool and locator arguments.
+
+- [ ] Add exact M7 access adapters for Finance first: map injected quote,
+  analysis, and news identifiers to `browse_stock`, `browse_article`, and other
+  read paths, including generated record IDs where the submitted action alone
+  cannot name the eventual victim locator.
+- [ ] Add exact adapters for Gmail, Legal, Travel, Research, CRM/Salesforce,
+  Customer Service, Hospital, Telecom, and the remaining enabled Linux
+  environments. Keep ambiguous search/name based matches as `unknown` until a
+  stable correlation field exists.
+- [ ] Correlate an injection receipt with a returned result item so
+  `response_contains_injection` can be set without storing raw tool results.
+  Cover empty results, filtering, pagination, duplicate names, and stale
+  records.
+- [ ] Instrument the victim message assembly boundary so `presented_to_model`
+  reflects the actual provider request rather than a successful MCP call.
+- [ ] Add structured skill-use events before making skill injection access
+  observable. Until then skill observations remain `unknown`.
+- [ ] Extend loss-aware trace completion beyond the managed OpenClaw MCP proxy
+  if another victim harness becomes part of release runs.
+- [ ] Wire a configured GLM/hosted Digestor and the independently switchable
+  reasoning summarizer into the live runner, including token/cost/timeout
+  accounting and sanitized retained outputs.
+- [ ] Run H=2 live direct/indirect cases across representative domains and save
+  attempt-paired artifacts. Compare `final`, `final+deterministic`, and
+  `final+deterministic+digestor` with identical attempt-1 inputs.
+- [ ] Add a live repair contract showing that attempt-1 feedback reaches the
+  same policy session for attempt 2 while invalid submissions consume Q only.
+
+- [ ] Add trainer-only feedback diagnostics to the rollout record so experiments
+  can state whether they use an adaptive attacker with victim-output access.
 - [ ] Test that attempt-N feedback can repair attempt N+1 while
   `INVALID_SUBMISSION` consumes no H and only actual victim executions count
   toward H.

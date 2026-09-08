@@ -102,6 +102,7 @@ class SubmissionCoordinator:
         audit_sink: Any = None,
         audit_episode_digest: str | None = None,
         placement_coordinator: Any = None,
+        feedback_builder: Any = None,
     ) -> None:
         self.validation_context = validation_context
         self.runtime = runtime
@@ -116,6 +117,9 @@ class SubmissionCoordinator:
         self.audit_sink = audit_sink
         self.audit_episode_digest = audit_episode_digest
         self.placement_coordinator = placement_coordinator
+        self.feedback_builder = feedback_builder
+        if feedback_builder is not None and policy_contract is None:
+            raise ValueError("adaptive feedback requires a policy contract")
         if security_policy is not None:
             if runtime.max_submit_calls is None:
                 raise ValueError("M4 runtime requires an explicit submit-call budget")
@@ -335,11 +339,47 @@ class SubmissionCoordinator:
                 "terminal": self.runtime.terminal,
                 "remaining_submissions": self.runtime.remaining_submissions,
             }
+            if (
+                self.feedback_builder is not None
+                and result.attack_success is False
+                and not self.runtime.terminal
+                and self.runtime.remaining_submissions > 0
+            ):
+                try:
+                    feedback = await self.feedback_builder.build(
+                        attempt_root=workspace.output_root,
+                        submitted_steps=validated.steps,
+                        submitted_plan={
+                            "steps": [step.to_dict() for step in validated.steps]
+                        },
+                        redactions=(
+                            str(self.source_task_dir.resolve()),
+                            str(self.episode_root.resolve()),
+                            *(
+                                self.policy_contract.guard.secrets
+                                if self.policy_contract is not None
+                                else ()
+                            ),
+                        ),
+                    )
+                    if feedback is not None:
+                        receipt["feedback"] = feedback
+                except Exception:
+                    # Optional feedback never changes the already committed H/reward state.
+                    pass
             if self.policy_contract is None:
                 return receipt
             try:
                 return self.policy_contract.from_internal_submit(receipt)
             except PolicyContractViolation:
+                # A malformed/leaking optional projection is dropped. The base
+                # verdict receipt remains authoritative and policy-safe.
+                if "feedback" in receipt:
+                    receipt.pop("feedback", None)
+                    try:
+                        return self.policy_contract.from_internal_submit(receipt)
+                    except PolicyContractViolation:
+                        pass
                 return self._m4_security_abort()
 
 

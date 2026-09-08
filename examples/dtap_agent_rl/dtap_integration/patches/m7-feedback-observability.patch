@@ -1,0 +1,79 @@
+diff --git a/agent/openclaw/src/mcp_proxy.py b/agent/openclaw/src/mcp_proxy.py
+--- a/agent/openclaw/src/mcp_proxy.py
++++ b/agent/openclaw/src/mcp_proxy.py
+@@ -71,14 +71,16 @@ class MCPEventSink:
+         self.path = Path(path)
+         self.episode_id = episode_id
+         self._lock = threading.Lock()
++        self._healthy = True
++        self._completed = False
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+         try:
+             # An empty file is a meaningful zero-tool-call trajectory. It lets
+             # artifact collection distinguish that state from a missing sink.
+             self.path.touch(exist_ok=True)
+         except OSError:
+             # Keep observability best-effort, matching emit().
+-            pass
++            self._healthy = False
+ 
+     def emit(self, event_type: str, **data: Any) -> None:
+         event = {
+@@ -97,7 +100,13 @@ class MCPEventSink:
+                     handle.flush()
+         except OSError:
+             # Observability must not alter victim tool semantics.
+-            pass
++            self._healthy = False
++
++    def complete(self) -> None:
++        """Mark a normal, loss-free event stream; absence remains unknown."""
++        if self._healthy and not self._completed:
++            self.emit("trace.completed")
++            self._completed = self._healthy
+ 
+ # For running HTTP server
+ try:
+@@ -653,12 +661,16 @@ class MCPProxyManager:
+ 
+     async def stop_all(self) -> None:
+         """Stop all proxy servers."""
++        stopped_cleanly = True
+         for proxy in self._proxies.values():
+             try:
+                 await proxy.stop()
+             except Exception as e:
++                stopped_cleanly = False
+                 print(f"[ProxyManager] Error stopping proxy: {e}")
+         self._proxies.clear()
++        if self._event_sink and stopped_cleanly:
++            self._event_sink.complete()
+ 
+     def get_proxy(self, server_name: str) -> Optional[MCPProxyServer]:
+         """Get a specific proxy by name."""
+diff --git a/tests/test_openclaw_mcp_events.py b/tests/test_openclaw_mcp_events.py
+--- a/tests/test_openclaw_mcp_events.py
++++ b/tests/test_openclaw_mcp_events.py
+@@ -81,3 +81,22 @@ async def test_proxy_event_sink_never_persists_secret_classes(tmp_path):
+         set(shape) == {"type", "length", "sha256"}
+         for shape in events[0]["arguments"].values()
+     )
++
++
++def test_event_sink_completion_marker_is_idempotent(tmp_path):
++    path = tmp_path / "complete.mcp-events.jsonl"
++    sink = MCPEventSink(path, "episode-complete")
++
++    sink.complete()
++    sink.complete()
++
++    events = [json.loads(line) for line in path.read_text().splitlines()]
++    assert [event["type"] for event in events] == ["trace.completed"]
++
++
++def test_event_sink_does_not_claim_completeness_after_write_failure(tmp_path):
++    path = tmp_path / "incomplete.mcp-events.jsonl"
++    sink = MCPEventSink(path, "episode-incomplete")
++    sink._healthy = False
++    sink.complete()
++    assert path.read_text() == ""

@@ -25,6 +25,12 @@ LIVE_STABILITY_PATCH = (
     / "patches"
     / "p4-h2-live-stability.patch"
 )
+M7_OBSERVABILITY_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-feedback-observability.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -92,6 +98,15 @@ def test_stabilization_patch_records_only_redacted_correlated_mcp_events():
     assert 'DTAP_EVALUATION_EPISODE_ID' in text
     assert "raw sensitive prompt payload" in text
     assert "assert all(secret not in raw" in text
+
+
+def test_m7_completion_marker_requires_a_healthy_normally_stopped_sink():
+    text = M7_OBSERVABILITY_PATCH.read_text(encoding="utf-8")
+
+    assert 'self.emit("trace.completed")' in text
+    assert "if self._healthy and not self._completed" in text
+    assert "stopped_cleanly = True" in text
+    assert "if self._event_sink and stopped_cleanly" in text
 
 
 def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources():
