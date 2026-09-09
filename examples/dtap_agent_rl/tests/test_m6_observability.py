@@ -2,6 +2,13 @@ import json
 import os
 from pathlib import Path
 
+from examples.dtap_agent_rl.benchmark_manifest import (
+    ALL_CASES,
+    DEFAULT_CASES,
+    DOMAIN_ENTRIES,
+    MANIFEST_SHA256,
+    THREAT_MODELS,
+)
 from examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage import audit
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
     DOMAINS,
@@ -21,6 +28,27 @@ def test_default_matrix_keeps_vm_platforms_opt_in():
     assert "macos" not in DOMAINS
     assert "windows" not in DOMAINS
     assert len(DOMAINS) == 12
+    assert THREAT_MODELS == ("direct", "indirect")
+    assert len(ALL_CASES) == 28
+    assert len(DEFAULT_CASES) == 24
+    assert len(MANIFEST_SHA256) == 64
+    assert {
+        entry["name"] for entry in DOMAIN_ENTRIES if entry["vm_backed"]
+    } == EXCLUDED_PLATFORM_DOMAINS
+    assert all(
+        not entry["default_enabled"]
+        for entry in DOMAIN_ENTRIES if entry["vm_backed"]
+    )
+
+
+def test_manifest_coordinates_exist_in_the_dtap_benchmark_inventory():
+    root = _dtap_root() / "benchmark"
+    missing = [
+        f"{domain}/{threat_model}.jsonl"
+        for domain, threat_model in ALL_CASES
+        if not (root / domain / f"{threat_model}.jsonl").is_file()
+    ]
+    assert missing == []
 
 
 def test_summary_separates_completion_reward_and_placement_coverage():

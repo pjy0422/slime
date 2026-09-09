@@ -13,15 +13,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
-ALL_DOMAINS = (
-    "browser", "code", "crm", "customer-service", "finance", "legal",
-    "macos", "medical", "os-filesystem", "research", "telecom", "travel",
-    "windows", "workflow",
-)
-EXCLUDED_PLATFORM_DOMAINS = frozenset({"macos", "windows"})
-DOMAINS = tuple(
-    domain for domain in ALL_DOMAINS if domain not in EXCLUDED_PLATFORM_DOMAINS
+from examples.dtap_agent_rl.benchmark_manifest import (
+    ALL_CASES,
+    ALL_DOMAINS,
+    DOMAINS,
+    EXCLUDED_PLATFORM_DOMAINS,
+    BENCHMARK_MANIFEST,
+    MANIFEST_SHA256,
+    THREAT_MODELS,
+    matrix_cases,
 )
 
 
@@ -144,28 +144,27 @@ def _passed_payload(stdout: str) -> dict[str, Any] | None:
 
 def _stored_results(root: Path) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for domain in ALL_DOMAINS:
-        for threat_model in ("direct", "indirect"):
-            path = root / domain / threat_model / "result.json"
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-            except FileNotFoundError:
-                continue
-            except (OSError, ValueError) as exc:
-                value = {"result_error": type(exc).__name__}
-            if (
-                not isinstance(value, dict)
-                or value.get("domain") != domain
-                or value.get("threat_model") != threat_model
-                or value.get("status") not in ("passed", "failed")
-            ):
-                value = {
-                    "domain": domain,
-                    "threat_model": threat_model,
-                    "status": "failed",
-                    "result_error": "invalid stored result",
-                }
-            results.append(value)
+    for domain, threat_model in ALL_CASES:
+        path = root / domain / threat_model / "result.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:
+            value = {"result_error": type(exc).__name__}
+        if (
+            not isinstance(value, dict)
+            or value.get("domain") != domain
+            or value.get("threat_model") != threat_model
+            or value.get("status") not in ("passed", "failed")
+        ):
+            value = {
+                "domain": domain,
+                "threat_model": threat_model,
+                "status": "failed",
+                "result_error": "invalid stored result",
+            }
+        results.append(value)
     return results
 
 
@@ -322,9 +321,8 @@ async def _main(args: argparse.Namespace) -> int:
         raise ValueError("parallel workers require disjoint valid 512-port ranges")
     args.artifacts_root.mkdir(parents=True, exist_ok=True)
     queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-    for domain in args.domains:
-        for threat_model in args.threat_models:
-            queue.put_nowait((domain, threat_model))
+    for case in matrix_cases(args.domains, args.threat_models):
+        queue.put_nowait(case)
     results: list[dict[str, Any]] = []
 
     async def worker(slot: int) -> None:
@@ -345,6 +343,10 @@ async def _main(args: argparse.Namespace) -> int:
     stored = _stored_results(args.artifacts_root)
     stored.sort(key=lambda item: (item["domain"], item["threat_model"]))
     summary = {
+        "benchmark_manifest": {
+            "schema_version": BENCHMARK_MANIFEST["schema_version"],
+            "sha256": MANIFEST_SHA256,
+        },
         "policy_model": args.policy_model,
         "victim_model": args.victim_model,
         "victim_agent_type": args.victim_agent_type,
@@ -374,8 +376,17 @@ def main() -> None:
     parser.add_argument("--dtap-root", type=Path, required=True)
     parser.add_argument("--slime-root", type=Path, default=Path.cwd())
     parser.add_argument("--artifacts-root", type=Path, required=True)
-    parser.add_argument("--domains", nargs="+", choices=ALL_DOMAINS, default=list(DOMAINS))
-    parser.add_argument("--threat-models", nargs="+", choices=("direct", "indirect"), default=["direct", "indirect"])
+    parser.add_argument(
+        "--domains", nargs="+", choices=ALL_DOMAINS, default=list(DOMAINS),
+        help=(
+            "manifest domains to run; VM-backed domains are excluded by default "
+            "and naming them here is the explicit opt-in"
+        ),
+    )
+    parser.add_argument(
+        "--threat-models", nargs="+", choices=THREAT_MODELS,
+        default=list(THREAT_MODELS),
+    )
     parser.add_argument("--max-parallel", type=int, default=2)
     parser.add_argument("--port-range-start", type=int, default=20_000)
     parser.add_argument("--port-range-stride", type=int, default=1_024)

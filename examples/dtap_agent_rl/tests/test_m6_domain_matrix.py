@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from examples.dtap_agent_rl.benchmark_manifest import matrix_cases
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
     _failure_class,
     _first_record,
@@ -41,6 +42,26 @@ def test_matrix_resolves_malicious_benchmark_record(tmp_path):
         "dataset", "travel", "malicious", "indirect",
         "data-exfiltration", "001",
     )
+
+
+def test_manifest_generates_stable_default_and_explicit_vm_matrices():
+    assert matrix_cases(("travel", "browser"), ("indirect",)) == (
+        ("browser", "indirect"),
+        ("travel", "indirect"),
+    )
+    assert matrix_cases(("windows", "macos"), ("direct",)) == (
+        ("macos", "direct"),
+        ("windows", "direct"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("domains", "threat_models"),
+    [(("unknown",), ("direct",)), (("browser",), ("unsupported",))],
+)
+def test_manifest_rejects_unknown_matrix_coordinates(domains, threat_models):
+    with pytest.raises(ValueError, match="unknown benchmark coordinates"):
+        matrix_cases(domains, threat_models)
 
 
 def test_matrix_extracts_passed_report_from_mixed_server_output():
