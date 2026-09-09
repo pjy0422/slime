@@ -181,6 +181,9 @@ M4 keeps the same four policy tools and H victim-run semantics. Production M4 us
 separate MCP capability, atomic episode authority, Q submit-call budget, typed
 receipts, bounded judge firewall, whole-task manifests, explicit child environment,
 strict Claude configuration, sandbox attestation, and one worker-scoped scheduler.
+The managed DTAP overlay emits structured `task_status` and `attack_status`
+availability fields; reward gating never infers infrastructure failure from judge
+message text.
 
 Minimal trusted worker wiring:
 
@@ -292,9 +295,12 @@ export DTAP_ENV_VERIFICATION=placement
 export DTAP_ENV_VERIFICATION_STRICT=1
 ```
 
-Read-only injection tools are marked `not_applicable`; mutating tools without an
-adapter are marked `unsupported`. Proofs stay inside the trusted DTAP process and
-only expose status plus SHA-256 digest in logs. A verification failure is treated
+Injection MCP tools are classified by exact server/tool name. Independently
+verified placement tools are exposed to the policy; explicitly excluded
+observation, maintenance, and guest automation tools are `not_applicable`.
+Unknown names are `unsupported`, fail strict placement, and fail the adapter
+inventory audit. Proofs stay inside the trusted DTAP process and only expose
+status plus SHA-256 digest in logs. A verification failure is treated
 as infrastructure failure, never as reward zero, so the four-tool M4 policy
 contract and reward semantics are unchanged.
 

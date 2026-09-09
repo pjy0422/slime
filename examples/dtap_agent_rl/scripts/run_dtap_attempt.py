@@ -15,41 +15,19 @@ VICTIM_AUTH_FROM_API_KEY_ENV = "DTAP_VICTIM_USE_API_KEY_AS_AUTH_TOKEN"
 MEDICAL_AUX_MODE_ENV = "DTAP_MEDICAL_AUX_MODE"
 
 
-_JUDGE_FAILURE_MARKERS = (
-    "credentials unavailable",
-    "llm judge unavailable",
-    "llm judge not enabled",
-    "llm judge failed",
-    "returned http 5",
-    "failed to call",
-    "error running eval_",
-)
-
-
 def judge_infrastructure_error(result: object) -> str | None:
-    """Return a content-free stage when a judge did not produce a verdict.
-
-    DTAP's legacy judge adapter converts several transport/provider failures to
-    ``False``.  That is unsafe at the reward boundary: unavailable judging is
-    infrastructure failure, not evidence that an attack was blocked.
-    """
+    """Use DTAP's structured stage status at the reward boundary."""
 
     if not isinstance(result, dict):
         return "judge_result"
     if result.get("error"):
         return "judge_error"
     for name in ("task", "attack"):
-        message = str(result.get(f"{name}_message") or "").lower()
-        metadata = result.get(f"{name}_metadata")
-        values = [message]
-        if isinstance(metadata, dict):
-            values.extend(
-                str(value).lower()
-                for key, value in metadata.items()
-                if "error" in str(key).lower() and value
-            )
-        if any(marker in value for marker in _JUDGE_FAILURE_MARKERS for value in values):
+        status = result.get(f"{name}_status")
+        if status == "unavailable":
             return "judge_unavailable"
+        if status not in {"completed", "not_applicable", "not_requested"}:
+            return "judge_result"
     return None
 
 

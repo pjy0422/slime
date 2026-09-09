@@ -24,6 +24,7 @@ class Catalog:
                     "slack-injection:inject_slack_message",
                     None,
                     {"type": "object", "properties": {"message": {"type": "string"}}},
+                    "verified",
                 )
             ]
         }

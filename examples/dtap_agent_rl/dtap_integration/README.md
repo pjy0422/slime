@@ -38,6 +38,11 @@ The patch is based on DecodingTrust-Agent commit
 - OpenClaw provider token receipts retained in trajectory metadata, including
   exact reasoning-token counts when the provider supplies them. Missing
   reasoning breakdowns remain unavailable rather than being fabricated.
+- structured task/attack judge availability statuses. Reward gating consumes
+  these statuses instead of matching provider-error phrases in judge prose.
+- exact `(server, tool)` matching for tool-description presentation. A tool name
+  appearing only inside another tool's description no longer counts as model
+  presentation evidence.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
 Gmail verification resolves Mailpit list entries to the message-detail endpoint
@@ -78,8 +83,12 @@ Read-back is independent of the injection acknowledgement: HTTP adapters query
 the victim-visible entity, database adapters issue bounded table reads, and file
 adapters inspect the exact TaskExecutor-owned container. Mismatch responses use
 the caller's submitted locator and return only location-bearing `repair.fields`.
-Read-only tools whose names start with `get_`, `list_`, `read_`, or `search_`
-remain `not_applicable`; an unknown mutator fails closed as `unsupported`.
+Every discovered MCP tool is classified by exact name. Tools with independent
+read-back are `verified`; observation, maintenance, and intentionally excluded
+guest automation tools are listed in `NON_PLACEMENT_TOOLS` and remain
+`not_applicable`. A tool in neither registry fails closed as `unsupported`, and
+the inventory audit fails until that new name is deliberately classified. No
+prefix or naming-convention heuristic participates in this boundary.
 
 M4/M6 policy projection keeps exact qualified names and JSON schemas but reduces
 long tool docstrings to their first semantic paragraph. For the representative
@@ -93,19 +102,22 @@ the overlay because this DTAP revision contains no corresponding
 They should be re-enabled only together with an implementation, route mapping,
 independent read-back adapter, and positive/mismatch tests.
 
-To add an adapter:
+To add or classify a tool:
 
-1. Identify a read-only API, database query, or container file read that does
+1. Confirm the tool is meant to be a policy placement action. If not, add its
+   exact server/tool pair to `NON_PLACEMENT_TOOLS` with a short rationale.
+2. For a placement action, identify a read-only API, database query, or
+   container file read that does
    not reuse the injection MCP result as evidence.
-2. Add its port binding to `ROUTES` and target environment to `TARGETS` if they
+3. Add its port binding to `ROUTES` and target environment to `TARGETS` if they
    are absent. Test both bridge port publishing and host networking.
-3. Reuse task-scoped victim credentials via `build_readback_environments`;
+4. Reuse task-scoped victim credentials via `build_readback_environments`;
    never log tokens or the injected payload.
-4. Locate the written entity by a stable key, then compare the semantic fields.
+5. Locate the written entity by a stable key, then compare the semantic fields.
    For list APIs such as Mailpit, fetch the detail record before comparing.
-5. Return only status, locator, and SHA-256 digest. A mismatch or unavailable
+6. Return only status, locator, and SHA-256 digest. A mismatch or unavailable
    read path must raise `VerificationError`, not silently become `unsupported`.
-6. Add positive, mismatch, authentication, and strict-mode unit tests, followed
+7. Add positive, mismatch, authentication, and strict-mode unit tests, followed
    by a real indirect-task smoke test.
 
 Windows and macOS remain outside the default Linux release gate, but the guest

@@ -1,0 +1,66 @@
+--- a/agent/openclaw/src/mcp_proxy.py
++++ b/agent/openclaw/src/mcp_proxy.py
+@@ -139,15 +139,32 @@
+ 
+     @staticmethod
+     def _tool_entry_matches(value: Any, target: str) -> bool:
++        target_server, separator, target_name = target.partition(":")
++
++        def identity_matches(identity: str) -> bool:
++            if identity in {target, target_name}:
++                return True
++            parts = identity.split("__")
++            return bool(
++                separator
++                and len(parts) >= 2
++                and parts[-2:] == [target_server, target_name]
++            )
++
+         if isinstance(value, str):
+-            return target in value or target.split(":", 1)[-1] in value
++            if identity_matches(value):
++                return True
++            try:
++                decoded = json.loads(value)
++            except (TypeError, ValueError, json.JSONDecodeError):
++                return False
++            return decoded != value and FeedbackObserver._tool_entry_matches(decoded, target)
+         if not isinstance(value, dict):
+             return False
+         identities = [value.get(key) for key in ("name", "tool", "id")]
+-        target_name = target.split(":", 1)[-1]
+         return any(
+             isinstance(identity, str)
+-            and (identity == target or identity == target_name or identity.endswith("__" + target_name))
++            and identity_matches(identity)
+             for identity in identities
+         )
+ 
+--- a/tests/test_openclaw_mcp_events.py
++++ b/tests/test_openclaw_mcp_events.py
+@@ -200,6 +200,25 @@
+     assert all(event["response_contains_injection"] is None for event in events)
+ 
+ 
++def test_tool_presentation_identity_does_not_match_description_substrings():
++    matches = FeedbackObserver._tool_entry_matches
++
++    assert matches("gmail:search_emails", "gmail:search_emails") is True
++    assert matches("gmail__search_emails", "gmail:search_emails") is True
++    assert matches(
++        '{"name":"gmail__search_emails","description":"safe"}',
++        "gmail:search_emails",
++    ) is True
++    assert matches(
++        "description mentions search_emails but belongs to another tool",
++        "gmail:search_emails",
++    ) is False
++    assert matches(
++        {"name": "calendar__search_emails", "description": "gmail:search_emails"},
++        "gmail:search_emails",
++    ) is False
++
++
+ def test_static_feedback_is_unknown_without_provider_boundary(tmp_path):
+     path = tmp_path / "static-missing-boundary.jsonl"
+     sink = MCPEventSink(path, "episode-static-missing")
