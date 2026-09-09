@@ -228,7 +228,7 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
 
 ### P2 — Evaluation inventory maintainability
 
-- [ ] Generate repeated domain/platform matrices from one checked-in benchmark
+- [x] Generate repeated domain/platform matrices from one checked-in benchmark
   manifest while retaining explicit opt-in gates for VM-backed platforms.
 
 ## M8 — Real slime RL rollout and training dry-run

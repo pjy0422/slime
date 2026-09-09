@@ -286,8 +286,11 @@ ports and DTAP's host-network containers. Placement mode additionally performs
 independent read-back for every enabled Linux injection mutator. The synchronized
 registry covers 115 Linux tools plus seven Windows and six macOS placement
 mutators (including every tool referenced by current platform indirect tasks).
-Guest platforms remain opt-in for live matrices
-until their VM-backed strict smokes are green on the runner.
+Guest platforms remain opt-in for live matrices until their VM-backed strict
+smokes are green on the runner. The checked-in `benchmark_manifest.json` is the
+single inventory for domain/threat-model matrix generation; Windows and macOS
+have `vm_backed: true` and `default_enabled: false`, so only an explicit
+`--domains windows macos` selection schedules them.
 
 ```bash
 export DTAP_ENV_VERIFICATION=placement
