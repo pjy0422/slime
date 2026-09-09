@@ -400,6 +400,9 @@ async def _main(args) -> None:
                 "schema": "dtap-agent-rl-episode",
                 "schema_version": 1,
                 "episode_id": credentials.public_episode_id,
+                "policy_model": args.policy_model,
+                "victim_model": args.victim_model,
+                "victim_agent_type": args.victim_agent_type,
             }, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )

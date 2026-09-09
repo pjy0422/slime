@@ -21,15 +21,31 @@ dtap-traj serve \
 The UI opens at `http://127.0.0.1:8765` by default and supports:
 
 - run/domain/threat-model/status/attack-success filters,
-- free-text search over episode IDs, risk categories and artifact paths,
+- DTAP's dataset directory convention (`domain/malicious/threat/risk/task`) as
+  the primary debugging label, while preserving the config task ID and random
+  public episode ID as internal references,
+- policy/victim model names (with an explicit `not recorded` fallback),
+- explicit policy tool-call and victim-step counts,
+- policy activity counted by actual tool calls rather than stream-json line
+  count,
+- provider token totals with thinking-included and thinking-excluded views;
+  reasoning values derived from stream estimates are visibly marked `≈`,
+  while victim token usage follows the currently selected `H=h` attempt,
+- cohort ASR cards for first submission (`H=1`), second submission among
+  episodes reaching it (`H=2`), and cumulative success across either
+  submission (`H=1,2`), always with numerator and denominator,
+- free-text search over task/episode IDs, model names, risk categories and
+  artifact paths,
 - lazy Policy trajectory view,
 - lazy Victim trajectory view,
-- side-by-side Combined view,
+- side-by-side Combined view pairing the selected `H=h` submitted config with
+  the victim trajectory produced by that submission,
 - DTAP task/attack judge results with deterministic and LLM-as-judge labels,
 - the trusted reward-firewall verdict kept separate from raw judge metadata,
 - original/submitted Config Diff,
 - server-side pagination,
 - live re-indexing with `--watch`.
+- persistent light/dark color themes from the top-bar toggle.
 
 ### Judge semantics
 

@@ -52,6 +52,12 @@ M7_BOUNDARY_MATRIX_PATCH = (
     / "patches"
     / "m7-feedback-boundary-matrix.patch"
 )
+TOKEN_OBSERVABILITY_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-token-observability.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -74,6 +80,23 @@ def test_openclaw_patch_supports_current_cli_envelope_and_trajectory_fallback():
     assert '"type": "prompt.submitted"' in text
     assert '"type": "model.completed"' in text
     assert '"type": "session.ended"' in text
+
+
+def test_openclaw_token_usage_patch_preserves_provider_receipt():
+    text = TOKEN_OBSERVABILITY_PATCH.read_text(encoding="utf-8")
+
+    assert "def _openclaw_token_usage(" in text
+    assert 'agent_meta.get("diagnosticUsage")' in text
+    assert 'agent_meta.get("lastCallUsage")' in text
+    assert 'count("reasoningTokens", "reasoning_tokens")' in text
+    assert 'trace_metadata["token_usage"] = self._token_usage' in text
+    assert 'trace_metadata["model"] = model.strip()' in text
+    assert '**({"usage": self._token_usage} if self._token_usage else {})' in text
+    assert 'metadata"]["token_usage"] = dict(' in text
+    assert 'metadata"]["model"] = meta["model"].strip()' in text
+    assert text.index('agent_meta.get("diagnosticUsage")') < text.index(
+        'agent_meta.get("usage")'
+    )
 
 
 def test_openclaw_patch_forwards_the_shared_provider_to_medical_aux_models():

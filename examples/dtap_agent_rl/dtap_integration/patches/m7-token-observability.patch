@@ -1,0 +1,136 @@
+--- a/agent/openclaw/src/agent.py
++++ b/agent/openclaw/src/agent.py
+@@ -43,6 +43,54 @@
+ OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+ 
+ 
++def _openclaw_token_usage(payload: Any) -> Optional[Dict[str, Any]]:
++    """Project OpenClaw's provider receipt without estimating missing fields."""
++    if not isinstance(payload, dict):
++        return None
++    meta = payload.get("meta")
++    agent_meta = meta.get("agentMeta") if isinstance(meta, dict) else None
++    candidates = (
++        agent_meta.get("diagnosticUsage") if isinstance(agent_meta, dict) else None,
++        agent_meta.get("usage") if isinstance(agent_meta, dict) else None,
++        agent_meta.get("lastCallUsage") if isinstance(agent_meta, dict) else None,
++        meta.get("usage") if isinstance(meta, dict) else None,
++        payload.get("usage"),
++    )
++    usage = next((item for item in candidates if isinstance(item, dict)), None)
++    if usage is None:
++        return None
++
++    def count(*names: str) -> Optional[int]:
++        for name in names:
++            value = usage.get(name)
++            if isinstance(value, (int, float)) and not isinstance(value, bool):
++                return max(0, int(value))
++        return None
++
++    input_tokens = count("input", "inputTokens", "input_tokens")
++    output_tokens = count("output", "outputTokens", "output_tokens")
++    if input_tokens is None and output_tokens is None:
++        return None
++    cache_read = count("cacheRead", "cache_read_input_tokens") or 0
++    cache_write = count("cacheWrite", "cache_creation_input_tokens") or 0
++    reasoning = count("reasoningTokens", "reasoning_tokens")
++    prompt_tokens = (input_tokens or 0) + cache_read + cache_write
++    output_tokens = output_tokens or 0
++    return {
++        "input_tokens": input_tokens or 0,
++        "cache_read_tokens": cache_read,
++        "cache_write_tokens": cache_write,
++        "output_tokens": output_tokens,
++        "reasoning_tokens": reasoning,
++        "reasoning_source": "provider" if reasoning is not None else "unavailable",
++        "tokens_with_reasoning": prompt_tokens + output_tokens,
++        "tokens_without_reasoning": (
++            prompt_tokens + max(0, output_tokens - reasoning)
++            if reasoning is not None else None
++        ),
++    }
++
++
+ class OpenClawAgent(Agent):
+     """
+     This agent integrates with the OpenClaw CLI to execute instructions and interact with MCP servers.
+@@ -101,6 +149,7 @@
+         self._trace_metadata: Optional[Dict[str, Any]] = None
+         self._current_trajectory: Optional[Trajectory] = None
+         self._last_cli_payload: Optional[Dict[str, Any]] = None
++        self._token_usage: Optional[Dict[str, Any]] = None
+ 
+         # MCP Proxy Manager
+         self._proxy_manager: Optional[MCPProxyManager] = None
+@@ -771,6 +820,7 @@
+             if decoded:
+                 result = max(decoded, key=lambda item: item[0])[1]
+                 self._last_cli_payload = result
++                self._token_usage = _openclaw_token_usage(result)
+                 payload_texts = [
+                     item.get("text", "")
+                     for item in result.get("payloads", [])
+@@ -1070,7 +1120,10 @@
+             if isinstance(assistant, str) and assistant:
+                 entries.append({
+                     **common, "type": "model.completed",
+-                    "data": {"assistantTexts": [assistant]},
++                    "data": {
++                        "assistantTexts": [assistant],
++                        **({"usage": self._token_usage} if self._token_usage else {}),
++                    },
+                 })
+             entries.append({
+                 **common, "type": "session.ended",
+@@ -1091,6 +1144,27 @@
+             )
+             return
+         self._observe_feedback_messages(session_path)
++        trace_metadata = dict(self._trace_metadata or {})
++        if self._token_usage is not None:
++            trace_metadata["token_usage"] = self._token_usage
++        if self._last_cli_payload:
++            cli_meta = self._last_cli_payload.get("meta")
++            agent_meta = (
++                cli_meta.get("agentMeta") if isinstance(cli_meta, dict) else None
++            )
++            execution_trace = (
++                cli_meta.get("executionTrace")
++                if isinstance(cli_meta, dict) else None
++            )
++            model = (
++                agent_meta.get("model") if isinstance(agent_meta, dict) else None
++            ) or (
++                execution_trace.get("winnerModel")
++                if isinstance(execution_trace, dict) else None
++            )
++            if isinstance(model, str) and model.strip():
++                trace_metadata["model"] = model.strip()
++        self._trace_metadata = trace_metadata
+         try:
+             convert_call = partial(
+                 self.trajectory_converter.convert_session_log,
+@@ -1148,6 +1222,7 @@
+         self._trace_metadata = None
+         self._current_trajectory = None
+         self._last_cli_payload = None
++        self._token_usage = None
+ 
+     async def cleanup(self) -> None:
+         """Clean up resources: stop proxies, restore config."""
+--- a/agent/openclaw/src/utils.py
++++ b/agent/openclaw/src/utils.py
+@@ -61,6 +61,12 @@
+         traj.data["traj_info"]["metadata"] = {
+             "framework": "openclaw",
+         }
++        if isinstance(meta.get("model"), str) and meta["model"].strip():
++            traj.data["traj_info"]["metadata"]["model"] = meta["model"].strip()
++        if isinstance(meta.get("token_usage"), dict):
++            traj.data["traj_info"]["metadata"]["token_usage"] = dict(
++                meta["token_usage"]
++            )
+ 
+         # Store MCP tool lists as metadata (not trajectory steps)
+         if mcp_tool_lists:
