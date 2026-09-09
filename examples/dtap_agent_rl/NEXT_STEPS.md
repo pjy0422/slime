@@ -149,6 +149,10 @@ in [M7_DOMAIN_FEEDBACK.md](M7_DOMAIN_FEEDBACK.md).
   `response_contains_injection` can be set without storing raw tool results.
 - [x] Add backend-specific regression fixtures for filtering, pagination,
   duplicate names, and stale records as exact-locator adapters are expanded.
+- [x] Add a no-E2E feedback-boundary matrix using 24 benchmark records disjoint
+  from the live record-zero matrix. Cover every Linux domain in direct and
+  indirect modes, multiline payloads, real runtime MCP namespaces, missing
+  payloads, provider-presentation separation, and write-echo false positives.
 - [x] Instrument the victim message assembly boundary so `presented_to_model`
   reflects the actual provider request rather than a successful MCP call.
 - [x] Keep skill use explicitly `unknown` until OpenClaw exposes a trusted

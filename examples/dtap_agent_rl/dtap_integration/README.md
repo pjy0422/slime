@@ -30,6 +30,11 @@ The patch is based on DecodingTrust-Agent commit
   exact locator. Prompt, tool, and skill presentation is observed at OpenClaw's
   provider-request assembly boundary. Raw locators and payloads are never
   retained in MCP events.
+- a service-free M7 feedback-boundary matrix over 24 alternate benchmark tasks
+  (one direct and one indirect case per Linux domain). It independently checks
+  payload return and provider presentation, including multiline payloads and
+  the actual `customer_service`, `Research`, `travel-suite`, and
+  `HospitalClient` MCP namespaces.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
 Gmail verification resolves Mailpit list entries to the message-detail endpoint
@@ -183,8 +188,16 @@ pytest -q examples/dtap_agent_rl/tests
 pytest -q /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_env_verification.py
 pytest -q \
   /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_openclaw_mcp_events.py \
-  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_observation.py
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_observation.py \
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_boundary_matrix.py
 ```
+
+The boundary matrix does not call a policy, victim LLM, environment, judge, or
+Digestor. The live matrix uses benchmark record zero; this suite selects a
+later record for every domain/threat-model pair and prefers environment-bearing
+records. Its 100 parametrized checks cover provenance, positive evidence,
+payload absence, result-versus-model-presentation separation, runtime MCP name
+aliases, and write-echo rejection.
 
 Run real M5 indirect-task smokes without a victim LLM or judge:
 

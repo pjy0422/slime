@@ -46,6 +46,12 @@ M7_EXACT_LOCATORS_PATCH = (
 M7_DOMAIN_FEEDBACK_PATCH = (
     Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-domain-feedback.patch"
 )
+M7_BOUNDARY_MATRIX_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-feedback-boundary-matrix.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -172,6 +178,22 @@ def test_m7_v2_overlay_explicitly_covers_linux_registry_only():
     assert "assert len(SUPPORTED_FEEDBACK_TOOLS) == 25" in text
     assert "assert checked == 115" in text
     assert 'if server not in {"windows-injection", "macos-injection"}' in text
+
+
+def test_m7_boundary_matrix_uses_alternate_records_and_real_mcp_namespaces():
+    text = M7_BOUNDARY_MATRIX_PATCH.read_text(encoding="utf-8")
+
+    assert 'DOMAINS = (' in text
+    assert 'assert len(CASES) == 24' in text
+    assert 'assert case.benchmark_index > 0' in text
+    assert 'response_contains_injection' in text
+    assert 'presented_to_model' in text
+    assert '"customer_service"' in text
+    assert '"Research"' in text
+    assert '"travel-suite"' in text
+    assert '"HospitalClient:get_patient_status"' in text
+    assert 'test_customer_service_batch_fallback_cannot_treat_write_echo_as_read' in text
+    assert 'Serializing a tool result before matching changes newlines' in text
 
 
 def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources():
