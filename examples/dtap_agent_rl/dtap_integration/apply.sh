@@ -38,6 +38,7 @@ incremental_patches=(
   "$script_dir/patches/m7-explicit-tool-capabilities.patch"
   "$script_dir/patches/m7-structured-judge-status.patch"
   "$script_dir/patches/m7-exact-tool-presentation-identity.patch"
+  "$script_dir/patches/p6-exact-adapter-dispatch.patch"
 )
 patches=("${base_patches[@]}" "${incremental_patches[@]}")
 # Hash contents, not absolute filenames: the checkout may be reached through a

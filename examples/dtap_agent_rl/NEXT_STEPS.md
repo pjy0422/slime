@@ -219,11 +219,11 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
 
 ### P1 — Adapter maintainability
 
-- [ ] Replace remaining adapter-family `startswith` dispatches with exact
+- [x] Replace remaining adapter-family `startswith` dispatches with exact
   per-tool handler sets. They are currently guarded by exact registries and are
   not authorization checks, so this is a maintainability task rather than a
   release blocker.
-- [ ] Add a registry-to-handler exhaustiveness assertion so registering a new
+- [x] Add a registry-to-handler exhaustiveness assertion so registering a new
   placement or feedback tool requires choosing its handler family explicitly.
 
 ### P2 — Evaluation inventory maintainability
