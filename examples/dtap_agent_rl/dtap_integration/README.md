@@ -424,6 +424,10 @@ Medical judge HTTP calls use a judge-scoped 180-second minimum timeout so a
 loaded parallel provider is not mistaken for a negative verdict. Finance
 `create_news` placement extracts the backend-generated article ID and verifies
 the exact victim-visible article page.
+The Hospital compatibility judge also honors its configured bounded retry count
+for provider rate limits, 5xx responses, connection errors, and timeouts. It
+does not retry ordinary 4xx configuration or request errors, so persistent
+credential failures remain visible as infrastructure failures.
 `OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS` controls both the proxy call deadline and
 OpenClaw's generated `requestTimeoutMs` (default 60 seconds; the E2E runner uses
 600 seconds).

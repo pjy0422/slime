@@ -1,0 +1,108 @@
+--- a/dt_arena/envs/hospital/hospital_compat.py
++++ b/dt_arena/envs/hospital/hospital_compat.py
+@@ -10,6 +10,7 @@
+ import json
+ import multiprocessing
+ import os
++import time
+ 
+ from openai import OpenAI
+ from waitress import serve
+@@ -25,7 +26,6 @@
+     timeout=20.0,
+     max_tokens=200,
+ ):
+-    del tries
+     client = OpenAI(
+         api_key=os.environ["OPENAI_API_KEY"],
+         base_url=os.environ["OPENAI_BASE_URL"],
+@@ -33,13 +33,29 @@
+         timeout=max(float(timeout), 60.0),
+     )
+-    response = client.chat.completions.create(
+-        model=str(model_str),
+-        messages=[
+-            {"role": "system", "content": str(system_prompt)},
+-            {"role": "user", "content": str(prompt)},
+-        ],
+-        max_tokens=max_tokens,
+-    )
++    attempts = max(1, int(tries))
++    for attempt in range(attempts):
++        try:
++            response = client.chat.completions.create(
++                model=str(model_str),
++                messages=[
++                    {"role": "system", "content": str(system_prompt)},
++                    {"role": "user", "content": str(prompt)},
++                ],
++                max_tokens=max_tokens,
++            )
++            break
++        except Exception as exc:
++            status = getattr(exc, "status_code", None)
++            retryable = (
++                status == 429
++                or isinstance(status, int) and status >= 500
++                or type(exc).__name__ in {
++                    "APIConnectionError", "APITimeoutError", "RateLimitError",
++                }
++            )
++            if not retryable or attempt + 1 >= attempts:
++                raise
++            time.sleep(min(2 ** attempt, 8))
+     content = response.choices[0].message.content
+     if isinstance(content, str):
+         return content.strip()
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -1,10 +1,12 @@
+ import ast
+ import importlib.util
+ import json
++import os
++import sys
+ import tempfile
+ import unittest
+ from pathlib import Path
+ from types import SimpleNamespace
+-from unittest.mock import AsyncMock, patch
++from unittest.mock import AsyncMock, Mock, patch
+ 
+ from dt_arena.src.env_verification import (
+@@ -1006,3 +1008,35 @@
+ class ModeTests(unittest.TestCase):
++    def test_hospital_compat_retries_rate_limit_then_returns_judgment(self):
++        repo = Path(__file__).resolve().parents[1]
++        create = Mock()
++        limited = RuntimeError("rate limited")
++        limited.status_code = 429
++        create.side_effect = [
++            limited,
++            SimpleNamespace(
++                choices=[SimpleNamespace(message=SimpleNamespace(content="judged"))]
++            ),
++        ]
++        client = SimpleNamespace(
++            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
++        )
++        with patch.dict(sys.modules, {"main": SimpleNamespace()}):
++            compat = _load_module(
++                "hospital_compat_retry_test",
++                repo / "dt_arena/envs/hospital/hospital_compat.py",
++            )
++        with patch.dict(os.environ, {
++            "OPENAI_API_KEY": "test-key", "OPENAI_BASE_URL": "https://example.test",
++        }), patch.object(compat, "OpenAI", return_value=client), patch.object(
++            compat.time, "sleep"
++        ) as sleep:
++            result = compat._query_openai_compatible(
++                "model", "prompt", "system", tries=3
++            )
++
++        self.assertEqual(result, "judged")
++        self.assertEqual(create.call_count, 2)
++        sleep.assert_called_once_with(1)
++
+     def test_only_allowlisted_write_credentials_are_forwarded(self):
+         agent = SimpleNamespace(

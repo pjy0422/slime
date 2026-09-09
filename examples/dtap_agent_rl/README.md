@@ -292,6 +292,23 @@ single inventory for domain/threat-model matrix generation; Windows and macOS
 have `vm_backed: true` and `default_enabled: false`, so only an explicit
 `--domains windows macos` selection schedules them.
 
+For a second, task-disjoint Linux regression matrix, `holdout-v1` selects record
+50 for every domain/threat-model coordinate and refuses to resume artifacts from
+another profile:
+
+```bash
+python -m examples.dtap_agent_rl.scripts.run_p3_holdout_gate \
+  --dtap-root /path/to/DecodingTrust-Agent \
+  --artifacts-root /path/to/p3-holdout-artifacts
+```
+
+The gate applies the managed DTAP overlay by default. `--skip-overlay` is an
+explicit escape hatch for a development checkout that already contains the
+complete overlay; clean release reproduction must leave it unset.
+The default concurrency is eight. On a nonzero matrix result, two bounded
+resume passes halve concurrency (8→4→2), preserving passed cases while retrying
+provider-rate-limited or otherwise incomplete cases.
+
 ```bash
 export DTAP_ENV_VERIFICATION=placement
 # Optional rollout gate: reject tools without a placement adapter.

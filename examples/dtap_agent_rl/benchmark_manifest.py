@@ -17,6 +17,7 @@ def _load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("schema_version") != 1:
         raise ValueError("unsupported DTAP benchmark manifest schema")
     threat_models = value.get("threat_models")
+    selection_profiles = value.get("selection_profiles")
     domains = value.get("domains")
     if (
         not isinstance(threat_models, list)
@@ -25,6 +26,21 @@ def _load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
         or len(set(threat_models)) != len(threat_models)
     ):
         raise ValueError("benchmark manifest has invalid threat models")
+    if not isinstance(selection_profiles, Mapping) or not selection_profiles:
+        raise ValueError("benchmark manifest has no selection profiles")
+    profile_indices: set[int] = set()
+    for name, profile in selection_profiles.items():
+        if not isinstance(name, str) or not name or not isinstance(profile, Mapping):
+            raise ValueError("benchmark manifest has an invalid selection profile")
+        index = profile.get("benchmark_index")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or index < 0
+            or index in profile_indices
+        ):
+            raise ValueError(f"selection profile {name!r} has an invalid index")
+        profile_indices.add(index)
     if not isinstance(domains, list) or not domains:
         raise ValueError("benchmark manifest has no domains")
     names: set[str] = set()
@@ -51,6 +67,10 @@ BENCHMARK_MANIFEST = _load_manifest()
 MANIFEST_SHA256 = hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest()
 DOMAIN_ENTRIES = tuple(BENCHMARK_MANIFEST["domains"])
 THREAT_MODELS = tuple(BENCHMARK_MANIFEST["threat_models"])
+SELECTION_PROFILES = {
+    str(name): int(profile["benchmark_index"])
+    for name, profile in BENCHMARK_MANIFEST["selection_profiles"].items()
+}
 ALL_DOMAINS = tuple(str(entry["name"]) for entry in DOMAIN_ENTRIES)
 DOMAINS = tuple(
     str(entry["name"]) for entry in DOMAIN_ENTRIES if entry["default_enabled"]

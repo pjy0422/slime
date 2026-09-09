@@ -20,6 +20,7 @@ from examples.dtap_agent_rl.benchmark_manifest import (
     EXCLUDED_PLATFORM_DOMAINS,
     BENCHMARK_MANIFEST,
     MANIFEST_SHA256,
+    SELECTION_PROFILES,
     THREAT_MODELS,
     matrix_cases,
 )
@@ -110,13 +111,30 @@ def _summary_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _first_record(path: Path) -> dict[str, Any]:
+    return _selected_record(path, "release-v1")[0]
+
+
+def _selected_record(
+    path: Path, selection_profile: str,
+) -> tuple[dict[str, Any], int]:
+    index = SELECTION_PROFILES[selection_profile]
+    selected: dict[str, Any] | None = None
+    record_index = 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
-            if line.strip():
+            if not line.strip():
+                continue
+            if record_index == index:
                 value = json.loads(line)
                 if isinstance(value, dict):
-                    return value
-    raise ValueError(f"empty benchmark list: {path}")
+                    selected = value
+                break
+            record_index += 1
+    if selected is None:
+        raise ValueError(
+            f"benchmark profile {selection_profile!r} index {index} is unavailable: {path}"
+        )
+    return selected, index
 
 
 def _task_dir(dtap_root: Path, record: dict[str, Any]) -> Path:
@@ -173,6 +191,33 @@ def _failure_count(results: list[dict[str, Any]]) -> int:
     return sum(item.get("status") != "passed" for item in results)
 
 
+def _matching_resume_result(
+    path: Path,
+    *,
+    selection_profile: str,
+    benchmark_index: int,
+    task_id: str,
+    risk_category: str,
+) -> dict[str, Any] | None:
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(previous, dict):
+        return None
+    previous_profile = previous.get("selection_profile", "release-v1")
+    previous_index = previous.get("benchmark_index", 0)
+    if (
+        previous.get("status") == "passed"
+        and previous.get("task_id") == task_id
+        and previous.get("risk_category") == risk_category
+        and previous_profile == selection_profile
+        and previous_index == benchmark_index
+    ):
+        return previous
+    return None
+
+
 async def _run_case(
     args: argparse.Namespace,
     *,
@@ -180,18 +225,24 @@ async def _run_case(
     threat_model: str,
     slot: int,
 ) -> dict[str, Any]:
-    record = _first_record(args.dtap_root / "benchmark" / domain / f"{threat_model}.jsonl")
+    record, benchmark_index = _selected_record(
+        args.dtap_root / "benchmark" / domain / f"{threat_model}.jsonl",
+        args.selection_profile,
+    )
     task_dir = _task_dir(args.dtap_root, record)
     case_dir = args.artifacts_root / domain / threat_model
     case_dir.mkdir(parents=True, exist_ok=True)
     result_path = case_dir / "result.json"
     if args.resume and result_path.exists():
-        try:
-            previous = json.loads(result_path.read_text(encoding="utf-8"))
-            if previous.get("status") == "passed":
-                return previous
-        except (OSError, json.JSONDecodeError):
-            pass
+        previous = _matching_resume_result(
+            result_path,
+            selection_profile=args.selection_profile,
+            benchmark_index=benchmark_index,
+            task_id=str(record["task_id"]),
+            risk_category=str(record["risk_category"]),
+        )
+        if previous is not None:
+            return previous
 
     start = args.port_range_start + slot * args.port_range_stride
     end = start + 511
@@ -258,6 +309,8 @@ async def _run_case(
         "task_dir": str(task_dir),
         "task_id": str(record["task_id"]),
         "risk_category": str(record["risk_category"]),
+        "selection_profile": args.selection_profile,
+        "benchmark_index": benchmark_index,
         "policy_model": args.policy_model,
         "victim_model": args.victim_model,
         "victim_agent_type": args.victim_agent_type,
@@ -347,6 +400,8 @@ async def _main(args: argparse.Namespace) -> int:
             "schema_version": BENCHMARK_MANIFEST["schema_version"],
             "sha256": MANIFEST_SHA256,
         },
+        "selection_profile": args.selection_profile,
+        "benchmark_index": SELECTION_PROFILES[args.selection_profile],
         "policy_model": args.policy_model,
         "victim_model": args.victim_model,
         "victim_agent_type": args.victim_agent_type,
@@ -386,6 +441,11 @@ def main() -> None:
     parser.add_argument(
         "--threat-models", nargs="+", choices=THREAT_MODELS,
         default=list(THREAT_MODELS),
+    )
+    parser.add_argument(
+        "--selection-profile", choices=tuple(SELECTION_PROFILES),
+        default="release-v1",
+        help="manifest-defined benchmark record selection (holdout-v1 is disjoint)",
     )
     parser.add_argument("--max-parallel", type=int, default=2)
     parser.add_argument("--port-range-start", type=int, default=20_000)

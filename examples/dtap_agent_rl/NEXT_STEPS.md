@@ -231,6 +231,22 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
 - [x] Generate repeated domain/platform matrices from one checked-in benchmark
   manifest while retaining explicit opt-in gates for VM-backed platforms.
 
+### P3 — Disjoint live E2E regression
+
+- [x] Add a manifest-defined `holdout-v1` selector covering 24 Linux
+  direct/indirect coordinates without reusing the release-v1 record-zero tasks.
+- [x] Reject missing holdout indices and prevent `--resume` from accepting an
+  artifact produced by another selection profile.
+- [x] Run all 24 holdout cases with DeepSeek policy/victim, OpenClaw victim
+  harness, H=2, strict placement, and deterministic adaptive feedback.
+- [x] Retain the run summary and trajectories as one viewer-compatible run.
+
+#### P3 exit criteria
+
+- [x] The 24 selected task identities are disjoint from release-v1, all cases
+  complete or receive an explicit failure classification, and the result
+  summary records the benchmark-manifest digest and selection profile.
+
 ## M8 — Real slime RL rollout and training dry-run
 
 - [ ] Add trainer-only feedback diagnostics to the rollout record so experiments

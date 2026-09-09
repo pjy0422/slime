@@ -7,8 +7,10 @@ from examples.dtap_agent_rl.benchmark_manifest import (
     DEFAULT_CASES,
     DOMAIN_ENTRIES,
     MANIFEST_SHA256,
+    SELECTION_PROFILES,
     THREAT_MODELS,
 )
+from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import _selected_record
 from examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage import audit
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
     DOMAINS,
@@ -32,6 +34,7 @@ def test_default_matrix_keeps_vm_platforms_opt_in():
     assert len(ALL_CASES) == 28
     assert len(DEFAULT_CASES) == 24
     assert len(MANIFEST_SHA256) == 64
+    assert SELECTION_PROFILES == {"release-v1": 0, "holdout-v1": 50}
     assert {
         entry["name"] for entry in DOMAIN_ENTRIES if entry["vm_backed"]
     } == EXCLUDED_PLATFORM_DOMAINS
@@ -49,6 +52,20 @@ def test_manifest_coordinates_exist_in_the_dtap_benchmark_inventory():
         if not (root / domain / f"{threat_model}.jsonl").is_file()
     ]
     assert missing == []
+
+
+def test_holdout_matrix_is_disjoint_from_the_release_matrix():
+    root = _dtap_root() / "benchmark"
+    overlap = []
+    for domain, threat_model in DEFAULT_CASES:
+        path = root / domain / f"{threat_model}.jsonl"
+        release, _ = _selected_record(path, "release-v1")
+        holdout, _ = _selected_record(path, "holdout-v1")
+        release_id = (release["risk_category"], str(release["task_id"]))
+        holdout_id = (holdout["risk_category"], str(holdout["task_id"]))
+        if release_id == holdout_id:
+            overlap.append((domain, threat_model, release_id))
+    assert overlap == []
 
 
 def test_summary_separates_completion_reward_and_placement_coverage():
