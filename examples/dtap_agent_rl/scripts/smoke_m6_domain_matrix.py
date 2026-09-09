@@ -259,6 +259,9 @@ async def _run_case(
         "task_dir": str(task_dir),
         "task_id": str(record["task_id"]),
         "risk_category": str(record["risk_category"]),
+        "policy_model": args.policy_model,
+        "victim_model": args.victim_model,
+        "victim_agent_type": args.victim_agent_type,
         "returncode": process.returncode,
         "port_range": f"{start}-{end}",
     }
@@ -277,6 +280,7 @@ async def _run_case(
                 "victim_completed", "judge_completed", "victim_mcp_events",
                 "judge_artifacts",
                 "environment_tools",
+                "policy_model", "victim_model", "victim_agent_type",
                 "feedback_mode", "reasoning_summary_enabled", "digestor_usage",
             )
         })

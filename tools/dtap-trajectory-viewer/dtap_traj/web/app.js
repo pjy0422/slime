@@ -2,7 +2,7 @@ const state = {
   facets: null, episodes: [], total: 0, selected: null, tab: 'policy',
   attempt: null,
   page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', attack_evaluated:'', q:''},
-  cache: new Map(), loading: false,
+  cache: new Map(), loading: false, asr: null,
 };
 const $ = (s, root=document) => root.querySelector(s);
 const esc = (v='') => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -21,7 +21,7 @@ async function loadFacets(){ state.facets = await api('/api/facets'); }
 async function loadEpisodes(){
   state.loading = true; render();
   const data = await api(`/api/episodes?${qsFilters()}`);
-  state.episodes = data.items; state.total = data.total; state.loading = false;
+  state.episodes = data.items; state.total = data.total; state.asr = data.asr; state.loading = false;
   if (!state.selected || !state.episodes.some(x => x.episode_id === state.selected.episode_id)) {
     state.selected = state.episodes[0] || null;
     state.attempt = null;
@@ -48,6 +48,7 @@ function options(items, selected, all='All') {
 function sidebar(){
   const f=state.facets||{}; const s=state.filters;
   return `<aside class="sidebar">
+    ${asrPanel()}
     <div class="eyebrow">Run</div><div class="filter"><select data-filter="run_name">${options(f.runs,s.run_name)}</select></div>
     <div class="eyebrow">Trajectory</div>
     <div class="filter"><label>Domain</label><select data-filter="domain">${options(f.domains,s.domain)}</select></div>
@@ -62,18 +63,56 @@ function sidebar(){
     <button class="reset" id="resetFilters">Reset filters</button>
   </aside>`;
 }
+function asrCard(label, value, title){
+  const ready=value&&value.rate!==null;
+  const percent=ready?`${(value.rate*100).toFixed(1)}%`:'—';
+  const ratio=ready?`${value.successes}/${value.evaluated}`:'0/0';
+  return `<div class="asr-card" title="${esc(title)}"><span>${esc(label)}</span><b>${percent}</b><small>${ratio}</small></div>`;
+}
+function asrPanel(){
+  const a=state.asr||{};
+  return `<div class="eyebrow">Attack success rate</div><div class="asr-grid">
+    ${asrCard('H=1',a.h1,'First-submission ASR')}
+    ${asrCard('H=2',a.h2,'Second-submission ASR among episodes that reached H=2')}
+    ${asrCard('H=1,2',a.cumulative,'Cumulative ASR: either submission succeeded')}
+  </div>`;
+}
 function attackLabel(value, compact=false){
   if(value===true) return [compact?'succeeded':'attack succeeded','bad'];
   if(value===false) return [compact?'failed':'attack failed','ok'];
   return [compact?'not evaluated':'attack not evaluated','neutral'];
+}
+function count(value){ return value===null||value===undefined?'—':Number(value).toLocaleString(); }
+function taskLabel(ep){ return ep.dataset_path||ep.task_id||ep.episode_id; }
+function tokenMetrics(actor, usage){
+  if(!usage) return `<span class="metric">${actor} tokens <b>not recorded</b></span>`;
+  const approximate=usage.reasoning_source==='stream_estimate';
+  const without=usage.tokens_without_reasoning===null||usage.tokens_without_reasoning===undefined
+    ? 'unavailable':`${approximate?'≈':''}${count(usage.tokens_without_reasoning)}`;
+  const thinking=usage.reasoning_tokens===null||usage.reasoning_tokens===undefined
+    ? 'unavailable':`${approximate?'≈':''}${count(usage.reasoning_tokens)}`;
+  return `<span class="metric token-metric" title="input ${count(usage.input_tokens)}, output ${count(usage.output_tokens)}; thinking ${esc(usage.reasoning_source||'unavailable')}">${actor} tokens incl. thinking <b>${count(usage.tokens_with_reasoning)}</b></span><span class="metric token-metric">${actor} tokens excl. thinking <b>${without}</b></span><span class="metric token-metric">${actor} thinking <b>${thinking}</b></span>`;
+}
+function theme(){ return document.documentElement.dataset.theme==='light'?'light':'dark'; }
+function setTheme(value){
+  document.documentElement.dataset.theme=value;
+  try { localStorage.setItem('dtap-explorer-theme',value); } catch (_) {}
+  const button=$('#themeToggle');
+  if(button){
+    const light=value==='light';
+    button.innerHTML=light?'☾ Dark':'☀ Light';
+    button.setAttribute('aria-label',`Switch to ${light?'dark':'light'} theme`);
+    button.setAttribute('aria-pressed',String(light));
+  }
 }
 function episodeRow(ep){
   const active=state.selected?.episode_id===ep.episode_id;
   const [attackText,attackClass]=attackLabel(ep.attack_success);
   return `<div class="episode ${active?'active':''}" data-episode="${esc(ep.episode_id)}">
     <div class="ep-top"><span class="domain">${esc(ep.domain||'unknown')}</span><span class="threat">${esc(ep.threat_model||'—')}</span></div>
-    <div class="ep-id">${esc(ep.episode_id)}</div>
-    <div class="ep-meta"><span class="${attackClass}"><i class="dot"></i>${attackText}</span><span>${ep.policy_events??'—'} policy</span><span>${ep.victim_events??'—'} victim</span></div>
+    <div class="ep-id" title="${esc(taskLabel(ep))}">${esc(taskLabel(ep))}</div>
+    <div class="ep-run" title="${esc(ep.episode_id)}">${esc(ep.run_name||'run')} · episode ${esc(ep.episode_id)}</div>
+    <div class="ep-meta"><span class="${attackClass}"><i class="dot"></i>${attackText}</span><span>${count(ep.policy_events)} policy tool calls</span><span>${count(ep.victim_events)} victim steps</span></div>
   </div>`;
 }
 function listPane(){
@@ -87,8 +126,9 @@ function detailShell(){
   if(!ep) return `<main class="detail"><div class="empty"><div><strong>No trajectory selected</strong>Adjust filters or index a run.</div></div></main>`;
   const [attackText,attackClass]=attackLabel(ep.attack_success,true);
   return `<main class="detail"><div class="detailhead">
-      <div class="detail-title"><h1>${esc(ep.domain||'Episode')}</h1><span class="badge">${esc(ep.threat_model||'unknown')}</span><span class="badge">${esc(ep.status||ep.episode_status||'unknown')}</span></div>
-      <div class="metrics"><span class="metric">episode <b>${esc(ep.episode_id)}</b></span><span class="metric">policy <b>${ep.policy_events??'—'}</b></span><span class="metric">victim <b>${ep.victim_events??'—'}</b></span><span class="metric">placements <b>${ep.placements_verified??0}</b></span><span class="metric">attack judge <b class="${attackClass}">${attackText}</b></span></div>
+      <div class="detail-title"><h1>${esc(taskLabel(ep))}</h1><span class="badge">${esc(ep.domain||'unknown')}</span><span class="badge">${esc(ep.threat_model||'unknown')}</span><span class="badge">${esc(ep.status||ep.episode_status||'unknown')}</span></div>
+      <div class="episode-ref">run ${esc(ep.run_name||'unknown')} · config task ${esc(ep.task_id||'not recorded')} · internal episode ${esc(ep.episode_id)}</div>
+      <div class="metrics"><span class="metric">policy model <b>${esc(ep.policy_model||'not recorded')}</b></span><span class="metric">victim model <b>${esc(ep.victim_model||'not recorded')}</b></span><span class="metric">policy tool calls <b>${count(ep.policy_events)}</b></span><span class="metric">victim steps <b>${count(ep.victim_events)}</b></span><span class="metric">placements verified <b>${count(ep.placements_verified??0)}</b></span><span class="metric">attack judge <b class="${attackClass}">${attackText}</b></span>${tokenMetrics('policy',ep.policy_usage)}<span class="victim-token-summary">${tokenMetrics('victim',ep.victim_usage)}</span></div>
     </div><div class="tabs">${['policy','victim','combined','judges','config'].map(t=>`<button data-tab="${t}" class="${state.tab===t?'active':''}">${t==='config'?'Config Diff':t==='judges'?'DTAP Judges':t[0].toUpperCase()+t.slice(1)}</button>`).join('')}</div><div class="viewer" id="viewer"></div></main>`;
 }
 function eventCard(e,i){
@@ -105,6 +145,11 @@ function diffHtml(diff){
     const c=line.startsWith('+++')||line.startsWith('---')||line.startsWith('@@')?'hdr':line.startsWith('+')?'add':line.startsWith('-')?'del':'';
     return `<span class="${c}">${line}</span>`;
   }).join('\n')}</pre>`;
+}
+function submittedConfigHtml(data){
+  const yaml=data?.config?.submitted;
+  if(!yaml) return '<div class="empty">No submitted config found for this attempt.</div>';
+  return `<pre class="submitted-yaml">${esc(yaml)}</pre>`;
 }
 function judgeOutcome(component){
   if(component.success === null || component.success === undefined) return ['unknown','neutral'];
@@ -143,10 +188,12 @@ function renderDetail(){
   const viewer=$('#viewer'); if(!viewer||!state.selected) return;
   const data=detailData();
   if(!data){ viewer.innerHTML='<div class="loading">Loading trajectory…</div>'; return; }
+  const victimTokens=$('.victim-token-summary');
+  if(victimTokens) victimTokens.innerHTML=tokenMetrics('victim',data.victim_usage);
   let body;
   if(state.tab==='policy') body=timeline(data.policy);
   else if(state.tab==='victim') body=timeline(data.victim);
-  else if(state.tab==='combined') body=`<div class="lanes"><section><div class="lane-title">Policy trajectory · ${(data.policy||[]).length}</div>${timeline(data.policy)}</section><section><div class="lane-title">Victim trajectory · ${(data.victim||[]).length}</div>${timeline(data.victim)}</section></div>`;
+  else if(state.tab==='combined') body=`<div class="lanes"><section><div class="lane-title">Submitted config · H=${data.attempt_index??1}</div>${submittedConfigHtml(data)}</section><section><div class="lane-title">Victim trajectory · ${(data.victim||[]).length}</div>${timeline(data.victim)}</section></div>`;
   else if(state.tab==='judges') body=judgesHtml(data.judges);
   else body=diffHtml(data.config?.diff);
   viewer.innerHTML=attemptBar(data)+body;
@@ -169,12 +216,14 @@ function bind(){
   $('#next')?.addEventListener('click',()=>{if((state.page+1)*state.limit<state.total){state.page++;loadEpisodes();}});
   $('#resetFilters')?.addEventListener('click',()=>{state.filters={run_name:'',domain:'',threat_model:'',status:'',attack_success:'',attack_evaluated:'',q:''};state.page=0;$('#globalSearch').value='';loadEpisodes();});
   $('#globalSearch')?.addEventListener('input',debounce(e=>{state.filters.q=e.target.value.trim();state.page=0;loadEpisodes();},250));
+  $('#themeToggle')?.addEventListener('click',()=>setTheme(theme()==='light'?'dark':'light'));
 }
 function filterChange(e){state.filters[e.target.dataset.filter]=e.target.value;state.page=0;loadEpisodes();}
 function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}}
 function render(){
   const f=state.facets||{};
-  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>trajectory observability</small></div></div><div class="search"><input id="globalSearch" placeholder="Search episode, risk category, artifact path…" value="${esc(state.filters.q)}"></div><div class="statline"><span><b>${f.total??0}</b> episodes</span><span><b>${f.domains?.length??0}</b> domains</span><span><b>${f.attack_successes??0}</b> attacks</span></div></header><div class="workspace">${sidebar()}${listPane()}${detailShell()}</div></div>`;
+  const light=theme()==='light';
+  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>trajectory observability</small></div></div><div class="search"><input id="globalSearch" placeholder="Search task, episode, model, risk category…" value="${esc(state.filters.q)}"></div><div class="statline"><span><b>${f.total??0}</b> episodes</span><span><b>${f.domains?.length??0}</b> domains</span><span><b>${f.attack_successes??0}</b> attacks</span></div><button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to ${light?'dark':'light'} theme" aria-pressed="${light}">${light?'☾ Dark':'☀ Light'}</button></header><div class="workspace">${sidebar()}${listPane()}${detailShell()}</div></div>`;
   bind(); renderDetail();
 }
 (async()=>{ await loadFacets(); await loadEpisodes(); })().catch(err=>{ console.error(err); $('#app').innerHTML=`<div class="empty"><div><strong>Explorer failed to load</strong>${esc(err.message)}</div></div>`; });

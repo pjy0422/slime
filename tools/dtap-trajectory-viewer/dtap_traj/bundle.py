@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .indexer import normalize_usage
 from .parser import build_timeline, find_policy_trace, find_victim_mcp_events, find_victim_trace
 
 
@@ -102,6 +103,7 @@ def load_episode_bundle(
         else (attempt_directories[-1] if attempt_directories else (None, root))
     )
     victim = find_victim_trace(selected_root)
+    victim_payload = _read_json(victim)
     policy = find_policy_trace(root)
     mcp = find_victim_mcp_events(selected_root)
     original = _first(root, ("original-config.yaml", "original_config.yaml"))
@@ -145,6 +147,14 @@ def load_episode_bundle(
     if evaluation:
         data["evaluation"] = evaluation
     data["judges"] = judges
+    victim_metadata = (
+        victim_payload.get("traj_info", {}).get("metadata", {})
+        if isinstance(victim_payload.get("traj_info"), dict)
+        and isinstance(victim_payload.get("traj_info", {}).get("metadata"), dict)
+        else {}
+    )
+    victim_usage = victim_metadata.get("token_usage") or victim_metadata.get("usage")
+    data["victim_usage"] = normalize_usage(victim_usage)
     data["attempt_index"] = selected_index
     data["attempts"] = [
         {

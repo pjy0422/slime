@@ -125,6 +125,7 @@ def create_app(
             "warnings": data.get("trajectory_warnings") or [],
             "attempt_index": data.get("attempt_index"),
             "attempts": data.get("attempts") or [],
+            "victim_usage": data.get("victim_usage"),
         }
         if view in {"policy", "combined"}:
             payload["policy"] = data.get("policy_timeline") or []

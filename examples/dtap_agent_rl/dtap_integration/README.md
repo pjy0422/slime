@@ -35,6 +35,9 @@ The patch is based on DecodingTrust-Agent commit
   payload return and provider presentation, including multiline payloads and
   the actual `customer_service`, `Research`, `travel-suite`, and
   `HospitalClient` MCP namespaces.
+- OpenClaw provider token receipts retained in trajectory metadata, including
+  exact reasoning-token counts when the provider supplies them. Missing
+  reasoning breakdowns remain unavailable rather than being fabricated.
 
 Read-back uses the matching victim MCP's task-scoped credential when required.
 Gmail verification resolves Mailpit list entries to the message-detail endpoint
