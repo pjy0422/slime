@@ -17,7 +17,7 @@ fi
 # which makes per-file reverse checks insufficient for a second invocation.
 # Record the digest only after the complete ordered series succeeds. Keeping the
 # marker under this worktree's git metadata avoids modifying DTAP source files.
-patches=(
+base_patches=(
   "$script_dir/patches/m4-runtime-integration.patch"
   "$script_dir/patches/m5-environment-verification.patch"
   "$script_dir/patches/m6-placement-receipts.patch"
@@ -34,6 +34,12 @@ patches=(
   "$script_dir/patches/m7-feedback-boundary-matrix.patch"
   "$script_dir/patches/m7-token-observability.patch"
 )
+incremental_patches=(
+  "$script_dir/patches/m7-explicit-tool-capabilities.patch"
+  "$script_dir/patches/m7-structured-judge-status.patch"
+  "$script_dir/patches/m7-exact-tool-presentation-identity.patch"
+)
+patches=("${base_patches[@]}" "${incremental_patches[@]}")
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.
 overlay_digest=$(
@@ -48,21 +54,25 @@ if [[ -f "$marker" ]] && [[ $(<"$marker") == "$overlay_digest" ]]; then
   exit 0
 fi
 
-# Recover idempotency for checkouts patched by an older apply.sh whose marker
-# digest depended on the spelling of the slime path.
-latest_patch=${patches[${#patches[@]}-1]}
-if git -C "$dtap_root" apply --reverse --check "$latest_patch" >/dev/null 2>&1; then
+# Existing overlay checkouts contain later refinements that can make reverse
+# checks for old base patches ambiguous. Advance every newly introduced delta
+# in order; never infer that earlier deltas landed merely because the last one
+# did. A clean checkout cannot apply the first delta and falls through to the
+# complete ordered series below.
+incremental_ready=true
+for patch_file in "${incremental_patches[@]}"; do
+  if git -C "$dtap_root" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+    echo "Already applied: $(basename "$patch_file")"
+  elif git -C "$dtap_root" apply --check "$patch_file" >/dev/null 2>&1; then
+    git -C "$dtap_root" apply "$patch_file"
+    echo "Applied: $(basename "$patch_file")"
+  else
+    incremental_ready=false
+    break
+  fi
+done
+if "$incremental_ready"; then
   printf '%s\n' "$overlay_digest" > "$marker"
-  echo "DTAP agent RL overlay already applied"
-  exit 0
-fi
-
-# An existing M4-M6 checkout has refinements that make replaying intermediate
-# patches ambiguous. If the new delta applies cleanly, advance just that delta.
-if git -C "$dtap_root" apply --check "$latest_patch" >/dev/null 2>&1; then
-  git -C "$dtap_root" apply "$latest_patch"
-  printf '%s\n' "$overlay_digest" > "$marker"
-  echo "Applied: $(basename "$latest_patch")"
   exit 0
 fi
 

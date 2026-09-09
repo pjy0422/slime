@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from .attack_surface import ToolSpec
 from .episode import TaskSnapshot
@@ -14,7 +15,23 @@ def _iter_agent_configs(agent_cfg: Any):
         yield from _iter_agent_configs(subagent)
 
 
-async def _list_url_tools(server_name: str, url: str) -> list[ToolSpec]:
+def _environment_placement_capability(server_name: str, tool_name: str) -> str:
+    try:
+        from dt_arena.src.env_verification import placement_capability
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "DTAP environment catalog requires the slime M6 placement overlay"
+        ) from exc
+    capability = placement_capability(server_name, tool_name)
+    return str(getattr(capability, "value", capability))
+
+
+async def _list_url_tools(
+    server_name: str,
+    url: str,
+    *,
+    classify_environment: bool = False,
+) -> list[ToolSpec]:
     from fastmcp import Client
 
     async with Client(url) as client:
@@ -35,6 +52,11 @@ async def _list_url_tools(server_name: str, url: str) -> list[ToolSpec]:
                 qualified_name=f"{server_name}:{name}",
                 description=getattr(tool, "description", None),
                 input_schema=dict(input_schema),
+                placement_capability=(
+                    _environment_placement_capability(server_name, name)
+                    if classify_environment
+                    else None
+                ),
             )
         )
     return result
@@ -100,7 +122,9 @@ class LiveDtapCatalogProvider:
                 for server_name, server_info in (updated.get("environment_servers") or {}).items():
                     if isinstance(server_info, dict) and server_info.get("url"):
                         result[server_name] = await _list_url_tools(
-                            server_name, server_info["url"]
+                            server_name,
+                            server_info["url"],
+                            classify_environment=True,
                         )
                 return result
             except Exception as exc:

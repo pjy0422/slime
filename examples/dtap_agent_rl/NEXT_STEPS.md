@@ -198,6 +198,39 @@ in [M7_DOMAIN_FEEDBACK.md](M7_DOMAIN_FEEDBACK.md).
   unregistered or ambiguous mutator silently produces positive evidence.
 - [x] No policy-visible arbitrary placement oracle is introduced.
 
+## Post-M7 hardcode and heuristic hardening
+
+Resolve security/reward-boundary inference before mechanical adapter cleanup.
+
+### P0 — Boundary correctness
+
+- [x] Replace environment-tool prefix classification with exact DTAP
+  `SUPPORTED_PLACEMENT_TOOLS` / `NON_PLACEMENT_TOOLS` registries. Fail the
+  inventory gate on unknown, stale, or overlapping names.
+- [x] Replace judge-error phrase matching with structured task/attack stage
+  statuses. Travel retry exhaustion raises `JudgeUnavailableError`; Medical
+  uses explicit result-field presence.
+- [x] Require exact server/tool identity for M7 tool-description presentation;
+  do not match a target name occurring inside another tool's description.
+- [x] Replace legacy guest compose-path substring matching with an exact public
+  path allowlist.
+- [x] Verify both clean overlay application and incremental upgrade from the
+  previously merged overlay.
+
+### P1 — Adapter maintainability
+
+- [ ] Replace remaining adapter-family `startswith` dispatches with exact
+  per-tool handler sets. They are currently guarded by exact registries and are
+  not authorization checks, so this is a maintainability task rather than a
+  release blocker.
+- [ ] Add a registry-to-handler exhaustiveness assertion so registering a new
+  placement or feedback tool requires choosing its handler family explicitly.
+
+### P2 — Evaluation inventory maintainability
+
+- [ ] Generate repeated domain/platform matrices from one checked-in benchmark
+  manifest while retaining explicit opt-in gates for VM-backed platforms.
+
 ## M8 — Real slime RL rollout and training dry-run
 
 - [ ] Add trainer-only feedback diagnostics to the rollout record so experiments

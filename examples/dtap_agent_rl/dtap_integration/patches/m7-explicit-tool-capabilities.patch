@@ -1,0 +1,83 @@
+--- a/dt_arena/src/env_verification.py
++++ b/dt_arena/src/env_verification.py
+@@ -439,11 +439,52 @@
+ }
+ 
+ 
++# Tools deliberately excluded from the attack-placement surface. Keep this
++# exact-name registry exhaustive: a newly added MCP tool must remain
++# ``unsupported`` until it is deliberately placed in this registry or receives
++# an independent read-back adapter in ``SUPPORTED_PLACEMENT_TOOLS``.
++NON_PLACEMENT_TOOLS: Mapping[str, frozenset[str]] = {
++    "finance-injection": frozenset({
++        "clear_all_injections", "clear_content_injection",
++        "get_content_injection_status", "get_injection_status",
++        "list_injection_methods",
++    }),
++    "os-filesystem-injection": frozenset({
++        "list_injected_files", "read_file_content",
++    }),
++    "slack-injection": frozenset({"list_available_channels"}),
++    "googledocs-injection": frozenset({"get_document", "list_documents"}),
++    "whatsapp-injection": frozenset({
++        "get_whatsapp_chat", "list_whatsapp_chats", "search_whatsapp_messages",
++    }),
++    "telegram-injection": frozenset({"list_available_chats"}),
++    # The guest servers also expose general automation primitives. They are not
++    # policy placement actions unless a dedicated read-back adapter is added.
++    "windows-injection": frozenset({
++        "add_powerpoint_slide", "add_pptx_shape", "add_pptx_table",
++        "add_word_hyperlink", "add_word_table", "create_powerpoint",
++        "create_word_document", "delete_pptx_slide", "delete_word_paragraph",
++        "duplicate_pptx_slide", "excel_apply_formula", "excel_delete_sheet",
++        "excel_format_range", "excel_insert_cols", "excel_insert_rows",
++        "excel_merge_cells", "excel_rename_sheet", "excel_write_data",
++        "format_word_text", "get_pptx_slide_info", "list_directory",
++        "open_application", "read_excel_workbook", "read_file",
++        "read_powerpoint", "read_word_document", "run_powershell",
++        "update_pptx_slide", "word_add_page_break", "word_header_footer",
++        "word_search_replace",
++    }),
++    "macos-injection": frozenset({
++        "list_directory", "open_application", "read_file", "run_shell",
++    }),
++}
++
++
+ def placement_capability(server: str, tool: str) -> PlacementStatus:
+-    if tool.startswith(("get_", "list_", "read_", "search_")):
+-        return PlacementStatus.NOT_APPLICABLE
+-    if tool in SUPPORTED_PLACEMENT_TOOLS.get(server.lower(), frozenset()):
++    normalized_server = server.lower()
++    if tool in SUPPORTED_PLACEMENT_TOOLS.get(normalized_server, frozenset()):
+         return PlacementStatus.VERIFIED
++    if tool in NON_PLACEMENT_TOOLS.get(normalized_server, frozenset()):
++        return PlacementStatus.NOT_APPLICABLE
+     return PlacementStatus.UNSUPPORTED
+ 
+ 
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -249,6 +249,22 @@
+             {"success": True}, {}, Docker([]))
+         self.assertIs(proof.status, PlacementStatus.NOT_APPLICABLE)
+ 
++    async def test_capability_classification_does_not_use_name_prefixes(self):
++        # A new observation-looking name is still unknown until registered.
++        proof = await verify_placement(
++            {"server_name": "whatsapp-injection", "tool_name": "get_new_chat",
++             "kwargs": {}},
++            {"success": True}, {}, Docker([]))
++        self.assertIs(proof.status, PlacementStatus.UNSUPPORTED)
++
++        # Exact maintenance entries remain explicitly non-placement even when
++        # their names do not use one of the historical read-only prefixes.
++        proof = await verify_placement(
++            {"server_name": "finance-injection", "tool_name": "clear_all_injections",
++             "kwargs": {}},
++            {"success": True}, {}, Docker([]))
++        self.assertIs(proof.status, PlacementStatus.NOT_APPLICABLE)
++
+     async def test_unknown_mutator_is_explicitly_unsupported(self):
+         cases = (
+             {"server_name": "legal-injection", "tool_name": "inject_x", "kwargs": {}},

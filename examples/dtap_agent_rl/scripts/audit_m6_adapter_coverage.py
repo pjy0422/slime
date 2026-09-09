@@ -12,8 +12,6 @@ import yaml
 
 EXCLUDED = frozenset()
 GUEST_PLATFORM_SERVERS = frozenset({"windows-injection", "macos-injection"})
-READ_ONLY_PREFIXES = ("get_", "list_", "read_", "search_")
-MAINTENANCE_PREFIXES = ("clear_", "reset_", "deactivate_")
 
 
 def _decorated_tools(path: Path) -> set[str]:
@@ -37,7 +35,10 @@ def _decorated_tools(path: Path) -> set[str]:
 
 
 def audit(dtap_root: Path) -> dict:
-    from dt_arena.src.env_verification import SUPPORTED_PLACEMENT_TOOLS
+    from dt_arena.src.env_verification import (
+        NON_PLACEMENT_TOOLS,
+        SUPPORTED_PLACEMENT_TOOLS,
+    )
 
     config = yaml.safe_load(
         (dtap_root / "dt_arena/config/injection_mcp.yaml").read_text(encoding="utf-8")
@@ -57,29 +58,46 @@ def audit(dtap_root: Path) -> dict:
         if name == "finance-injection":
             tool_source = dtap_root / "dt_arena/mcp_server/finance/server/injection_mcp.py"
         discovered = _decorated_tools(tool_source)
-        supported = SUPPORTED_PLACEMENT_TOOLS.get(name, frozenset())
-        mutators = sorted(
-            tool for tool in discovered
-            if not tool.startswith(READ_ONLY_PREFIXES + MAINTENANCE_PREFIXES)
-        )
+        supported = set(SUPPORTED_PLACEMENT_TOOLS.get(name, frozenset()))
+        non_placement = set(NON_PLACEMENT_TOOLS.get(name, frozenset()))
+        overlap = sorted(supported & non_placement)
+        unclassified = sorted(discovered - supported - non_placement)
+        stale_supported = sorted(supported - discovered)
+        stale_non_placement = sorted(non_placement - discovered)
         rows.append({
             "server": name,
-            "discovered_mutators": len(mutators),
-            "verified": sorted(set(mutators) & set(supported)),
-            "unsupported": sorted(set(mutators) - set(supported)),
-            "stale_registry_entries": sorted(set(supported) - set(discovered)),
+            "discovered_tools": len(discovered),
+            "verified": sorted(discovered & supported),
+            "not_applicable": sorted(discovered & non_placement),
+            "unsupported": unclassified,
+            "registry_overlap": overlap,
+            "stale_supported_registry_entries": stale_supported,
+            "stale_non_placement_registry_entries": stale_non_placement,
+            "stale_registry_entries": sorted(stale_supported + stale_non_placement),
         })
     stale = [row for row in rows if row["stale_registry_entries"]]
+    unclassified = [row for row in rows if row["unsupported"]]
+    overlaps = [row for row in rows if row["registry_overlap"]]
     return {
-        "status": "passed" if not missing and not stale else "failed",
+        "status": (
+            "passed"
+            if not missing and not stale and not unclassified and not overlaps
+            else "failed"
+        ),
         "excluded": sorted(EXCLUDED),
         "enabled_servers": len(rows),
         "missing_implementations": missing,
         "verified_mutators": sum(len(row["verified"]) for row in rows),
+        "classified_non_placement_tools": sum(
+            len(row["not_applicable"]) for row in rows
+        ),
+        "unclassified_tools": sum(len(row["unsupported"]) for row in rows),
+        # Kept for compatibility with existing release-report consumers.
         "unsupported_mutators": sum(len(row["unsupported"]) for row in rows),
         "guest_platforms": {
             row["server"]: {
                 "verified": len(row["verified"]),
+                "not_applicable": len(row["not_applicable"]),
                 "unsupported": len(row["unsupported"]),
             }
             for row in rows if row["server"] in GUEST_PLATFORM_SERVERS

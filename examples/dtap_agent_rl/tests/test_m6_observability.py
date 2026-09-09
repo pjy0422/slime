@@ -70,9 +70,10 @@ def test_enabled_adapter_inventory_is_consistent():
     assert result["verified_mutators"] == 128
     assert result["guest_platforms"]["windows-injection"]["verified"] == 7
     assert result["guest_platforms"]["macos-injection"]["verified"] == 6
-    assert result["unsupported_mutators"] == sum(
-        item["unsupported"] for item in result["guest_platforms"].values()
-    )
+    assert result["classified_non_placement_tools"] == 49
+    assert result["unclassified_tools"] == 0
+    assert result["unsupported_mutators"] == 0
+    assert all(not row["registry_overlap"] for row in result["servers"])
 
 
 def test_runtime_lock_schema_and_non_image_checks():

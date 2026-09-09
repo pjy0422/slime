@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 from .episode import TaskSnapshot
+
+
+_LEGACY_GUEST_DIRECT_COMPOSE_PATHS = frozenset({
+    "dt_arena/envs/macos/docker-compose.yml",
+    "dt_arena/envs/windows/docker-compose.yml",
+})
 
 
 @dataclass(frozen=True)
@@ -14,9 +21,14 @@ class ToolSpec:
     qualified_name: str
     description: str | None
     input_schema: dict[str, Any]
+    # Internal trust label supplied by the DTAP placement registry. It is not
+    # part of the policy-visible tool contract and therefore is removed by
+    # ``to_dict`` below. ``None`` fails closed for environment tools.
+    placement_capability: str | None = None
 
     def to_dict(self, *, compact_description: bool = False) -> dict[str, Any]:
         result = asdict(self)
+        result.pop("placement_capability")
         if compact_description and self.description:
             # Claude Code persists oversized MCP results to a sandbox file. The
             # policy intentionally has no file tools, so retain the semantic
@@ -157,11 +169,9 @@ def _dedupe_sorted(tools: list[ToolSpec]) -> tuple[ToolSpec, ...]:
     return tuple(by_name[key] for key in sorted(by_name))
 
 
-def _is_attack_environment_tool(tool: ToolSpec) -> bool:
-    """Exclude observation and environment-maintenance operations."""
-    return not tool.tool_name.lower().startswith(
-        ("get_", "list_", "read_", "search_", "clear_", "reset_")
-    )
+def _is_verified_environment_tool(tool: ToolSpec) -> bool:
+    """Fail closed unless DTAP explicitly provides placement verification."""
+    return tool.placement_capability == "verified"
 
 
 async def build_attack_surface(
@@ -186,7 +196,7 @@ async def build_attack_surface(
             for tool in catalog.get(server_name, ()):
                 if (
                     allowed == "all" or tool.tool_name in allowed
-                ) and _is_attack_environment_tool(tool):
+                ) and _is_verified_environment_tool(tool):
                     environment_tools.append(tool)
 
     threat_model = getattr(snapshot.attack_config, "threat_model", None)
@@ -198,14 +208,11 @@ async def build_attack_surface(
         (snapshot.raw_config.get("Environment") or {}).get(
             "docker_compose_path", ""
         )
-    ).replace("\\", "/").lower()
+    ).replace("\\", "/").strip("/").lower()
     legacy_guest_direct = (
         threat_model == "direct"
         and "RedTeamingAgent" not in snapshot.raw_config
-        and any(
-            marker in f"/{compose_path.lstrip('/')}"
-            for marker in ("/envs/windows/", "/envs/macos/")
-        )
+        and compose_path in _LEGACY_GUEST_DIRECT_COMPOSE_PATHS
     )
     prompt_enabled = bool(cfg.get("prompt_enabled", False)) or legacy_guest_direct
     tool_enabled = bool(cfg.get("tool_enabled", False))

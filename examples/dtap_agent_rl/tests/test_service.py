@@ -78,3 +78,4 @@ def test_m6_surface_compacts_docstrings_without_changing_tool_schema():
     assert compact["victim_tools"][0]["description"] == "Semantic summary."
     assert compact["victim_tools"][0]["input_schema"] == tool.input_schema
     assert compact["environment_tools"][0]["qualified_name"] == "crm:inject"
+    assert "placement_capability" not in compact["environment_tools"][0]

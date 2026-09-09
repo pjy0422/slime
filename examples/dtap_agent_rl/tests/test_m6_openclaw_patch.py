@@ -58,6 +58,24 @@ TOKEN_OBSERVABILITY_PATCH = (
     / "patches"
     / "m7-token-observability.patch"
 )
+TOOL_CAPABILITY_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-explicit-tool-capabilities.patch"
+)
+STRUCTURED_JUDGE_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-structured-judge-status.patch"
+)
+EXACT_TOOL_IDENTITY_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "m7-exact-tool-presentation-identity.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -131,6 +149,9 @@ def test_overlay_marker_is_scoped_to_the_target_dtap_checkout():
     text = apply_script.read_text(encoding="utf-8")
 
     assert "--path-format=absolute --git-path" in text
+    assert 'incremental_patches=(' in text
+    assert 'for patch_file in "${incremental_patches[@]}"' in text
+    assert 'latest_patch=' not in text
 
 
 def test_stabilization_patch_records_only_redacted_correlated_mcp_events():
@@ -227,3 +248,33 @@ def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources(
     assert "# Public release has no" in text
     assert '"windows-injection", SUPPORTED_PLACEMENT_TOOLS' in text
     assert '"macos-injection", SUPPORTED_PLACEMENT_TOOLS' in text
+
+
+def test_environment_tool_capability_patch_has_no_prefix_authorization():
+    text = TOOL_CAPABILITY_PATCH.read_text(encoding="utf-8")
+    added = "\n".join(
+        line[1:] for line in text.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+    assert "NON_PLACEMENT_TOOLS" in text
+    assert "tool.startswith" not in added
+    assert "PlacementStatus.UNSUPPORTED" in text
+    assert "get_new_chat" in text
+
+
+def test_judge_status_patch_emits_structured_availability():
+    text = STRUCTURED_JUDGE_PATCH.read_text(encoding="utf-8")
+
+    assert '"task_status"' in text
+    assert '"attack_status"' in text
+    assert "_judge_stage_status" in text
+    assert "Classify availability from structured judge output, never prose" in text
+
+
+def test_tool_presentation_patch_requires_exact_server_and_tool_identity():
+    text = EXACT_TOOL_IDENTITY_PATCH.read_text(encoding="utf-8")
+
+    assert 'parts[-2:] == [target_server, target_name]' in text
+    assert "description mentions search_emails" in text
+    assert 'target in value or target.split' in text

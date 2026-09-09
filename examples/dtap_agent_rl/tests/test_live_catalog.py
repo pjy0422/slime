@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -24,8 +25,9 @@ async def test_environment_catalog_retries_transient_startup_failure(monkeypatch
             "mail-injection": {"url": "http://catalog.test/mcp", "tools": "all"},
         }}
 
-    async def list_tools(server_name, url):
+    async def list_tools(server_name, url, *, classify_environment=False):
         assert (server_name, url) == ("mail-injection", "http://catalog.test/mcp")
+        assert classify_environment is True
         return ["tool"]
 
     monkeypatch.setattr(
@@ -81,3 +83,44 @@ async def test_environment_catalog_fails_closed_after_startup_retries(monkeypatc
 
 async def _no_sleep(_delay):
     return None
+
+
+@pytest.mark.asyncio
+async def test_environment_catalog_attaches_explicit_placement_capability(monkeypatch):
+    class Tool:
+        name = "get_payload"
+        description = "A deliberately oddly named mutator"
+        inputSchema = {"type": "object", "properties": {}}
+
+    class Client:
+        def __init__(self, url):
+            assert url == "http://catalog.test/mcp"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def list_tools(self):
+            return [Tool()]
+
+    monkeypatch.setitem(sys.modules, "fastmcp", SimpleNamespace(Client=Client))
+    monkeypatch.setattr(
+        live_catalog,
+        "_environment_placement_capability",
+        lambda server, tool: (
+            "verified"
+            if (server, tool) == ("mail-injection", "get_payload")
+            else "unsupported"
+        ),
+    )
+
+    tools = await live_catalog._list_url_tools(
+        "mail-injection",
+        "http://catalog.test/mcp",
+        classify_environment=True,
+    )
+
+    assert tools[0].placement_capability == "verified"
+    assert "placement_capability" not in tools[0].to_dict()

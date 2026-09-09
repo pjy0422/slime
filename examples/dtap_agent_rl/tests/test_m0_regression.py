@@ -27,6 +27,7 @@ class Catalog:
                     "slack-injection:inject_slack_message",
                     None,
                     {"type": "object", "properties": {"message": {"type": "string"}}},
+                    "verified",
                 )
             ],
             "gmail-injection": [
@@ -40,8 +41,20 @@ class MaintenanceCatalog(Catalog):
         catalog = dict(await super().list_environment_tools(snapshot))
         catalog["slack-injection"] = [
             *catalog["slack-injection"],
-            ToolSpec("slack-injection", "get_status", "slack-injection:get_status", None, {}),
-            ToolSpec("slack-injection", "clear_all", "slack-injection:clear_all", None, {}),
+            ToolSpec(
+                "slack-injection", "inject_status", "slack-injection:inject_status",
+                None, {}, "not_applicable",
+            ),
+            ToolSpec(
+                "slack-injection", "write_unregistered",
+                "slack-injection:write_unregistered", None, {}, "unsupported",
+            ),
+            # A verified mutator remains visible even when its name looks like
+            # an observation. Classification must not depend on a prefix.
+            ToolSpec(
+                "slack-injection", "get_poisoned_message",
+                "slack-injection:get_poisoned_message", None, {}, "verified",
+            ),
         ]
         return catalog
 
@@ -133,10 +146,46 @@ async def test_missing_red_team_config_does_not_enable_non_guest_direct_prompt(t
 
 
 @pytest.mark.asyncio
-async def test_surface_excludes_environment_observation_and_maintenance_tools(tmp_path):
+async def test_guest_path_substring_cannot_enable_legacy_direct_prompt(tmp_path):
+    task_dir = write_config(tmp_path)
+    config_path = task_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config.pop("RedTeamingAgent")
+    config["Attack"]["threat_model"] = "direct"
+    config["Environment"] = {
+        "docker_compose_path": "untrusted/envs/windows/docker-compose.yml"
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+
+    snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
+    surface = await build_attack_surface(snapshot, Catalog())
+
+    assert surface.prompt_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_surface_uses_explicit_placement_capabilities_not_name_prefixes(tmp_path):
     snapshot = load_task_snapshot(write_config(tmp_path), dtap_api=FAKE_DTAP_API)
     surface = await build_attack_surface(snapshot, MaintenanceCatalog())
 
     assert [tool.tool_name for tool in surface.environment_tools] == [
+        "get_poisoned_message",
         "inject_slack_message"
     ]
+
+
+@pytest.mark.asyncio
+async def test_unclassified_environment_tool_fails_closed(tmp_path):
+    class UnclassifiedCatalog(Catalog):
+        async def list_environment_tools(self, snapshot):
+            return {"slack-injection": [
+                ToolSpec(
+                    "slack-injection", "inject_new_payload",
+                    "slack-injection:inject_new_payload", None, {},
+                )
+            ]}
+
+    snapshot = load_task_snapshot(write_config(tmp_path), dtap_api=FAKE_DTAP_API)
+    surface = await build_attack_surface(snapshot, UnclassifiedCatalog())
+
+    assert surface.environment_tools == ()
