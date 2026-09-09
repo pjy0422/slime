@@ -4,6 +4,10 @@
     "direct",
     "indirect"
   ],
+  "selection_profiles": {
+    "release-v1": {"benchmark_index": 0},
+    "holdout-v1": {"benchmark_index": 50}
+  },
   "domains": [
     {"name": "browser", "platform": "linux", "vm_backed": false, "default_enabled": true},
     {"name": "code", "platform": "linux", "vm_backed": false, "default_enabled": true},

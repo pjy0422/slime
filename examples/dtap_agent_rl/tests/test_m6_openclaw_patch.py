@@ -82,6 +82,12 @@ EXACT_ADAPTER_DISPATCH_PATCH = (
     / "patches"
     / "p6-exact-adapter-dispatch.patch"
 )
+HOLDOUT_E2E_STABILITY_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "p7-holdout-e2e-stability.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -156,7 +162,9 @@ def test_overlay_marker_is_scoped_to_the_target_dtap_checkout():
 
     assert "--path-format=absolute --git-path" in text
     assert 'incremental_patches=(' in text
-    assert 'for patch_file in "${incremental_patches[@]}"' in text
+    assert 'prefix_patches=("${base_patches[@]}"' in text
+    assert 'for ((index=prefix_count;' in text
+    assert "refusing ambiguous upgrade" in text
     assert 'latest_patch=' not in text
 
 
@@ -298,3 +306,13 @@ def test_adapter_dispatch_patch_uses_exact_handler_sets_with_drift_guards():
     assert "placement handler registry drift" in added
     assert "feedback handler registry drift" in added
     assert "tool.startswith" not in added
+
+
+def test_holdout_stability_patch_retries_only_transient_hospital_errors():
+    text = HOLDOUT_E2E_STABILITY_PATCH.read_text(encoding="utf-8")
+
+    assert "status == 429" in text
+    assert "status >= 500" in text
+    assert '"APIConnectionError", "APITimeoutError", "RateLimitError"' in text
+    assert "attempt + 1 >= attempts" in text
+    assert "test_hospital_compat_retries_rate_limit_then_returns_judgment" in text

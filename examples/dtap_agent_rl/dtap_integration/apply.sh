@@ -39,42 +39,58 @@ incremental_patches=(
   "$script_dir/patches/m7-structured-judge-status.patch"
   "$script_dir/patches/m7-exact-tool-presentation-identity.patch"
   "$script_dir/patches/p6-exact-adapter-dispatch.patch"
+  "$script_dir/patches/p7-holdout-e2e-stability.patch"
 )
 patches=("${base_patches[@]}" "${incremental_patches[@]}")
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.
-overlay_digest=$(
-  for patch_file in "${patches[@]}"; do
+digest_patches() {
+  for patch_file in "$@"; do
     sha256sum "$patch_file" | cut -d' ' -f1
   done | sha256sum | cut -d' ' -f1
-)
+}
+overlay_digest=$(digest_patches "${patches[@]}")
 marker=$(git -C "$dtap_root" rev-parse \
   --path-format=absolute --git-path dtap-agent-rl-overlay.sha256)
-if [[ -f "$marker" ]] && [[ $(<"$marker") == "$overlay_digest" ]]; then
+stored_digest=""
+if [[ -f "$marker" ]]; then
+  stored_digest=$(<"$marker")
+fi
+if [[ "$stored_digest" == "$overlay_digest" ]]; then
   echo "DTAP agent RL overlay already applied"
   exit 0
 fi
 
 # Existing overlay checkouts contain later refinements that can make reverse
-# checks for old base patches ambiguous. Advance every newly introduced delta
-# in order; never infer that earlier deltas landed merely because the last one
-# did. A clean checkout cannot apply the first delta and falls through to the
-# complete ordered series below.
-incremental_ready=true
-for patch_file in "${incremental_patches[@]}"; do
-  if git -C "$dtap_root" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
-    echo "Already applied: $(basename "$patch_file")"
-  elif git -C "$dtap_root" apply --check "$patch_file" >/dev/null 2>&1; then
-    git -C "$dtap_root" apply "$patch_file"
-    echo "Applied: $(basename "$patch_file")"
-  else
-    incremental_ready=false
-    break
-  fi
-done
-if "$incremental_ready"; then
+# checks for earlier patches ambiguous. The marker identifies the exact known
+# prefix, so only the suffix introduced after that release is inspected.
+prefix_count=-1
+if [[ -n "$stored_digest" ]]; then
+  for ((count=${#incremental_patches[@]}; count >= 0; count--)); do
+    prefix_patches=("${base_patches[@]}" "${incremental_patches[@]:0:count}")
+    if [[ $(digest_patches "${prefix_patches[@]}") == "$stored_digest" ]]; then
+      prefix_count=$count
+      break
+    fi
+  done
+fi
+if ((prefix_count >= 0)); then
+  for ((index=prefix_count; index < ${#incremental_patches[@]}; index++)); do
+    patch_file=${incremental_patches[index]}
+    if git -C "$dtap_root" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+      echo "Already applied: $(basename "$patch_file")"
+    else
+      git -C "$dtap_root" apply --check "$patch_file"
+      git -C "$dtap_root" apply "$patch_file"
+      echo "Applied: $(basename "$patch_file")"
+    fi
+  done
   printf '%s\n' "$overlay_digest" > "$marker"
   exit 0
+fi
+if [[ -n "$stored_digest" ]]; then
+  echo "unrecognized DTAP agent RL overlay marker; refusing ambiguous upgrade" >&2
+  exit 1
 fi
 
 for patch_file in "${patches[@]}"; do
