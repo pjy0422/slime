@@ -1,0 +1,278 @@
+--- a/dt_arena/src/env_verification.py
++++ b/dt_arena/src/env_verification.py
+@@ -479,6 +479,54 @@
+ }
+ 
+ 
++_CUSTOMER_SERVICE_CASE_TOOLS = frozenset({
++    "cs_case_description_inject", "cs_case_note_inject",
++    "cs_case_note_inject_all_by_order",
++})
++_CUSTOMER_SERVICE_ORDER_TOOLS = frozenset({
++    "cs_order_metadata_inject", "cs_order_metadata_inject_adaptive",
++})
++_SALESFORCE_TOOLS = frozenset({
++    "inject_account", "inject_call", "inject_case", "inject_contact",
++    "inject_lead", "inject_meeting", "inject_note", "inject_opportunity",
++    "inject_task",
++})
++_CALENDAR_TOOLS = frozenset({
++    "inject_calendar_event", "inject_fake_meeting_invite",
++    "inject_false_event_info", "inject_prompt_in_calendar",
++})
++_ZOOM_TOOLS = frozenset({
++    "inject_fake_zoom_invite", "inject_prompt_in_zoom", "inject_zoom_meeting",
++    "inject_zoom_with_leaked_password",
++})
++_GOOGLE_FORM_TOOLS = frozenset({
++    "inject_bulk_form_responses", "inject_form_response",
++    "inject_malicious_form_response", "inject_pii_in_form",
++    "inject_prompt_in_form",
++})
++_FINANCE_HTML_TOOLS = frozenset({
++    "inject_html_analysis", "inject_html_article", "inject_html_general",
++    "inject_html_market", "inject_html_news", "inject_html_options",
++    "inject_html_portfolio", "inject_html_quote",
++})
++_FINANCE_NEWS_TOOLS = frozenset({
++    "create_comment", "create_news", "inject_news",
++})
++_EXACT_PLACEMENT_HANDLER_TOOLS: Mapping[str, frozenset[str]] = {
++    "customer-service-injection": (
++        _CUSTOMER_SERVICE_CASE_TOOLS | _CUSTOMER_SERVICE_ORDER_TOOLS
++    ),
++    "salesforce-injection": _SALESFORCE_TOOLS,
++    "calendar-injection": _CALENDAR_TOOLS,
++    "zoom-injection": _ZOOM_TOOLS,
++    "google-form-injection": _GOOGLE_FORM_TOOLS,
++    "finance-injection": _FINANCE_HTML_TOOLS | _FINANCE_NEWS_TOOLS,
++}
++for _server, _tools in _EXACT_PLACEMENT_HANDLER_TOOLS.items():
++    if _tools != SUPPORTED_PLACEMENT_TOOLS[_server]:
++        raise RuntimeError(f"placement handler registry drift: {_server}")
++
++
+ def placement_capability(server: str, tool: str) -> PlacementStatus:
+     normalized_server = server.lower()
+     if tool in SUPPORTED_PLACEMENT_TOOLS.get(normalized_server, frozenset()):
+@@ -536,9 +584,12 @@
+             f"customer-service:{quote(str(identifier), safe='')}",
+             tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
+         )
+-    if server == "salesforce-injection" and tool.startswith("inject_"):
++    if server == "salesforce-injection" and tool in _SALESFORCE_TOOLS:
+         return PlacementTarget(f"salesforce:{tool.removeprefix('inject_')}", ())
+-    if server in {"calendar-injection", "zoom-injection"} and tool.startswith("inject_"):
++    if (
++        server in {"calendar-injection", "zoom-injection"}
++        and tool in _EXACT_PLACEMENT_HANDLER_TOOLS[server]
++    ):
+         fields = ("event_id", "meeting_id", "calendar_id")
+         identifier = next((kwargs.get(field) for field in fields if kwargs.get(field)), tool)
+         return PlacementTarget(
+@@ -558,7 +609,7 @@
+             f"googledocs:{quote(str(identifier), safe='')}",
+             tuple(f"kwargs.{field}" for field in fields if kwargs.get(field)),
+         )
+-    if server == "google-form-injection" and tool.startswith("inject_"):
++    if server == "google-form-injection" and tool in _GOOGLE_FORM_TOOLS:
+         return PlacementTarget(
+             f"google-form:{quote(str(kwargs.get('form_id', '')), safe='')}",
+             ("kwargs.form_id",),
+@@ -638,14 +689,14 @@
+             "custom-website:/",
+             (),
+         )
+-    if server == "finance-injection" and tool.startswith("inject_html_"):
++    if server == "finance-injection" and tool in _FINANCE_HTML_TOOLS:
+         page = quote(str(kwargs.get("page", "")), safe="")
+         symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
+         return PlacementTarget(
+             f"finance:{page}#symbol={symbol}",
+             ("kwargs.page", "kwargs.symbol"),
+         )
+-    if server == "finance-injection" and tool in {"create_news", "create_comment", "inject_news"}:
++    if server == "finance-injection" and tool in _FINANCE_NEWS_TOOLS:
+         symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
+         article = quote(str(kwargs.get("article_id", "")), safe="")
+         return PlacementTarget(
+@@ -968,7 +1019,7 @@
+         payload = _result_payload(result)
+         headers = {"x-api-key": str(environ.get("CS_API_KEY", "devkey1"))}
+         base = f"http://127.0.0.1:{environ['CUSTOMER_SERVICE_API_PORT']}"
+-        if tool.startswith("cs_case_"):
++        if tool in _CUSTOMER_SERVICE_CASE_TOOLS:
+             ids = _find_values(payload, ("case_ids", "case_id"))
+             if not ids:
+                 raise VerificationError("customer-service result has no case identity")
+@@ -988,7 +1039,7 @@
+                 b"\n".join(blobs), [kwargs.get(field) for field in fields],
+                 f"customer-service:case:{','.join(map(str, ids))}",
+             )
+-        elif tool.startswith("cs_order_metadata_inject"):
++        elif tool in _CUSTOMER_SERVICE_ORDER_TOOLS:
+             ids = _find_values(payload, ("order_ids", "order_id"))
+             if not ids and kwargs.get("order_id"):
+                 ids = [kwargs["order_id"]]
+@@ -1009,7 +1060,7 @@
+             )
+         else:
+             return PlacementProof(server, tool, PlacementStatus.UNSUPPORTED)
+-    elif server == "salesforce-injection" and tool.startswith("inject_"):
++    elif server == "salesforce-injection" and tool in _SALESFORCE_TOOLS:
+         modules = {
+             "inject_lead": "Leads", "inject_contact": "Contacts",
+             "inject_account": "Accounts", "inject_opportunity": "Opportunities",
+@@ -1031,7 +1082,7 @@
+             _leaf_values({key: value for key, value in kwargs.items() if value not in (None, "")}),
+             f"salesforce:{module}:{record_id}",
+         )
+-    elif server == "calendar-injection" and tool.startswith("inject_"):
++    elif server == "calendar-injection" and tool in _CALENDAR_TOOLS:
+         event_id = _find_value(_result_payload(result), ("id", "event_id"))
+         if not event_id:
+             raise VerificationError("calendar result has no event identity")
+@@ -1045,7 +1096,7 @@
+             blob, _leaf_values({key: value for key, value in kwargs.items() if key != "user_token"}),
+             f"calendar:event:{event_id}",
+         )
+-    elif server == "zoom-injection" and tool.startswith("inject_"):
++    elif server == "zoom-injection" and tool in _ZOOM_TOOLS:
+         meeting_id = _find_value(_result_payload(result), ("id", "meeting_id"))
+         if not meeting_id:
+             raise VerificationError("zoom result has no meeting identity")
+@@ -1091,7 +1142,7 @@
+             blob, [kwargs.get(field) for field in expected_fields],
+             f"googledocs:document:{document_id}",
+         )
+-    elif server == "google-form-injection" and tool.startswith("inject_"):
++    elif server == "google-form-injection" and tool in _GOOGLE_FORM_TOOLS:
+         blob = await _http(
+             "GET", f"http://127.0.0.1:{environ['GOOGLE_FORM_API_PORT']}/submissions"
+         )
+@@ -1120,7 +1171,7 @@
+                     str(kwargs.get("target_column")): kwargs.get("injection_payload"),
+                 }
+             expected = _leaf_values(data)
+-        prefix = "SNOWFLAKE" if server.startswith("snowflake") else "DATABRICKS"
++        prefix = "SNOWFLAKE" if server == "snowflake-injection" else "DATABRICKS"
+         dsn = str(environ.get(f"{prefix}_POSTGRES_DSN") or environ.get("POSTGRES_DSN") or "")
+         if not dsn:
+             raise VerificationError(f"{server} read-back DSN unavailable")
+@@ -1342,7 +1393,7 @@
+             "GET", f"http://127.0.0.1:{environ['CUSTOM_WEBSITE_UI_PORT']}/"
+         )
+         proof = _contains(blob, [kwargs.get("html")], "custom-website:/")
+-    elif server == "finance-injection" and tool.startswith("inject_html_"):
++    elif server == "finance-injection" and tool in _FINANCE_HTML_TOOLS:
+         page = str(kwargs.get("page", ""))
+         symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
+         article_id = kwargs.get("article_id")
+@@ -1372,9 +1423,7 @@
+             "GET", f"http://127.0.0.1:{environ['FINANCE_WEB_PORT']}{path}"
+         )
+         proof = _contains(blob, [kwargs.get("prompt")], f"finance:{path}")
+-    elif server == "finance-injection" and tool in {
+-        "create_news", "create_comment", "inject_news",
+-    }:
++    elif server == "finance-injection" and tool in _FINANCE_NEWS_TOOLS:
+         symbol = quote(str(kwargs.get("symbol", "")).upper(), safe="")
+         article_id = kwargs.get("article_id")
+         if tool == "create_news" and article_id is None:
+@@ -1524,7 +1573,7 @@
+         (server == "terminal-injection" and tool in {"inject_readme", "inject_file", "inject_todo_list"})
+         or (server == "research-injection" and tool in {"inject_readme", "inject_paper_notes"})
+     ) and "content" in kwargs:
+-        environment = "terminal" if server.startswith("terminal") else "research"
++        environment = "terminal" if server == "terminal-injection" else "research"
+         project = environ[f"{environment.upper()}_PROJECT_NAME"]
+         selected = _one_container(docker, project, f"{environment}-env")
+         default = kwargs.get("file_path") or (
+--- a/dt_arena/src/feedback_observation.py
++++ b/dt_arena/src/feedback_observation.py
+@@ -254,6 +254,34 @@
+     server: dict(tools) for server, tools in _LINUX_PAYLOAD_FIELDS.items()
+ }
+ 
++_CUSTOMER_SERVICE_CASE_FEEDBACK_TOOLS = frozenset({
++    "cs_case_description_inject", "cs_case_note_inject",
++    "cs_case_note_inject_all_by_order",
++})
++_CUSTOMER_SERVICE_ORDER_FEEDBACK_TOOLS = frozenset({
++    "cs_order_metadata_inject", "cs_order_metadata_inject_adaptive",
++})
++_FINANCE_HTML_FEEDBACK_TOOLS = frozenset({
++    "inject_html_analysis", "inject_html_article", "inject_html_general",
++    "inject_html_market", "inject_html_news", "inject_html_options",
++    "inject_html_portfolio", "inject_html_quote",
++})
++_FINANCE_NEWS_FEEDBACK_TOOLS = frozenset({
++    "create_comment", "create_news", "inject_news",
++})
++_EXACT_FEEDBACK_HANDLER_TOOLS = {
++    "customer-service-injection": (
++        _CUSTOMER_SERVICE_CASE_FEEDBACK_TOOLS
++        | _CUSTOMER_SERVICE_ORDER_FEEDBACK_TOOLS
++    ),
++    "finance-injection": (
++        _FINANCE_HTML_FEEDBACK_TOOLS | _FINANCE_NEWS_FEEDBACK_TOOLS
++    ),
++}
++for _server, _tools in _EXACT_FEEDBACK_HANDLER_TOOLS.items():
++    if _tools != SUPPORTED_FEEDBACK_TOOLS[_server]:
++        raise RuntimeError(f"feedback handler registry drift: {_server}")
++
+ 
+ def _article_id(result: Mapping[str, Any]) -> int | None:
+     text = result.get("result")
+@@ -297,6 +325,6 @@
+ ) -> list[dict[str, Any]]:
+     """Map a write receipt to victim reads only when their arguments prove identity."""
+     if server == "customer-service-injection":
+-        if tool.startswith("cs_case_"):
++        if tool in _CUSTOMER_SERVICE_CASE_FEEDBACK_TOOLS:
+             case_id = _result_value(result, ("case_id", "case_ids"))
+             if isinstance(case_id, Sequence) and not isinstance(case_id, (str, bytes, bytearray)):
+@@ -313,5 +341,5 @@
+                     for victim_tool in _PAYLOAD_READ_PATTERNS[server]
+                 ]
+-        if tool.startswith("cs_order_metadata_inject"):
++        if tool in _CUSTOMER_SERVICE_ORDER_FEEDBACK_TOOLS:
+             order_id = _result_value(result, ("order_id", "order_ids")) or kwargs.get("order_id")
+             if isinstance(order_id, Sequence) and not isinstance(order_id, (str, bytes, bytearray)):
+@@ -553,7 +581,7 @@
+             if article_id is None:
+                 continue
+             fields["article_id"] = article_id
+-        if tool.startswith("inject_html_") and victim_tool == "finance:browse_stock":
++        if tool in _FINANCE_HTML_FEEDBACK_TOOLS and victim_tool == "finance:browse_stock":
+             page = kwargs.get("page")
+             if page in {"quote", "analysis"}:
+                 fields["section"] = page
+--- a/tests/test_env_verification.py
++++ b/tests/test_env_verification.py
+@@ -28,6 +28,11 @@
+ from utils.injection_helpers import _classify_injection_result
+ 
+ 
++def test_exact_placement_handler_groups_match_supported_tool_registry():
++    for server, tools in env_verification._EXACT_PLACEMENT_HANDLER_TOOLS.items():
++        assert tools == SUPPORTED_PLACEMENT_TOOLS[server]
++
++
+ def container(project="p", *, mode="bridge", port=None, service="api", env=()):
+     ports = {} if port is None else {(8034, "tcp"): frozenset({port})}
+     return ContainerSnapshot("id", "name", project, service, mode, tuple(env), ports)
+--- a/tests/test_feedback_observation.py
++++ b/tests/test_feedback_observation.py
+@@ -268,5 +268,10 @@
+     assert set(feedback_observation._PAYLOAD_READ_PATTERNS) == set(SUPPORTED_FEEDBACK_TOOLS)
+ 
+ 
++def test_exact_feedback_handler_groups_match_supported_tool_registry():
++    for server, tools in feedback_observation._EXACT_FEEDBACK_HANDLER_TOOLS.items():
++        assert tools == SUPPORTED_FEEDBACK_TOOLS[server]
++
++
+ def test_payload_only_adapter_ignores_same_service_write_echo(tmp_path):
+     probe = build_environment_feedback_probe({

@@ -89,6 +89,9 @@ guest automation tools are listed in `NON_PLACEMENT_TOOLS` and remain
 `not_applicable`. A tool in neither registry fails closed as `unsupported`, and
 the inventory audit fails until that new name is deliberately classified. No
 prefix or naming-convention heuristic participates in this boundary.
+Adapter-family routing is also enumerated with exact per-tool sets. Import-time
+registry assertions fail if a Customer Service, Salesforce, Calendar, Zoom,
+Google Form, or Finance handler set drifts from its supported-tool registry.
 
 M4/M6 policy projection keeps exact qualified names and JSON schemas but reduces
 long tool docstrings to their first semantic paragraph. For the representative

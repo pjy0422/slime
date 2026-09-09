@@ -76,6 +76,12 @@ EXACT_TOOL_IDENTITY_PATCH = (
     / "patches"
     / "m7-exact-tool-presentation-identity.patch"
 )
+EXACT_ADAPTER_DISPATCH_PATCH = (
+    Path(__file__).parents[1]
+    / "dtap_integration"
+    / "patches"
+    / "p6-exact-adapter-dispatch.patch"
+)
 
 
 def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
@@ -278,3 +284,17 @@ def test_tool_presentation_patch_requires_exact_server_and_tool_identity():
     assert 'parts[-2:] == [target_server, target_name]' in text
     assert "description mentions search_emails" in text
     assert 'target in value or target.split' in text
+
+
+def test_adapter_dispatch_patch_uses_exact_handler_sets_with_drift_guards():
+    text = EXACT_ADAPTER_DISPATCH_PATCH.read_text(encoding="utf-8")
+    added = "\n".join(
+        line[1:] for line in text.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+    assert "_EXACT_PLACEMENT_HANDLER_TOOLS" in added
+    assert "_EXACT_FEEDBACK_HANDLER_TOOLS" in added
+    assert "placement handler registry drift" in added
+    assert "feedback handler registry drift" in added
+    assert "tool.startswith" not in added
