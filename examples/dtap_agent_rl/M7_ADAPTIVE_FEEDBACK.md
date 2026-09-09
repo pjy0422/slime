@@ -117,8 +117,17 @@ pytest -q \
   examples/dtap_agent_rl/tests/test_m4_policy_contract.py \
   examples/dtap_agent_rl/tests/test_m6_openclaw_patch.py
 
+pytest -q \
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_observation.py \
+  /home/pjy0422/workspace/DecodingTrust-Agent/tests/test_feedback_boundary_matrix.py
+
 pytest -q examples/dtap_agent_rl/tests
 ```
+
+The DTAP boundary matrix uses 24 alternate benchmark records (not the record-zero
+live-matrix sample) and performs no E2E calls. It checks positive, missing,
+filtered/stale, and provider-presentation-separated evidence for every Linux
+domain and both threat models.
 
 Run a generated H=2 OpenClaw episode with deterministic feedback:
 

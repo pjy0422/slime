@@ -31,6 +31,7 @@ patches=(
   "$script_dir/patches/m7-feedback-v2.patch"
   "$script_dir/patches/m7-exact-locators.patch"
   "$script_dir/patches/m7-domain-feedback.patch"
+  "$script_dir/patches/m7-feedback-boundary-matrix.patch"
 )
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.
