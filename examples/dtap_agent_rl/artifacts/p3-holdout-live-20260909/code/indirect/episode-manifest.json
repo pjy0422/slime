@@ -1,0 +1,8 @@
+{
+  "episode_id": "m4-c00248ad7b7b4e1a9c15d87be2fe25be",
+  "policy_model": "deepseek-v4-flash",
+  "schema": "dtap-agent-rl-episode",
+  "schema_version": 1,
+  "victim_agent_type": "openclaw",
+  "victim_model": "deepseek-v4-flash"
+}
