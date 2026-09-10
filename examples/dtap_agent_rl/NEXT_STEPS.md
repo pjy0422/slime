@@ -301,7 +301,7 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
   README cleanup.
 - [x] PR B scope: Linux placement adapters; all 115 enabled mutators covered.
 - [x] PR C scope: complete OpenClaw structured victim trajectories and viewer support.
-- [ ] PR D: M7 feedback observability, schema v2, and Linux access adapters.
-- [ ] PR E: M7 live H=2 repair and A/B/C feedback gate.
+- [x] PR D: M7 feedback observability, schema v2, and Linux access adapters.
+- [x] PR E: M7 live H=2 repair and A/B/C feedback gate.
 - [ ] PR F: M8 rollout record, optimizer step, and checkpoint evaluation.
 - [ ] PR G: M9 evaluation harness and ablation report.
