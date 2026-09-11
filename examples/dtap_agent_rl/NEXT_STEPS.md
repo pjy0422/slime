@@ -247,33 +247,80 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
   complete or receive an explicit failure classification, and the result
   summary records the benchmark-manifest digest and selection profile.
 
-## M8 — Real slime RL rollout and training dry-run
+## M8 — Multi-turn slime RL algorithms and DTAP-HiPER training path
 
-- [ ] Add trainer-only feedback diagnostics to the rollout record so experiments
-  can state whether they use an adaptive attacker with victim-output access.
-- [ ] Connect the M6/M7 runtime to the production slime rollout worker.
-- [ ] Define and version the rollout-record schema: task reference, policy
-  prompt/response, MCP trajectory, submitted config digest, placement receipts,
-  victim/judge status, reward, failure classification, and feedback mode.
-- [ ] Store accepted training records atomically and make interrupted collection
-  resumable.
+M8 connects the completed M6/M7 DTAP runtime to production slime training and
+adds the multi-turn credit-assignment methods needed for the main RL experiments.
+Detailed implementation requirements are in
+[M8_IMPLEMENTATION_PLAN.md](M8_IMPLEMENTATION_PLAN.md).
+
+The shared substrate must preserve the logical learning trajectory across Claude
+Code auto-compaction. Rewards, values, advantages, returns, option boundaries,
+and segment recurrence are turn/segment-level quantities; the existing slime
+policy objective remains token-level after semantic advantages are projected to
+owned generated-token spans.
+
+- [ ] Add versioned logical-turn metadata to training samples and preserve
+  exactly-one-owner semantics through CLEAN, REALIGN, FORK, compaction, packing,
+  DP split, and context parallelism.
+- [ ] Add rollout-DP affinity for temporal estimators so sibling samples from one
+  `rollout_id` remain available to the same critic/training rank.
+- [ ] Implement multi-turn vanilla PPO with turn-level GAE and sparse per-turn
+  critic targets.
+- [ ] Implement DC-GRPO DW and SW with group credit computed before DP split.
+- [ ] Implement GiGPO with stable environment-state `anchor_key` grouping;
+  compaction prompt text must not be used as the anchor identity.
+- [ ] Add a two-head high/low critic and reference HiPER/HAE implementation,
+  including segment-level high recurrence, within-segment low recurrence, and
+  separate high/low value masks and losses.
+- [ ] Keep **reference HiPER/HAE** separate from **DTAP-HiPER**. Reference mode
+  validates the algorithm with the standard switch/subgoal/action contract;
+  DTAP mode reuses the validated HAE core but adds DTAP-specific hierarchical
+  planning semantics.
+- [ ] In DTAP-HiPER, prompt and parse all four decisions every logical turn:
+  `switch`, `high_subgoal`, `low_subgoal`, and executable `action`. `SWITCH`
+  creates a new high-level option/segment; `KEEP` preserves the active
+  high-level subgoal; the low-level subgoal is a per-turn objective distinct
+  from the concrete action.
+- [ ] Keep DTAP semantic spans separate (`switch`, `high_subgoal`,
+  `low_subgoal`, `action`) so high/low credit and debugging can be reconstructed
+  without overloading `loss_mask`.
+- [ ] Make DTAP high-level option identity survive auto-compaction through
+  structured trajectory metadata rather than by searching compacted summary
+  text.
+- [ ] Connect the M6/M7 runtime to the production slime rollout worker and
+  version the rollout/training record, including task identity, logical turns,
+  feedback mode, failure classification, reward, and hierarchy mode.
 - [ ] Exclude infrastructure-invalid and unsupported-placement episodes from
-  reward learning; retain genuine attack misses as reward zero.
-- [ ] Verify credential, receipt, port, sandbox, and artifact isolation under
-  parallel rollout workers.
+  reward learning while retaining genuine attack misses as valid reward-zero
+  samples.
+- [ ] Store accepted training records atomically, make collection resumable, and
+  verify credential/receipt/port/workspace/artifact isolation under parallel
+  rollout workers.
 - [ ] Add deterministic seeds and capture all non-secret runtime metadata needed
   for reproduction.
-- [ ] Build a tiny single-task overfit test that generates multiple rollouts.
-- [ ] Run at least one optimizer step and save a checkpoint.
-- [ ] Load the checkpoint and run a fresh DTAP evaluation.
-- [ ] Confirm the full path works without fixed/template candidate plans.
+- [ ] Add deterministic algorithm fixtures, compaction/DP/CP regressions,
+  HiPER reference parity tests, and separate DTAP hierarchical prompt/parser
+  tests.
+- [ ] Build a tiny single-task overfit test that generates multiple rollouts,
+  runs at least one optimizer step, saves a checkpoint, reloads it, and performs
+  a fresh DTAP evaluation without fixed/template candidate plans.
 
 ### M8 exit criteria
 
-- [ ] `rollout -> validated submission -> victim -> judge -> reward -> training
-  record -> optimizer step -> checkpoint -> evaluation` passes from one command.
+- [ ] Multi-turn PPO, DC-GRPO DW/SW, GiGPO, and reference HiPER/HAE pass their
+  deterministic math and trajectory fixtures.
+- [ ] Reference HiPER and DTAP-HiPER are explicit separate modes that share the
+  HAE math core but not the prompt contract.
+- [ ] DTAP-HiPER explicitly prompts/parses `switch`, `high_subgoal`,
+  `low_subgoal`, and `action`, and `KEEP`/`SWITCH` semantics remain correct
+  across compaction.
 - [ ] Reward-zero and infrastructure-invalid samples are observably different.
-- [ ] The saved checkpoint can be loaded for a fresh DTAP evaluation.
+- [ ] `rollout -> validated submission -> victim -> judge -> reward -> logical
+  training record -> advantage/return -> optimizer step -> checkpoint -> fresh
+  evaluation` passes end to end.
+- [ ] The saved checkpoint can be loaded for a fresh DTAP evaluation without
+  fixed/template candidate plans.
 
 ## M9 — Evaluation and ablation
 
@@ -303,5 +350,13 @@ Resolve security/reward-boundary inference before mechanical adapter cleanup.
 - [x] PR C scope: complete OpenClaw structured victim trajectories and viewer support.
 - [x] PR D: M7 feedback observability, schema v2, and Linux access adapters.
 - [x] PR E: M7 live H=2 repair and A/B/C feedback gate.
-- [ ] PR F: M8 rollout record, optimizer step, and checkpoint evaluation.
+- [ ] PR F1: M8.0a logical-turn metadata and compaction ownership.
+- [ ] PR F2: M8.0b rollout affinity and metadata DP passthrough.
+- [ ] PR F3: M8.1 multi-turn vanilla PPO.
+- [ ] PR F4: M8.2 DC-GRPO DW/SW.
+- [ ] PR F5: M8.3 GiGPO.
+- [ ] PR F6: M8.4a two-head critic infrastructure.
+- [ ] PR F7: M8.4b reference HiPER/HAE.
+- [ ] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
+- [ ] PR F9: M8.6 production rollout, optimizer/checkpoint smoke, CI, and docs.
 - [ ] PR G: M9 evaluation harness and ablation report.
