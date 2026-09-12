@@ -20,10 +20,11 @@ from slime.observability.rollout_metrics import log_eval_rollout_data, log_rollo
 from slime.rollout.base_types import call_rollout_fn
 from slime.rollout.sample_hooks import set_current_rollout_id
 from slime.utils.data import get_source
-from slime.utils.dp_schedule import build_dp_schedule
+from slime.utils.dp_schedule import build_dp_schedule, partition_train_data
 from slime.utils.health_monitor import RolloutHealthMonitor
 from slime.utils.http_utils import init_http_client
 from slime.utils.misc import Box, load_function
+from slime.utils.multi_turn import build_training_metadata_fields
 from slime.utils.types import Sample
 
 from .utils import Lock, add_default_ray_env_vars
@@ -352,6 +353,7 @@ class RolloutManager:
                 sample.loss_mask = [0] * sample.response_length
             loss_masks.append(sample.loss_mask)
         train_data["loss_masks"] = loss_masks
+        train_data.update(build_training_metadata_fields(samples))
 
         # Per-rollout aggregate, precomputed at the step level (where we can
         # see every sample of every rollout) and broadcast per-sample so the
@@ -408,9 +410,6 @@ class RolloutManager:
                 validate_rollout_routed_experts_for_replay(routed_experts, self.args)
             train_data["rollout_routed_experts"] = routed_experts
 
-        if samples[0].train_metadata is not None:
-            train_data["metadata"] = [sample.train_metadata for sample in samples]
-
         if any(sample.multimodal_train_inputs is not None for sample in samples):
             train_data["multimodal_train_inputs"] = [sample.multimodal_train_inputs for sample in samples]
 
@@ -453,34 +452,8 @@ class RolloutManager:
         rollout_data_refs = []
         for r in range(dp_size):
             partition = partitions[r]
-            rollout_data = {"partition": partition}
-            for key in [
-                "tokens",
-                "multimodal_train_inputs",
-                "response_lengths",
-                "rewards",
-                "truncated",
-                "loss_masks",
-                "round_number",
-                "sample_indices",
-                "rollout_ids",
-                "rollout_mask_sums",
-                "rollout_log_probs",
-                "rollout_top_p_token_ids",
-                "rollout_top_p_token_offsets",
-                "rollout_routed_experts",
-                "source_names",
-                "prompt",
-                "teacher_log_probs",
-            ]:
-                if key not in data:
-                    continue
-                rollout_data[key] = [data[key][j] for j in partition]
-            # keys that need to be splited at train side
-            for key in ["raw_reward", "total_lengths"]:
-                if key not in data:
-                    continue
-                rollout_data[key] = data[key]
+            rollout_data = partition_train_data(data, partition)
+            rollout_data["partition"] = partition
             rollout_data["global_batch_sizes"] = global_batch_sizes
             rollout_data["num_microbatches"] = num_microbatches
             rollout_data["micro_batch_indices"] = micro_batch_indices[r]

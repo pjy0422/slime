@@ -727,6 +727,16 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             # mbs for the training, will be ignored if `use_dynamic_batch_size` is set.
             reset_arg(parser, "--micro-batch-size", type=int, default=1)
             parser.add_argument(
+                "--rollout-dp-affinity",
+                action="store_true",
+                default=False,
+                help=(
+                    "Keep every training sample with the same rollout_id on one data-parallel rank. "
+                    "The scheduler fails if equal per-rank micro-batch counts cannot be formed without "
+                    "breaking rollout affinity."
+                ),
+            )
+            parser.add_argument(
                 "--balance-data",
                 action="store_true",
                 default=False,

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slime.utils.dp_schedule import build_dp_schedule
+from slime.utils.dp_schedule import build_dp_schedule, partition_train_data
 
 
 NUM_GPUS = 0
@@ -21,6 +21,7 @@ def make_args(
     max_tokens_per_gpu=None,
     balance_data=False,
     balance_by_flops=False,
+    rollout_dp_affinity=False,
 ):
     return SimpleNamespace(
         micro_batch_size=micro_batch_size,
@@ -28,6 +29,7 @@ def make_args(
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
         balance_by_flops=balance_by_flops,
+        rollout_dp_affinity=rollout_dp_affinity,
         hidden_size=16,
         num_attention_heads=2,
         num_query_groups=2,
@@ -320,6 +322,247 @@ def test_rejects_when_fewer_rollouts_than_gbs():
     tp = make_tp(dp_size=1)
     with pytest.raises(AssertionError, match="num_rollouts"):
         build_dp_schedule(args, tp, [3] * 6, global_batch_size=4, rollout_indices=[0, 0, 1, 1, 2, 2])
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_keeps_every_sibling_on_one_rank():
+    rollout_indices = [10, 10, 10, 11, 11, 12, 12, 12, 13, 13]
+    total_lengths = [3] * len(rollout_indices)
+    args = make_args(
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=6,
+        rollout_dp_affinity=True,
+    )
+    tp = make_tp(dp_size=2)
+
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args,
+        tp,
+        total_lengths,
+        global_batch_size=4,
+        rollout_indices=rollout_indices,
+    )
+
+    assert gbs_per_step == [4]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(len(total_lengths)),
+        total_lengths=total_lengths,
+        max_per_bin=6,
+    )
+    rollout_ranks: dict[int, set[int]] = {}
+    for rank, partition in enumerate(partitions):
+        for sample_position in partition:
+            rollout_ranks.setdefault(rollout_indices[sample_position], set()).add(rank)
+    assert all(len(ranks) == 1 for ranks in rollout_ranks.values())
+
+
+@pytest.mark.unit
+def test_default_dp_schedule_does_not_enable_rollout_affinity():
+    rollout_indices = [0, 0, 1, 1]
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=1)
+
+    partitions, _, _, _ = build_dp_schedule(
+        args,
+        make_tp(dp_size=2),
+        [1, 1, 1, 1],
+        global_batch_size=2,
+        rollout_indices=rollout_indices,
+    )
+
+    rollout_ranks = {
+        rollout_id: {
+            rank
+            for rank, partition in enumerate(partitions)
+            for position in partition
+            if rollout_indices[position] == rollout_id
+        }
+        for rollout_id in set(rollout_indices)
+    }
+    assert rollout_ranks == {0: {0, 1}, 1: {0, 1}}
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_splits_dynamic_bins_to_equalize_rank_steps():
+    rollout_indices = [0, 0, 0, 1, 1, 2, 2, 3]
+    total_lengths = [6, 6, 1, 3, 3, 3, 3, 1]
+    args = make_args(
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=6,
+        rollout_dp_affinity=True,
+    )
+
+    partitions, mbi, nmb, _ = build_dp_schedule(
+        args,
+        make_tp(dp_size=2),
+        total_lengths,
+        global_batch_size=4,
+        rollout_indices=rollout_indices,
+    )
+
+    assert len(mbi[0]) == len(mbi[1]) == nmb[0]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(len(total_lengths)),
+        total_lengths=total_lengths,
+        max_per_bin=6,
+    )
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_supports_static_packing():
+    rollout_indices = [0, 0, 1, 1, 2, 2, 3, 3]
+    total_lengths = [2] * len(rollout_indices)
+    args = make_args(micro_batch_size=2, rollout_dp_affinity=True)
+
+    partitions, mbi, nmb, _ = build_dp_schedule(
+        args,
+        make_tp(dp_size=2),
+        total_lengths,
+        global_batch_size=4,
+        rollout_indices=rollout_indices,
+    )
+
+    assert nmb == [2]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(len(total_lengths)),
+        total_lengths=total_lengths,
+    )
+    for rollout_id in set(rollout_indices):
+        assert (
+            sum(any(rollout_indices[position] == rollout_id for position in partition) for partition in partitions)
+            == 1
+        )
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_honors_vpp_microbatch_groups():
+    rollout_indices = [rollout_id for rollout_id in range(4) for _ in range(4)]
+    total_lengths = [1] * len(rollout_indices)
+    args = make_args(
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=2,
+        rollout_dp_affinity=True,
+    )
+
+    partitions, mbi, nmb, _ = build_dp_schedule(
+        args,
+        make_tp(dp_size=2, vpp_size=2, microbatch_group_size_per_vp_stage=2),
+        total_lengths,
+        global_batch_size=4,
+        rollout_indices=rollout_indices,
+    )
+
+    assert nmb == [4]
+    assert all(len(rank_mbs) == 4 for rank_mbs in mbi)
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(len(total_lengths)),
+        total_lengths=total_lengths,
+        max_per_bin=2,
+    )
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_balance_data_is_deterministic_and_keeps_bundles():
+    rollout_indices = [0, 0, 1, 1, 2, 2, 3, 3]
+    total_lengths = [9, 9, 7, 7, 3, 3, 1, 1]
+    args = make_args(micro_batch_size=1, balance_data=True, rollout_dp_affinity=True)
+    schedule_args = (args, make_tp(dp_size=2), total_lengths)
+    schedule_kwargs = {"global_batch_size": 4, "rollout_indices": rollout_indices}
+
+    first = build_dp_schedule(*schedule_args, **schedule_kwargs)
+    second = build_dp_schedule(*schedule_args, **schedule_kwargs)
+
+    assert first == second
+    partitions, mbi, nmb, _ = first
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(len(total_lengths)),
+        total_lengths=total_lengths,
+    )
+    for rollout_id in set(rollout_indices):
+        assert (
+            sum(any(rollout_indices[position] == rollout_id for position in partition) for partition in partitions)
+            == 1
+        )
+
+
+@pytest.mark.unit
+def test_rollout_dp_affinity_rejects_fewer_rollouts_than_dp_ranks():
+    args = make_args(
+        use_dynamic_batch_size=True,
+        max_tokens_per_gpu=2,
+        rollout_dp_affinity=True,
+    )
+
+    with pytest.raises(ValueError, match="at least one rollout per DP rank"):
+        build_dp_schedule(
+            args,
+            make_tp(dp_size=2),
+            [1, 1],
+            global_batch_size=1,
+            rollout_indices=[0, 0],
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_rollout_dp_affinity_fails_when_equal_microbatch_counts_are_impossible(dynamic):
+    rollout_indices = [0, 0, 0, 1]
+    args = make_args(
+        micro_batch_size=1,
+        use_dynamic_batch_size=dynamic,
+        max_tokens_per_gpu=1 if dynamic else None,
+        rollout_dp_affinity=True,
+    )
+
+    with pytest.raises(ValueError, match="rollout DP affinity cannot produce equal"):
+        build_dp_schedule(
+            args,
+            make_tp(dp_size=2),
+            [1, 1, 1, 1],
+            global_batch_size=2,
+            rollout_indices=rollout_indices,
+        )
+
+
+@pytest.mark.unit
+def test_partition_train_data_preserves_metadata_and_group_indices():
+    data = {
+        "tokens": [[10], [11], [12]],
+        "metadata": [{"turn": 0}, {}, {"turn": 2}],
+        "group_indices": [7, 8, 7],
+        "rollout_ids": [20, 21, 20],
+        "raw_reward": [0.0, 1.0, 2.0],
+        "total_lengths": [1, 1, 1],
+        "ignored": ["a", "b", "c"],
+    }
+
+    partitioned = partition_train_data(data, [2, 0])
+
+    assert partitioned["metadata"] == [{"turn": 2}, {"turn": 0}]
+    assert partitioned["group_indices"] == [7, 7]
+    assert partitioned["rollout_ids"] == [20, 20]
+    assert partitioned["raw_reward"] is data["raw_reward"]
+    assert partitioned["total_lengths"] is data["total_lengths"]
+    assert "ignored" not in partitioned
 
 
 if __name__ == "__main__":

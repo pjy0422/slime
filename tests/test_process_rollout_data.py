@@ -162,5 +162,27 @@ def test_missing_raw_reward_is_tolerated(unwrap_ray_get):
     assert rollout_data["total_lengths"] == [201, 200]
 
 
+def test_training_metadata_and_group_indices_survive_train_side_fetch(unwrap_ray_get):
+    refs = [
+        _FakeBox(
+            {
+                "partition": [2, 0],
+                "response_lengths": [102, 100],
+                "total_lengths": list(TOTAL_LENGTHS),
+                "metadata": [{"multi_turn": {"turns": [{"turn_idx": 2}]}}, {"source": "legacy"}],
+                "group_indices": [7, 7],
+            }
+        )
+    ]
+
+    rollout_data = process_rollout_data(rollout_data_ref=refs, dp_rank=0, dp_size=1)
+
+    assert rollout_data["metadata"] == [
+        {"multi_turn": {"turns": [{"turn_idx": 2}]}},
+        {"source": "legacy"},
+    ]
+    assert rollout_data["group_indices"] == [7, 7]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
