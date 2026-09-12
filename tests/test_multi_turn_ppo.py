@@ -24,10 +24,7 @@ def loss_module(monkeypatch):
         name: sys.modules.get(name, missing)
         for name in ("slime.backends.megatron_utils.loss", "slime.backends.megatron_utils.cp_utils")
     }
-    original_attributes = {
-        name: getattr(megatron_utils, name, missing)
-        for name in ("loss", "cp_utils")
-    }
+    original_attributes = {name: getattr(megatron_utils, name, missing) for name in ("loss", "cp_utils")}
     sys.modules.pop("slime.backends.megatron_utils.loss", None)
     sys.modules.pop("slime.backends.megatron_utils.cp_utils", None)
     for name in ("loss", "cp_utils"):
@@ -142,12 +139,8 @@ def test_turn_projection_is_length_independent_and_critic_targets_are_sparse() -
     turns = collect_logical_turns(metadata, [11], [9], [torch.tensor([1, 1, 0, 0, 1, 1, 1, 1, 1])])
     scalars = {(11, 0): torch.tensor(-1.0), (11, 1): torch.tensor(1.0)}
 
-    actor_values, actor_masks = project_turn_values(
-        [9], turns, scalars, sparse=False, reference_tensors=reference
-    )
-    critic_values, critic_masks = project_turn_values(
-        [9], turns, scalars, sparse=True, reference_tensors=reference
-    )
+    actor_values, actor_masks = project_turn_values([9], turns, scalars, sparse=False, reference_tensors=reference)
+    critic_values, critic_masks = project_turn_values([9], turns, scalars, sparse=True, reference_tensors=reference)
 
     torch.testing.assert_close(actor_values[0], torch.tensor([-1, -1, 0, 0, 1, 1, 1, 1, 1.0]))
     torch.testing.assert_close(actor_masks[0], torch.tensor([1, 1, 0, 0, 1, 1, 1, 1, 1.0]))

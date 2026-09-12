@@ -164,12 +164,10 @@ def project_turn_values(
     if len(response_lengths) != len(reference_tensors):
         raise ValueError("response lengths and reference tensors must align")
     projected = [
-        reference.new_zeros(length)
-        for reference, length in zip(reference_tensors, response_lengths, strict=True)
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
     ]
     masks = [
-        reference.new_zeros(length)
-        for reference, length in zip(reference_tensors, response_lengths, strict=True)
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
     ]
     for turn in turns:
         key = (turn.rollout_id, turn.turn_idx)
