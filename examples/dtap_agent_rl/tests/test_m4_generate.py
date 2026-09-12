@@ -1,9 +1,8 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-import pytest
-
 import examples.dtap_agent_rl.generate_m4 as generate_module
+import pytest
 from examples.dtap_agent_rl.authority import EpisodeAuthorityRegistry
 from examples.dtap_agent_rl.episode_runtime import EpisodeRuntimeState
 from examples.dtap_agent_rl.generate_m4 import M4GenerateRuntime
@@ -82,9 +81,7 @@ async def test_m4_generate_keeps_one_adapter_session_and_allowlists_metadata(mon
     monkeypatch.setattr(
         generate_module,
         "run_m4_episode",
-        lambda **_kwargs: _value(
-            SimpleNamespace(runtime=state, public_episode_id="public", harness_return_code=0)
-        ),
+        lambda **_kwargs: _value(SimpleNamespace(runtime=state, public_episode_id="public", harness_return_code=0)),
     )
     sample = Sample()
 

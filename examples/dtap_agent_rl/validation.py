@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from jsonschema.validators import validator_for
 
@@ -27,7 +28,7 @@ class ValidationContext:
     attack_surface: Any
 
     @classmethod
-    def from_view(cls, view: Any) -> "ValidationContext":
+    def from_view(cls, view: Any) -> ValidationContext:
         instruction = view.task.task_instruction
         if isinstance(instruction, list):
             count = len(instruction)
@@ -134,9 +135,10 @@ def validate_attack_step(raw: Any, ctx: ValidationContext) -> ValidationResult:
             return _error("MODE_NOT_ALLOWED", "mode", "prompt mode is not allowed for this task")
         if not _nonempty_string(raw["content"]):
             return _error("EMPTY_CONTENT", "content", "content must be a non-empty string")
-        return ValidationResult(True, step=ValidatedAttackStep(
-            type="prompt", turn_id=raw["turn_id"], mode=mode, content=raw["content"].strip()
-        ))
+        return ValidationResult(
+            True,
+            step=ValidatedAttackStep(type="prompt", turn_id=raw["turn_id"], mode=mode, content=raw["content"].strip()),
+        )
 
     if step_type == "tool":
         if not surface.tool_enabled:
@@ -149,9 +151,12 @@ def validate_attack_step(raw: Any, ctx: ValidationContext) -> ValidationResult:
         target = str(raw["injected_tool"])
         if _tool_by_name(surface.victim_tools, target) is None:
             return _error("TARGET_NOT_ALLOWED", "injected_tool", "tool target is not in this task's attack surface")
-        return ValidationResult(True, step=ValidatedAttackStep(
-            type="tool", mode=raw["mode"], content=raw["content"].strip(), injected_tool=target
-        ))
+        return ValidationResult(
+            True,
+            step=ValidatedAttackStep(
+                type="tool", mode=raw["mode"], content=raw["content"].strip(), injected_tool=target
+            ),
+        )
 
     if step_type == "environment":
         if not surface.environment_enabled:
@@ -169,9 +174,12 @@ def validate_attack_step(raw: Any, ctx: ValidationContext) -> ValidationResult:
         schema_error = _validate_json_schema(dict(kwargs), tool.input_schema)
         if schema_error:
             return schema_error
-        return ValidationResult(True, step=ValidatedAttackStep(
-            type="environment", turn_id=raw["turn_id"], injection_mcp_tool=target, kwargs=dict(kwargs)
-        ))
+        return ValidationResult(
+            True,
+            step=ValidatedAttackStep(
+                type="environment", turn_id=raw["turn_id"], injection_mcp_tool=target, kwargs=dict(kwargs)
+            ),
+        )
 
     if step_type == "skill":
         if not surface.skill_enabled:
@@ -197,9 +205,12 @@ def validate_attack_step(raw: Any, ctx: ValidationContext) -> ValidationResult:
             return _error("FIELD_NOT_ALLOWED", "row", "insert row must be >= 1 or -1")
         if mode in {"append", "create"} and row != -1:
             return _error("FIELD_NOT_ALLOWED", "row", f"row must be -1 for {mode}")
-        return ValidationResult(True, step=ValidatedAttackStep(
-            type="skill", mode=mode, content=raw["content"].strip(), skill_name=name, row=row
-        ))
+        return ValidationResult(
+            True,
+            step=ValidatedAttackStep(
+                type="skill", mode=mode, content=raw["content"].strip(), skill_name=name, row=row
+            ),
+        )
 
     raise AssertionError("unreachable")
 
@@ -224,45 +235,59 @@ def validate_attack_plan(raw_steps: Sequence[Any], ctx: ValidationContext) -> Pl
         if step.type == "prompt":
             assert step.turn_id is not None
             if step.turn_id in seen_prompt_turns:
-                errors.append(ValidationErrorDetail(
-                    "PLAN_CONFLICT", f"steps[{index}].turn_id", "only one prompt injection is allowed per turn"
-                ))
+                errors.append(
+                    ValidationErrorDetail(
+                        "PLAN_CONFLICT", f"steps[{index}].turn_id", "only one prompt injection is allowed per turn"
+                    )
+                )
             seen_prompt_turns.add(step.turn_id)
         elif step.type == "tool":
             assert step.injected_tool is not None
             if step.injected_tool in seen_tools:
-                errors.append(ValidationErrorDetail(
-                    "PLAN_CONFLICT", f"steps[{index}].injected_tool", "duplicate tool injection target"
-                ))
+                errors.append(
+                    ValidationErrorDetail(
+                        "PLAN_CONFLICT", f"steps[{index}].injected_tool", "duplicate tool injection target"
+                    )
+                )
             seen_tools.add(step.injected_tool)
         elif step.type == "skill":
             assert step.skill_name is not None and step.mode is not None
             prior = skill_ops.setdefault(step.skill_name, set())
             if "create" in prior or (step.mode == "create" and prior):
-                errors.append(ValidationErrorDetail(
-                    "PLAN_CONFLICT", f"steps[{index}].skill_name",
-                    "create cannot be combined with another operation on the same skill",
-                ))
+                errors.append(
+                    ValidationErrorDetail(
+                        "PLAN_CONFLICT",
+                        f"steps[{index}].skill_name",
+                        "create cannot be combined with another operation on the same skill",
+                    )
+                )
             prior.add(step.mode)
 
     if ctx.threat_model == "direct":
         prompt_turns = sorted(step.turn_id for step in validated if step.type == "prompt" and step.turn_id is not None)
         if validated and not prompt_turns:
-            errors.append(ValidationErrorDetail(
-                "PLAN_CONFLICT", "steps", "direct attack plans require at least one jailbreak prompt"
-            ))
+            errors.append(
+                ValidationErrorDetail(
+                    "PLAN_CONFLICT", "steps", "direct attack plans require at least one jailbreak prompt"
+                )
+            )
         if prompt_turns:
             expected = list(range(1, len(prompt_turns) + 1))
             if prompt_turns != expected:
-                errors.append(ValidationErrorDetail(
-                    "PLAN_CONFLICT", "steps", "direct jailbreak prompt turns must be contiguous from turn 1"
-                ))
+                errors.append(
+                    ValidationErrorDetail(
+                        "PLAN_CONFLICT", "steps", "direct jailbreak prompt turns must be contiguous from turn 1"
+                    )
+                )
             max_turn = len(prompt_turns)
             for index, step in enumerate(validated):
                 if step.type == "environment" and (step.turn_id or 0) > max_turn:
-                    errors.append(ValidationErrorDetail(
-                        "TURN_OUT_OF_RANGE", f"steps[{index}].turn_id",
-                        "environment turn exceeds the direct jailbreak turn count",
-                    ))
+                    errors.append(
+                        ValidationErrorDetail(
+                            "TURN_OUT_OF_RANGE",
+                            f"steps[{index}].turn_id",
+                            "environment turn exceeds the direct jailbreak turn count",
+                        )
+                    )
 
     return PlanValidationResult(not errors, tuple(errors), tuple(validated) if not errors else ())

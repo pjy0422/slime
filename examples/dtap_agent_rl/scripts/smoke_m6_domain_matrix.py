@@ -6,8 +6,8 @@ import argparse
 import asyncio
 import json
 import os
-import signal
 import shutil
+import signal
 import sys
 from collections import Counter
 from pathlib import Path
@@ -16,9 +16,9 @@ from typing import Any
 from examples.dtap_agent_rl.benchmark_manifest import (
     ALL_CASES,
     ALL_DOMAINS,
+    BENCHMARK_MANIFEST,
     DOMAINS,
     EXCLUDED_PLATFORM_DOMAINS,
-    BENCHMARK_MANIFEST,
     MANIFEST_SHA256,
     SELECTION_PROFILES,
     THREAT_MODELS,
@@ -50,31 +50,27 @@ def _failure_class(result: dict[str, Any]) -> str | None:
 def _summary_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
     completed = [item for item in results if item.get("evaluation_completed")]
     applicable = [item for item in completed if item.get("placement_applicable")]
-    tool_attempts = Counter(
-        str(tool)
-        for item in completed
-        for tool in (item.get("environment_tools") or ())
-    )
+    tool_attempts = Counter(str(tool) for item in completed for tool in (item.get("environment_tools") or ()))
     tool_verified = Counter()
     for item in applicable:
         if item.get("placement_covered"):
             tool_verified.update(map(str, item.get("environment_tools") or ()))
+
     def grouped(field: str) -> dict[str, dict[str, int]]:
         keys = sorted({str(item.get(field)) for item in completed if item.get(field)})
         return {
             key: {
                 "evaluations": sum(str(item.get(field)) == key for item in completed),
                 "applicable": sum(
-                    str(item.get(field)) == key and item.get("placement_applicable") is True
-                    for item in completed
+                    str(item.get(field)) == key and item.get("placement_applicable") is True for item in completed
                 ),
                 "covered": sum(
-                    str(item.get(field)) == key and item.get("placement_covered") is True
-                    for item in completed
+                    str(item.get(field)) == key and item.get("placement_covered") is True for item in completed
                 ),
             }
             for key in keys
         }
+
     server_attempts = Counter()
     server_verified = Counter()
     for item in completed:
@@ -103,8 +99,13 @@ def _summary_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failures_by_class": {
             name: sum(_failure_class(item) == name for item in results)
             for name in (
-                "policy", "validation", "unsupported_placement", "placement",
-                "victim", "judge", "infrastructure",
+                "policy",
+                "validation",
+                "unsupported_placement",
+                "placement",
+                "victim",
+                "judge",
+                "infrastructure",
             )
         },
     }
@@ -115,7 +116,8 @@ def _first_record(path: Path) -> dict[str, Any]:
 
 
 def _selected_record(
-    path: Path, selection_profile: str,
+    path: Path,
+    selection_profile: str,
 ) -> tuple[dict[str, Any], int]:
     index = SELECTION_PROFILES[selection_profile]
     selected: dict[str, Any] | None = None
@@ -131,16 +133,17 @@ def _selected_record(
                 break
             record_index += 1
     if selected is None:
-        raise ValueError(
-            f"benchmark profile {selection_profile!r} index {index} is unavailable: {path}"
-        )
+        raise ValueError(f"benchmark profile {selection_profile!r} index {index} is unavailable: {path}")
     return selected, index
 
 
 def _task_dir(dtap_root: Path, record: dict[str, Any]) -> Path:
     return dtap_root.joinpath(
-        "dataset", str(record["domain"]), "malicious",
-        str(record["threat_model"]), str(record["risk_category"]),
+        "dataset",
+        str(record["domain"]),
+        "malicious",
+        str(record["threat_model"]),
+        str(record["risk_category"]),
         str(record["task_id"]),
     )
 
@@ -247,35 +250,59 @@ async def _run_case(
     start = args.port_range_start + slot * args.port_range_stride
     end = start + 511
     command = [
-        args.python, "-m", "examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e",
-        "--task-dir", str(task_dir), "--dtap-root", str(args.dtap_root),
-        "--python", args.python, "--policy-model", args.policy_model,
-        "--victim-model", args.victim_model,
-        "--victim-agent-type", args.victim_agent_type,
-        "--max-submissions", str(args.max_submissions),
-        "--policy-max-turns", str(args.policy_max_turns),
-        "--victim-max-turns", str(args.victim_max_turns),
-        "--timeout", str(args.timeout), "--m6-placement",
-        "--feedback-mode", args.feedback_mode,
-        "--digestor-model", args.digestor_model,
-        "--digestor-timeout", str(args.digestor_timeout),
-        "--port-range-start", str(start), "--artifacts-dir", str(case_dir),
+        args.python,
+        "-m",
+        "examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e",
+        "--task-dir",
+        str(task_dir),
+        "--dtap-root",
+        str(args.dtap_root),
+        "--python",
+        args.python,
+        "--policy-model",
+        args.policy_model,
+        "--victim-model",
+        args.victim_model,
+        "--victim-agent-type",
+        args.victim_agent_type,
+        "--max-submissions",
+        str(args.max_submissions),
+        "--policy-max-turns",
+        str(args.policy_max_turns),
+        "--victim-max-turns",
+        str(args.victim_max_turns),
+        "--timeout",
+        str(args.timeout),
+        "--m6-placement",
+        "--feedback-mode",
+        args.feedback_mode,
+        "--digestor-model",
+        args.digestor_model,
+        "--digestor-timeout",
+        str(args.digestor_timeout),
+        "--port-range-start",
+        str(start),
+        "--artifacts-dir",
+        str(case_dir),
     ]
     if args.reasoning_summary:
         command.append("--reasoning-summary")
     env = os.environ.copy()
-    env.update({
-        "DT_DISABLE_DEFAULT_PORTS": "1",
-        "DT_PORT_RANGE": f"{start}-{end}",
-        "DTAP_ENV_VERIFICATION": "placement",
-        "DTAP_ENV_VERIFICATION_STRICT": "1",
-        "PYTHONPATH": os.pathsep.join(
-            part for part in (str(args.dtap_root), env.get("PYTHONPATH", "")) if part
-        ),
-    })
+    env.update(
+        {
+            "DT_DISABLE_DEFAULT_PORTS": "1",
+            "DT_PORT_RANGE": f"{start}-{end}",
+            "DTAP_ENV_VERIFICATION": "placement",
+            "DTAP_ENV_VERIFICATION_STRICT": "1",
+            "PYTHONPATH": os.pathsep.join(part for part in (str(args.dtap_root), env.get("PYTHONPATH", "")) if part),
+        }
+    )
     process = await asyncio.create_subprocess_exec(
-        *command, cwd=args.slime_root, env=env,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        *command,
+        cwd=args.slime_root,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
@@ -318,24 +345,39 @@ async def _run_case(
         "port_range": f"{start}-{end}",
     }
     if payload:
-        result.update({
-            key: payload.get(key) for key in (
-                "attack_success", "episode_status", "environment_steps",
-                "submissions",
-                "placement_actions", "placements_verified",
-                "matches_source_template",
-                "evaluation_completed", "failure_class", "plan_generated",
-                "action_applied",
-                "episode_id",
-                "placement_applicable", "placement_covered",
-                "placement_verified",
-                "victim_completed", "judge_completed", "victim_mcp_events",
-                "judge_artifacts",
-                "environment_tools",
-                "policy_model", "victim_model", "victim_agent_type",
-                "feedback_mode", "reasoning_summary_enabled", "digestor_usage",
-            )
-        })
+        result.update(
+            {
+                key: payload.get(key)
+                for key in (
+                    "attack_success",
+                    "episode_status",
+                    "environment_steps",
+                    "submissions",
+                    "placement_actions",
+                    "placements_verified",
+                    "matches_source_template",
+                    "evaluation_completed",
+                    "failure_class",
+                    "plan_generated",
+                    "action_applied",
+                    "episode_id",
+                    "placement_applicable",
+                    "placement_covered",
+                    "placement_verified",
+                    "victim_completed",
+                    "judge_completed",
+                    "victim_mcp_events",
+                    "judge_artifacts",
+                    "environment_tools",
+                    "policy_model",
+                    "victim_model",
+                    "victim_agent_type",
+                    "feedback_mode",
+                    "reasoning_summary_enabled",
+                    "digestor_usage",
+                )
+            }
+        )
     else:
         tail = (stderr or stdout)[-2000:]
         result["error_tail"] = tail
@@ -345,17 +387,17 @@ async def _run_case(
             state = json.loads((case_dir / "episode-state.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             state = {}
-        result.update({
-            "plan_generated": bool(
-                state.get("plan_generated") or (case_dir / "submitted-config.yaml").is_file()
-            ),
-            "action_applied": bool(state.get("evaluation_delegate_completed")),
-            "victim_completed": bool(state.get("evaluation_delegate_completed")),
-            "judge_completed": bool(state.get("judge_artifacts_retained")),
-            "victim_mcp_events": int(bool(state.get("victim_mcp_log_retained"))),
-            "judge_artifacts": int(state.get("judge_artifacts_retained") or 0),
-            "placement_verified": False,
-        })
+        result.update(
+            {
+                "plan_generated": bool(state.get("plan_generated") or (case_dir / "submitted-config.yaml").is_file()),
+                "action_applied": bool(state.get("evaluation_delegate_completed")),
+                "victim_completed": bool(state.get("evaluation_delegate_completed")),
+                "judge_completed": bool(state.get("judge_artifacts_retained")),
+                "victim_mcp_events": int(bool(state.get("victim_mcp_log_retained"))),
+                "judge_artifacts": int(state.get("judge_artifacts_retained") or 0),
+                "placement_verified": False,
+            }
+        )
     result_path.write_text(
         json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -385,9 +427,14 @@ async def _main(args: argparse.Namespace) -> int:
             except asyncio.QueueEmpty:
                 return
             try:
-                results.append(await _run_case(
-                    args, domain=domain, threat_model=threat_model, slot=slot,
-                ))
+                results.append(
+                    await _run_case(
+                        args,
+                        domain=domain,
+                        threat_model=threat_model,
+                        slot=slot,
+                    )
+                )
             finally:
                 queue.task_done()
 
@@ -432,18 +479,24 @@ def main() -> None:
     parser.add_argument("--slime-root", type=Path, default=Path.cwd())
     parser.add_argument("--artifacts-root", type=Path, required=True)
     parser.add_argument(
-        "--domains", nargs="+", choices=ALL_DOMAINS, default=list(DOMAINS),
+        "--domains",
+        nargs="+",
+        choices=ALL_DOMAINS,
+        default=list(DOMAINS),
         help=(
             "manifest domains to run; VM-backed domains are excluded by default "
             "and naming them here is the explicit opt-in"
         ),
     )
     parser.add_argument(
-        "--threat-models", nargs="+", choices=THREAT_MODELS,
+        "--threat-models",
+        nargs="+",
+        choices=THREAT_MODELS,
         default=list(THREAT_MODELS),
     )
     parser.add_argument(
-        "--selection-profile", choices=tuple(SELECTION_PROFILES),
+        "--selection-profile",
+        choices=tuple(SELECTION_PROFILES),
         default="release-v1",
         help="manifest-defined benchmark record selection (holdout-v1 is disjoint)",
     )

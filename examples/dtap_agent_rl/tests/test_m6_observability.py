@@ -10,11 +10,11 @@ from examples.dtap_agent_rl.benchmark_manifest import (
     SELECTION_PROFILES,
     THREAT_MODELS,
 )
-from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import _selected_record
 from examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage import audit
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
     DOMAINS,
     EXCLUDED_PLATFORM_DOMAINS,
+    _selected_record,
     _summary_metrics,
 )
 from examples.dtap_agent_rl.scripts.verify_m6_runtime_lock import verify
@@ -35,13 +35,8 @@ def test_default_matrix_keeps_vm_platforms_opt_in():
     assert len(DEFAULT_CASES) == 24
     assert len(MANIFEST_SHA256) == 64
     assert SELECTION_PROFILES == {"release-v1": 0, "holdout-v1": 50}
-    assert {
-        entry["name"] for entry in DOMAIN_ENTRIES if entry["vm_backed"]
-    } == EXCLUDED_PLATFORM_DOMAINS
-    assert all(
-        not entry["default_enabled"]
-        for entry in DOMAIN_ENTRIES if entry["vm_backed"]
-    )
+    assert {entry["name"] for entry in DOMAIN_ENTRIES if entry["vm_backed"]} == EXCLUDED_PLATFORM_DOMAINS
+    assert all(not entry["default_enabled"] for entry in DOMAIN_ENTRIES if entry["vm_backed"])
 
 
 def test_manifest_coordinates_exist_in_the_dtap_benchmark_inventory():
@@ -69,24 +64,37 @@ def test_holdout_matrix_is_disjoint_from_the_release_matrix():
 
 
 def test_summary_separates_completion_reward_and_placement_coverage():
-    metrics = _summary_metrics([
-        {
-            "status": "passed", "evaluation_completed": True,
-            "attack_success": False, "placement_applicable": False,
-            "placement_covered": False, "placement_actions": 0,
-            "placements_verified": 0, "environment_tools": [],
-            "action_applied": True, "domain": "legal", "threat_model": "direct",
-        },
-        {
-            "status": "passed", "evaluation_completed": True,
-            "attack_success": True, "placement_applicable": True,
-            "placement_covered": True, "placement_actions": 1,
-            "placements_verified": 1,
-            "environment_tools": ["gmail-injection:inject_email"],
-            "action_applied": True, "domain": "legal", "threat_model": "indirect",
-        },
-        {"status": "failed", "failure_class": "infrastructure"},
-    ])
+    metrics = _summary_metrics(
+        [
+            {
+                "status": "passed",
+                "evaluation_completed": True,
+                "attack_success": False,
+                "placement_applicable": False,
+                "placement_covered": False,
+                "placement_actions": 0,
+                "placements_verified": 0,
+                "environment_tools": [],
+                "action_applied": True,
+                "domain": "legal",
+                "threat_model": "direct",
+            },
+            {
+                "status": "passed",
+                "evaluation_completed": True,
+                "attack_success": True,
+                "placement_applicable": True,
+                "placement_covered": True,
+                "placement_actions": 1,
+                "placements_verified": 1,
+                "environment_tools": ["gmail-injection:inject_email"],
+                "action_applied": True,
+                "domain": "legal",
+                "threat_model": "indirect",
+            },
+            {"status": "failed", "failure_class": "infrastructure"},
+        ]
+    )
 
     assert metrics["evaluation_completed"] == 2
     assert metrics["attack_successes"] == 1
@@ -95,16 +103,22 @@ def test_summary_separates_completion_reward_and_placement_coverage():
     assert metrics["placement_covered"] == 1
     assert metrics["failures_by_class"]["infrastructure"] == 1
     assert metrics["placement_by_tool"]["gmail-injection:inject_email"] == {
-        "attempted": 1, "verified": 1,
+        "attempted": 1,
+        "verified": 1,
     }
     assert metrics["placement_by_injection_mcp"]["gmail-injection"] == {
-        "attempted": 1, "verified": 1,
+        "attempted": 1,
+        "verified": 1,
     }
     assert metrics["placement_by_domain"]["legal"] == {
-        "evaluations": 2, "applicable": 1, "covered": 1,
+        "evaluations": 2,
+        "applicable": 1,
+        "covered": 1,
     }
     assert metrics["placement_by_threat_model"]["indirect"] == {
-        "evaluations": 1, "applicable": 1, "covered": 1,
+        "evaluations": 1,
+        "applicable": 1,
+        "covered": 1,
     }
 
 
@@ -136,7 +150,8 @@ def test_runtime_lock_schema_and_non_image_checks():
     assert payload["system_tools"]["jq"]["version"] == "jq-1.8.2"
     assert len(payload["system_tools"]["jq"]["sha256"]) == 64
     result = verify(
-        lock, _dtap_root(),
+        lock,
+        _dtap_root(),
         check_images=False,
     )
     assert result["status"] == "passed"

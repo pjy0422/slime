@@ -5,8 +5,15 @@ from typing import Any
 
 SUPPORTED_M2_TYPES = ("prompt", "tool", "environment", "skill")
 ALL_KNOWN_FIELDS = {
-    "type", "turn_id", "mode", "content", "injected_tool",
-    "injection_mcp_tool", "kwargs", "skill_name", "row",
+    "type",
+    "turn_id",
+    "mode",
+    "content",
+    "injected_tool",
+    "injection_mcp_tool",
+    "kwargs",
+    "skill_name",
+    "row",
 }
 TYPE_FIELDS = {
     "prompt": {"type", "turn_id", "mode", "content"},

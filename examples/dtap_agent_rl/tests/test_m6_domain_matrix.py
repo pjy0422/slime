@@ -1,12 +1,11 @@
 import json
 
 import pytest
-
 from examples.dtap_agent_rl.benchmark_manifest import matrix_cases
 from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
     _failure_class,
-    _first_record,
     _failure_count,
+    _first_record,
     _matching_resume_result,
     _passed_payload,
     _selected_record,
@@ -15,15 +14,18 @@ from examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix import (
 )
 
 
-@pytest.mark.parametrize(("tail", "expected"), [
-    ("UNSUPPORTED_PLACEMENT", "unsupported_placement"),
-    ("PLACEMENT_MISMATCH", "placement"),
-    ("judge process failed", "judge"),
-    ("OpenClaw victim failed", "victim"),
-    ("INVALID_SUBMISSION validation", "validation"),
-    ("GLM did not produce a plan", "policy"),
-    ("docker daemon unavailable", "infrastructure"),
-])
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [
+        ("UNSUPPORTED_PLACEMENT", "unsupported_placement"),
+        ("PLACEMENT_MISMATCH", "placement"),
+        ("judge process failed", "judge"),
+        ("OpenClaw victim failed", "victim"),
+        ("INVALID_SUBMISSION validation", "validation"),
+        ("GLM did not produce a plan", "policy"),
+        ("docker daemon unavailable", "infrastructure"),
+    ],
+)
 def test_failure_classes_are_machine_separable(tail, expected):
     assert _failure_class({"status": "failed", "error_tail": tail}) == expected
 
@@ -41,18 +43,19 @@ def test_matrix_resolves_malicious_benchmark_record(tmp_path):
 
     assert _first_record(benchmark) == record
     assert _task_dir(tmp_path, record) == tmp_path.joinpath(
-        "dataset", "travel", "malicious", "indirect",
-        "data-exfiltration", "001",
+        "dataset",
+        "travel",
+        "malicious",
+        "indirect",
+        "data-exfiltration",
+        "001",
     )
 
 
 def test_selection_profiles_choose_disjoint_records(tmp_path):
     benchmark = tmp_path / "direct.jsonl"
     benchmark.write_text(
-        "".join(
-            json.dumps({"task_id": f"task-{index}"}) + "\n"
-            for index in range(51)
-        ),
+        "".join(json.dumps({"task_id": f"task-{index}"}) + "\n" for index in range(51)),
         encoding="utf-8",
     )
 
@@ -83,27 +86,36 @@ def test_resume_requires_the_same_profile_index_and_task(tmp_path):
     }
     result_path.write_text(json.dumps(result), encoding="utf-8")
 
-    assert _matching_resume_result(
-        result_path,
-        selection_profile="holdout-v1",
-        benchmark_index=50,
-        task_id="task-50",
-        risk_category="category-50",
-    ) == result
-    assert _matching_resume_result(
-        result_path,
-        selection_profile="release-v1",
-        benchmark_index=0,
-        task_id="task-0",
-        risk_category="category-0",
-    ) is None
-    assert _matching_resume_result(
-        result_path,
-        selection_profile="holdout-v1",
-        benchmark_index=50,
-        task_id="task-50",
-        risk_category="different-category",
-    ) is None
+    assert (
+        _matching_resume_result(
+            result_path,
+            selection_profile="holdout-v1",
+            benchmark_index=50,
+            task_id="task-50",
+            risk_category="category-50",
+        )
+        == result
+    )
+    assert (
+        _matching_resume_result(
+            result_path,
+            selection_profile="release-v1",
+            benchmark_index=0,
+            task_id="task-0",
+            risk_category="category-0",
+        )
+        is None
+    )
+    assert (
+        _matching_resume_result(
+            result_path,
+            selection_profile="holdout-v1",
+            benchmark_index=50,
+            task_id="task-50",
+            risk_category="different-category",
+        )
+        is None
+    )
 
 
 def test_manifest_generates_stable_default_and_explicit_vm_matrices():
@@ -141,38 +153,58 @@ def test_subset_resume_summary_can_collect_the_complete_result_tree(tmp_path):
     ):
         path = tmp_path / domain / threat_model / "result.json"
         path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({
-            "domain": domain, "threat_model": threat_model, "status": status,
-        }), encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "domain": domain,
+                    "threat_model": threat_model,
+                    "status": status,
+                }
+            ),
+            encoding="utf-8",
+        )
 
-    assert [item["status"] for item in _stored_results(tmp_path)] == [
-        "passed", "failed"
-    ]
+    assert [item["status"] for item in _stored_results(tmp_path)] == ["passed", "failed"]
 
 
 @pytest.mark.parametrize("domain", ["windows", "macos", "browser"])
 def test_platform_name_does_not_hide_failures(domain):
-    assert _failure_count([
-        {"domain": domain, "status": "failed", "expected_platform_failure": True},
-        {"domain": domain, "status": "passed"},
-    ]) == 1
+    assert (
+        _failure_count(
+            [
+                {"domain": domain, "status": "failed", "expected_platform_failure": True},
+                {"domain": domain, "status": "passed"},
+            ]
+        )
+        == 1
+    )
 
 
-@pytest.mark.parametrize("contents", [
-    "{", "[]", "null", "{}",
-    '{"domain":"browser","threat_model":"direct","status":"unknown"}',
-    '{"domain":"medical","threat_model":"direct","status":"passed"}',
-    '{"domain":"browser","threat_model":"indirect","status":"passed"}',
-])
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{",
+        "[]",
+        "null",
+        "{}",
+        '{"domain":"browser","threat_model":"direct","status":"unknown"}',
+        '{"domain":"medical","threat_model":"direct","status":"passed"}',
+        '{"domain":"browser","threat_model":"indirect","status":"passed"}',
+    ],
+)
 def test_invalid_stored_results_are_reported_as_failures(tmp_path, contents):
     path = tmp_path / "browser" / "direct" / "result.json"
     path.parent.mkdir(parents=True)
     path.write_text(contents, encoding="utf-8")
     results = _stored_results(tmp_path)
-    assert results == [{
-        "domain": "browser", "threat_model": "direct", "status": "failed",
-        "result_error": "invalid stored result",
-    }]
+    assert results == [
+        {
+            "domain": "browser",
+            "threat_model": "direct",
+            "status": "failed",
+            "result_error": "invalid stored result",
+        }
+    ]
     assert _failure_count(results) == 1
 
 

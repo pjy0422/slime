@@ -37,7 +37,9 @@ def _judge_source(metadata: Any) -> str:
         return "deterministic"
     if metadata.get("judge_tool") == "llm_judge" or metadata.get("verdict_source") == "llm_judge":
         return "llm_as_judge"
-    if any(metadata.get(key) is not None for key in ("llm_judge", "llm_model", "gpt_model", "gpt_score", "gpt_rationale")):
+    if any(
+        metadata.get(key) is not None for key in ("llm_judge", "llm_model", "gpt_model", "gpt_score", "gpt_rationale")
+    ):
         return "llm_as_judge"
     return "deterministic"
 
@@ -62,7 +64,9 @@ def load_judge_results(root: str | Path) -> dict[str, Any]:
     root = Path(root).expanduser().resolve()
     result = _read_json(_first(root, ("judge-result.json", "judge_result.json")))
     verdict = _read_json(_first(root, ("judge-verdict.json", ".m4-verdict.json")))
-    components = [component for name in ("task", "attack") if (component := _judge_component(result, name)) is not None]
+    components = [
+        component for name in ("task", "attack") if (component := _judge_component(result, name)) is not None
+    ]
     return {
         "available": bool(result or verdict),
         "components": components,
@@ -88,14 +92,10 @@ def _attempt_directories(root: Path) -> list[tuple[int, Path]]:
     return sorted(found)
 
 
-def load_episode_bundle(
-    path: str | Path, *, attempt_index: int | None = None
-) -> dict[str, Any]:
+def load_episode_bundle(path: str | Path, *, attempt_index: int | None = None) -> dict[str, Any]:
     root = Path(path).expanduser().resolve()
     attempt_directories = _attempt_directories(root)
-    if attempt_index is not None and not any(
-        index == attempt_index for index, _ in attempt_directories
-    ):
+    if attempt_index is not None and not any(index == attempt_index for index, _ in attempt_directories):
         raise ValueError(f"attempt {attempt_index} not found")
     selected_index, selected_root = (
         next(item for item in attempt_directories if item[0] == attempt_index)
@@ -159,9 +159,9 @@ def load_episode_bundle(
     data["attempts"] = [
         {
             "index": index,
-            "attack_success": _read_json(
-                _first(directory, ("judge-verdict.json", ".m4-verdict.json"))
-            ).get("attack_success"),
+            "attack_success": _read_json(_first(directory, ("judge-verdict.json", ".m4-verdict.json"))).get(
+                "attack_success"
+            ),
         }
         for index, directory in attempt_directories
     ]

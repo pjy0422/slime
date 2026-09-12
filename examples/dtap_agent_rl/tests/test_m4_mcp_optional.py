@@ -2,17 +2,12 @@ import importlib.util
 from types import SimpleNamespace
 
 import pytest
-
 from examples.dtap_agent_rl.attack_surface import AttackSurface
-from examples.dtap_agent_rl.authority import (
-    EpisodeAuthority,
-    EpisodeAuthorityRegistry,
-    EpisodeCredentials,
-)
+from examples.dtap_agent_rl.authority import EpisodeAuthority, EpisodeAuthorityRegistry, EpisodeCredentials
 from examples.dtap_agent_rl.mcp_server import M4EpisodeService, create_m4_mcp_server
 from examples.dtap_agent_rl.policy_contract import PolicyContract
-from examples.dtap_agent_rl.service import EpisodeAccessError, EpisodeView
 from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
+from examples.dtap_agent_rl.service import EpisodeAccessError, EpisodeView
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
 
 
@@ -74,9 +69,7 @@ def test_m4_validation_endpoint_applies_read_only_resource_limits():
     )
     assert result == {
         "valid": False,
-        "errors": [
-            {"code": "INVALID_SHAPE", "path": "$", "message": "step exceeds public limits"}
-        ],
+        "errors": [{"code": "INVALID_SHAPE", "path": "$", "message": "step exceeds public limits"}],
     }
 
 
@@ -89,9 +82,7 @@ def test_m4_surface_discloses_whole_plan_resource_limits():
         max_steps_per_plan=7,
         max_placement_actions=5,
     )
-    surface = M4EpisodeService(registry, PolicyContract(), policy).get_attack_surface(
-        credentials.mcp_bearer_token
-    )
+    surface = M4EpisodeService(registry, PolicyContract(), policy).get_attack_surface(credentials.mcp_bearer_token)
 
     assert surface["policy_limits"] == {
         "max_steps_per_plan": 7,

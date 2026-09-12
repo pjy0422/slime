@@ -17,18 +17,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import yaml
-
 from examples.dtap_agent_rl.attack_surface import AttackSurface
 from examples.dtap_agent_rl.attempt_runner import AttemptResult
 from examples.dtap_agent_rl.episode_runtime import EpisodeRuntimeState, EpisodeStatus
 from examples.dtap_agent_rl.mcp_server import create_m3_mcp_server
 from examples.dtap_agent_rl.runtime import registered_episode
 from examples.dtap_agent_rl.service import EpisodeRegistry, EpisodeView
-from examples.dtap_agent_rl.submission import (
-    EpisodeSubmissionRegistry,
-    SubmissionCoordinator,
-    registered_submission,
-)
+from examples.dtap_agent_rl.submission import EpisodeSubmissionRegistry, SubmissionCoordinator, registered_submission
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
 from examples.dtap_agent_rl.validation import ValidationContext
 
@@ -47,10 +42,12 @@ When terminal=true, stop immediately. Do not use native tools."""
 
 class ScriptedRunner:
     def __init__(self):
-        self.results = deque([
-            AttemptResult(evaluation_started=True, attack_success=False),
-            AttemptResult(evaluation_started=True, attack_success=True),
-        ])
+        self.results = deque(
+            [
+                AttemptResult(evaluation_started=True, attack_success=False),
+                AttemptResult(evaluation_started=True, attack_success=True),
+            ]
+        )
         self.calls = []
 
     async def run(self, workspace):
@@ -129,9 +126,7 @@ async def _main(args) -> None:
         before = hashlib.sha256((source / "config.yaml").read_bytes()).hexdigest()
         view = EpisodeView(
             task=PolicyTaskSpec("m3-hloop", "workflow", "smoke", "normal", "indirect", None),
-            attack_surface=AttackSurface(
-                True, False, False, False, (), (), (), prompt_modes=("suffix", "override")
-            ),
+            attack_surface=AttackSurface(True, False, False, False, (), (), (), prompt_modes=("suffix", "override")),
         )
         runner = ScriptedRunner()
         runtime = EpisodeRuntimeState(max_submissions=2)
@@ -141,19 +136,22 @@ async def _main(args) -> None:
             source_task_dir=source,
             episode_root=root / "attempts",
             runner=runner,
-            candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-                canonical_steps=expected_steps
-            ),
+            candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
         )
         views = EpisodeRegistry()
         submissions = EpisodeSubmissionRegistry()
         token = secrets.token_urlsafe(32)
         port = _free_port()
         server = create_m3_mcp_server(views, submissions)
-        server_task = asyncio.create_task(server.run_async(
-            transport="http", host="127.0.0.1", port=port,
-            stateless_http=True, show_banner=False,
-        ))
+        server_task = asyncio.create_task(
+            server.run_async(
+                transport="http",
+                host="127.0.0.1",
+                port=port,
+                stateless_http=True,
+                show_banner=False,
+            )
+        )
         try:
             await _wait_port(port)
             with (
@@ -161,11 +159,20 @@ async def _main(args) -> None:
                 registered_submission(submissions, token=token, controller=controller),
             ):
                 config_path = root / "mcp.json"
-                config_path.write_text(json.dumps({"mcpServers": {"dtap": {
-                    "type": "http",
-                    "url": "${DTAP_HARNESS_URL}",
-                    "headers": {"Authorization": "Bearer ${DTAP_EPISODE_TOKEN}"},
-                }}}), encoding="utf-8")
+                config_path.write_text(
+                    json.dumps(
+                        {
+                            "mcpServers": {
+                                "dtap": {
+                                    "type": "http",
+                                    "url": "${DTAP_HARNESS_URL}",
+                                    "headers": {"Authorization": "Bearer ${DTAP_EPISODE_TOKEN}"},
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 env = os.environ.copy()
                 env.pop("ANTHROPIC_BASE_URL", None)
                 env.pop("ANTHROPIC_AUTH_TOKEN", None)
@@ -174,21 +181,31 @@ async def _main(args) -> None:
                     DTAP_EPISODE_TOKEN=token,
                 )
                 command = [
-                    claude, "-p", PROMPT, "--output-format", "stream-json", "--verbose",
-                    "--max-turns", "10", "--mcp-config", str(config_path),
-                    "--allowedTools", ",".join(sorted(TOOLS)),
+                    claude,
+                    "-p",
+                    PROMPT,
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--max-turns",
+                    "10",
+                    "--mcp-config",
+                    str(config_path),
+                    "--allowedTools",
+                    ",".join(sorted(TOOLS)),
                     "--disallowedTools",
                     "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit",
                 ]
                 if args.model:
                     command.extend(["--model", args.model])
                 process = await asyncio.create_subprocess_exec(
-                    *command, cwd=temp_dir, env=env,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                    *command,
+                    cwd=temp_dir,
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
-                stdout_raw, stderr_raw = await asyncio.wait_for(
-                    process.communicate(), timeout=args.timeout
-                )
+                stdout_raw, stderr_raw = await asyncio.wait_for(process.communicate(), timeout=args.timeout)
                 stdout = stdout_raw.decode(errors="replace")
                 stderr = stderr_raw.decode(errors="replace")
                 if process.returncode:

@@ -1,92 +1,32 @@
 from pathlib import Path
 
 
-PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m6-openclaw-deepseek.patch"
-)
-STABILIZATION_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "p0-p2-linux-stabilization.patch"
-)
-JUDGE_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "p3-judge-reliability.patch"
-)
-LIVE_STABILITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "p4-h2-live-stability.patch"
-)
-M7_OBSERVABILITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-feedback-observability.patch"
-)
-M7_FEEDBACK_V2_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-feedback-v2.patch"
-)
-M7_EXACT_LOCATORS_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-exact-locators.patch"
-)
-M7_DOMAIN_FEEDBACK_PATCH = (
-    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-domain-feedback.patch"
-)
+PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m6-openclaw-deepseek.patch"
+STABILIZATION_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "p0-p2-linux-stabilization.patch"
+JUDGE_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "p3-judge-reliability.patch"
+LIVE_STABILITY_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "p4-h2-live-stability.patch"
+M7_OBSERVABILITY_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-feedback-observability.patch"
+M7_FEEDBACK_V2_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-feedback-v2.patch"
+M7_EXACT_LOCATORS_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-exact-locators.patch"
+M7_DOMAIN_FEEDBACK_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-domain-feedback.patch"
 M7_BOUNDARY_MATRIX_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-feedback-boundary-matrix.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-feedback-boundary-matrix.patch"
 )
-TOKEN_OBSERVABILITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-token-observability.patch"
-)
+TOKEN_OBSERVABILITY_PATCH = Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-token-observability.patch"
 TOOL_CAPABILITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-explicit-tool-capabilities.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-explicit-tool-capabilities.patch"
 )
 STRUCTURED_JUDGE_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-structured-judge-status.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-structured-judge-status.patch"
 )
 EXACT_TOOL_IDENTITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "m7-exact-tool-presentation-identity.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "m7-exact-tool-presentation-identity.patch"
 )
 EXACT_ADAPTER_DISPATCH_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "p6-exact-adapter-dispatch.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "p6-exact-adapter-dispatch.patch"
 )
 HOLDOUT_E2E_STABILITY_PATCH = (
-    Path(__file__).parents[1]
-    / "dtap_integration"
-    / "patches"
-    / "p7-holdout-e2e-stability.patch"
+    Path(__file__).parents[1] / "dtap_integration" / "patches" / "p7-holdout-e2e-stability.patch"
 )
 
 
@@ -97,9 +37,7 @@ def test_openclaw_patch_is_isolated_and_keeps_secrets_out_of_config():
     assert '"id": "ANTHROPIC_API_KEY"' in text
     assert '"authHeader": True' in text
     assert "ANTHROPIC_API_KEY'," not in text
-    assert "_load_openclaw_config()" not in "\n".join(
-        line[1:] for line in text.splitlines() if line.startswith("+")
-    )
+    assert "_load_openclaw_config()" not in "\n".join(line[1:] for line in text.splitlines() if line.startswith("+"))
 
 
 def test_openclaw_patch_supports_current_cli_envelope_and_trajectory_fallback():
@@ -124,16 +62,14 @@ def test_openclaw_token_usage_patch_preserves_provider_receipt():
     assert '**({"usage": self._token_usage} if self._token_usage else {})' in text
     assert 'metadata"]["token_usage"] = dict(' in text
     assert 'metadata"]["model"] = meta["model"].strip()' in text
-    assert text.index('agent_meta.get("diagnosticUsage")') < text.index(
-        'agent_meta.get("usage")'
-    )
+    assert text.index('agent_meta.get("diagnosticUsage")') < text.index('agent_meta.get("usage")')
 
 
 def test_openclaw_patch_forwards_the_shared_provider_to_medical_aux_models():
     text = PATCH.read_text(encoding="utf-8")
 
     assert text.count("OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}") == 2
-    assert 'OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS' in text
+    assert "OPENCLAW_MCP_TOOL_TIMEOUT_SECONDS" in text
     assert "timeout=timeout_seconds" in text
 
 
@@ -161,11 +97,11 @@ def test_overlay_marker_is_scoped_to_the_target_dtap_checkout():
     text = apply_script.read_text(encoding="utf-8")
 
     assert "--path-format=absolute --git-path" in text
-    assert 'incremental_patches=(' in text
+    assert "incremental_patches=(" in text
     assert 'prefix_patches=("${base_patches[@]}"' in text
-    assert 'for ((index=prefix_count;' in text
+    assert "for ((index=prefix_count;" in text
     assert "refusing ambiguous upgrade" in text
-    assert 'latest_patch=' not in text
+    assert "latest_patch=" not in text
 
 
 def test_stabilization_patch_records_only_redacted_correlated_mcp_events():
@@ -174,7 +110,7 @@ def test_stabilization_patch_records_only_redacted_correlated_mcp_events():
     assert "class MCPEventSink" in text
     assert '"dtap-openclaw-mcp-event"' in text
     assert "_redacted_shape(arguments)" in text
-    assert 'DTAP_EVALUATION_EPISODE_ID' in text
+    assert "DTAP_EVALUATION_EPISODE_ID" in text
     assert "raw sensitive prompt payload" in text
     assert "assert all(secret not in raw" in text
 
@@ -241,17 +177,17 @@ def test_m7_v2_overlay_explicitly_covers_linux_registry_only():
 def test_m7_boundary_matrix_uses_alternate_records_and_real_mcp_namespaces():
     text = M7_BOUNDARY_MATRIX_PATCH.read_text(encoding="utf-8")
 
-    assert 'DOMAINS = (' in text
-    assert 'assert len(CASES) == 24' in text
-    assert 'assert case.benchmark_index > 0' in text
-    assert 'response_contains_injection' in text
-    assert 'presented_to_model' in text
+    assert "DOMAINS = (" in text
+    assert "assert len(CASES) == 24" in text
+    assert "assert case.benchmark_index > 0" in text
+    assert "response_contains_injection" in text
+    assert "presented_to_model" in text
     assert '"customer_service"' in text
     assert '"Research"' in text
     assert '"travel-suite"' in text
     assert '"HospitalClient:get_patient_status"' in text
-    assert 'test_customer_service_batch_fallback_cannot_treat_write_echo_as_read' in text
-    assert 'Serializing a tool result before matching changes newlines' in text
+    assert "test_customer_service_batch_fallback_cannot_treat_write_echo_as_read" in text
+    assert "Serializing a tool result before matching changes newlines" in text
 
 
 def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources():
@@ -266,10 +202,7 @@ def test_stabilization_patch_covers_linux_mutators_and_disables_missing_sources(
 
 def test_environment_tool_capability_patch_has_no_prefix_authorization():
     text = TOOL_CAPABILITY_PATCH.read_text(encoding="utf-8")
-    added = "\n".join(
-        line[1:] for line in text.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
+    added = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
 
     assert "NON_PLACEMENT_TOOLS" in text
     assert "tool.startswith" not in added
@@ -289,17 +222,14 @@ def test_judge_status_patch_emits_structured_availability():
 def test_tool_presentation_patch_requires_exact_server_and_tool_identity():
     text = EXACT_TOOL_IDENTITY_PATCH.read_text(encoding="utf-8")
 
-    assert 'parts[-2:] == [target_server, target_name]' in text
+    assert "parts[-2:] == [target_server, target_name]" in text
     assert "description mentions search_emails" in text
-    assert 'target in value or target.split' in text
+    assert "target in value or target.split" in text
 
 
 def test_adapter_dispatch_patch_uses_exact_handler_sets_with_drift_guards():
     text = EXACT_ADAPTER_DISPATCH_PATCH.read_text(encoding="utf-8")
-    added = "\n".join(
-        line[1:] for line in text.splitlines()
-        if line.startswith("+") and not line.startswith("+++")
-    )
+    added = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
 
     assert "_EXACT_PLACEMENT_HANDLER_TOOLS" in added
     assert "_EXACT_FEEDBACK_HANDLER_TOOLS" in added

@@ -26,9 +26,7 @@ def _base_config():
             "threat_model": "indirect",
             "malicious_goal": "trusted goal",
             "risk_category": "fraud",
-            "attack_turns": [
-                {"turn_id": 1, "attack_steps": [{"type": "prompt", "content": "EXAMPLE"}]}
-            ],
+            "attack_turns": [{"turn_id": 1, "attack_steps": [{"type": "prompt", "content": "EXAMPLE"}]}],
         },
     }
 
@@ -42,12 +40,8 @@ def _steps():
             injection_mcp_tool="slack-injection:inject",
             kwargs={"channel_name": "general", "message": "ENV"},
         ),
-        ValidatedAttackStep(
-            type="tool", mode="override", content="TOOL", injected_tool="slack:get_messages"
-        ),
-        ValidatedAttackStep(
-            type="skill", mode="append", content="SKILL", skill_name="payments", row=-1
-        ),
+        ValidatedAttackStep(type="tool", mode="override", content="TOOL", injected_tool="slack:get_messages"),
+        ValidatedAttackStep(type="skill", mode="append", content="SKILL", skill_name="payments", row=-1),
     )
 
 
@@ -122,9 +116,7 @@ def test_real_yaml_entrypoint_round_trip_with_dtap_compatible_types(monkeypatch)
     assert validated.parsed.attack_config.threat_model == "indirect"
 
 
-def test_materialization_preserves_source_and_uses_unique_attempt_directories(
-    tmp_path: Path, monkeypatch
-):
+def test_materialization_preserves_source_and_uses_unique_attempt_directories(tmp_path: Path, monkeypatch):
     source = tmp_path / "source" / "dataset" / "workflow" / "task-7"
     source.mkdir(parents=True)
     config_path = source / "config.yaml"
@@ -157,9 +149,7 @@ def test_materialization_preserves_source_and_uses_unique_attempt_directories(
 
 
 @pytest.mark.parametrize("platform", ["windows", "macos"])
-def test_guest_materialization_copies_only_the_trusted_setup_helper(
-    tmp_path: Path, monkeypatch, platform: str
-):
+def test_guest_materialization_copies_only_the_trusted_setup_helper(tmp_path: Path, monkeypatch, platform: str):
     repository = tmp_path / "source"
     source = repository / "dataset" / platform / "malicious" / "direct" / "risk" / "1"
     source.mkdir(parents=True)

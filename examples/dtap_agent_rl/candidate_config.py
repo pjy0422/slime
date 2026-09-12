@@ -8,9 +8,10 @@ import shutil
 import stat
 import tempfile
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 
 import yaml
 
@@ -86,10 +87,7 @@ def render_candidate_config(
         if not isinstance(step, ValidatedAttackStep):
             raise CandidateConfigError("all actions must be validated")
         grouped[step.dtap_turn_id].append(_step_payload(step))
-    attack["attack_turns"] = [
-        {"turn_id": turn_id, "attack_steps": grouped[turn_id]}
-        for turn_id in sorted(grouped)
-    ]
+    attack["attack_turns"] = [{"turn_id": turn_id, "attack_steps": grouped[turn_id]} for turn_id in sorted(grouped)]
     return rendered
 
 
@@ -270,9 +268,7 @@ def materialize_attempt_dir(
         rendered = render_candidate_config(raw, steps)
         validator = candidate_validator or validate_candidate_config
         validator(rendered, expected_steps=tuple(steps))
-        (destination / "config.yaml").write_text(
-            yaml.safe_dump(rendered, sort_keys=False), encoding="utf-8"
-        )
+        (destination / "config.yaml").write_text(yaml.safe_dump(rendered, sort_keys=False), encoding="utf-8")
         BenchmarkIntegrityGuard.verify(source, manifest)
         if hashlib.sha256((source / "config.yaml").read_bytes()).hexdigest() != original_hash:
             raise CandidateConfigError("source config changed during materialization")

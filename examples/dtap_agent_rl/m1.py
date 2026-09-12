@@ -21,7 +21,7 @@ async def run_m1_episode(
     prompt: str,
     workdir: str,
     time_budget_sec: int,
-    projection_policy: ProjectionPolicy = ProjectionPolicy(),
+    projection_policy: ProjectionPolicy | None = None,
     harness=None,
 ) -> int:
     """Run one read-only DTAP RL episode without exposing privileged task state.
@@ -30,6 +30,9 @@ async def run_m1_episode(
     responsible for keeping the shared FastMCP server reachable at
     ``DTAP_HARNESS_URL``.
     """
+
+    if projection_policy is None:
+        projection_policy = ProjectionPolicy()
 
     view = await build_episode_view(
         snapshot,

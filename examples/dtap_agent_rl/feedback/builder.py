@@ -14,12 +14,7 @@ from ..actions import ValidatedAttackStep
 from .deterministic import ParsedMCPTrace, extract_deterministic_feedback, parse_mcp_events
 from .digestor import Digestor, DigestorObservation, ReasoningSummarizer, validate_repair_digest
 from .schema import FeedbackMode, ReasoningSummaryConfig, deterministic_to_dict
-from .victim_trace import (
-    build_victim_trace,
-    extract_final_response,
-    load_trajectory,
-    sanitize_trace_value,
-)
+from .victim_trace import build_victim_trace, extract_final_response, load_trajectory, sanitize_trace_value
 
 
 @dataclass(frozen=True)
@@ -74,18 +69,14 @@ class FeedbackBuilder:
 
     @classmethod
     def _single_mcp_artifact(cls, root: Path, max_bytes: int) -> Path | None:
-        canonical = cls._single_regular_artifact(
-            root, "victim-mcp-events.jsonl", max_bytes
-        )
+        canonical = cls._single_regular_artifact(root, "victim-mcp-events.jsonl", max_bytes)
         if canonical is not None:
             return canonical
         return cls._single_regular_artifact(root, "*.mcp-events.jsonl", max_bytes)
 
     @classmethod
     def _single_trajectory_artifact(cls, root: Path, max_bytes: int) -> Path | None:
-        canonical = cls._single_regular_artifact(
-            root, "victim-trajectory.json", max_bytes
-        )
+        canonical = cls._single_regular_artifact(root, "victim-trajectory.json", max_bytes)
         if canonical is not None:
             return canonical
         try:
@@ -98,11 +89,7 @@ class FeedbackBuilder:
                 info = candidate.lstat()
                 resolved = candidate.resolve(strict=True)
                 resolved.relative_to(resolved_root)
-                if (
-                    not stat.S_ISREG(info.st_mode)
-                    or candidate.is_symlink()
-                    or info.st_size > max_bytes
-                ):
+                if not stat.S_ISREG(info.st_mode) or candidate.is_symlink() or info.st_size > max_bytes:
                     continue
                 payload = json.loads(candidate.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
@@ -121,18 +108,12 @@ class FeedbackBuilder:
     ) -> dict[str, Any] | None:
         if self.mode is FeedbackMode.DISABLED:
             return None
-        trajectory_path = self._single_trajectory_artifact(
-            attempt_root, self.limits.max_trajectory_bytes
-        )
-        mcp_path = self._single_mcp_artifact(
-            attempt_root, self.limits.max_mcp_bytes
-        )
+        trajectory_path = self._single_trajectory_artifact(attempt_root, self.limits.max_trajectory_bytes)
+        mcp_path = self._single_mcp_artifact(attempt_root, self.limits.max_mcp_bytes)
         trajectory: Mapping[str, Any] = {}
         if trajectory_path is not None:
             try:
-                trajectory = load_trajectory(
-                    trajectory_path, max_bytes=self.limits.max_trajectory_bytes
-                )
+                trajectory = load_trajectory(trajectory_path, max_bytes=self.limits.max_trajectory_bytes)
             except Exception:
                 trajectory = {}
         mcp = ParsedMCPTrace((), {}, False)

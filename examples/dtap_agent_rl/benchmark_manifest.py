@@ -33,12 +33,7 @@ def _load_manifest(path: Path = MANIFEST_PATH) -> dict[str, Any]:
         if not isinstance(name, str) or not name or not isinstance(profile, Mapping):
             raise ValueError("benchmark manifest has an invalid selection profile")
         index = profile.get("benchmark_index")
-        if (
-            not isinstance(index, int)
-            or isinstance(index, bool)
-            or index < 0
-            or index in profile_indices
-        ):
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0 or index in profile_indices:
             raise ValueError(f"selection profile {name!r} has an invalid index")
         profile_indices.add(index)
     if not isinstance(domains, list) or not domains:
@@ -68,16 +63,11 @@ MANIFEST_SHA256 = hashlib.sha256(MANIFEST_PATH.read_bytes()).hexdigest()
 DOMAIN_ENTRIES = tuple(BENCHMARK_MANIFEST["domains"])
 THREAT_MODELS = tuple(BENCHMARK_MANIFEST["threat_models"])
 SELECTION_PROFILES = {
-    str(name): int(profile["benchmark_index"])
-    for name, profile in BENCHMARK_MANIFEST["selection_profiles"].items()
+    str(name): int(profile["benchmark_index"]) for name, profile in BENCHMARK_MANIFEST["selection_profiles"].items()
 }
 ALL_DOMAINS = tuple(str(entry["name"]) for entry in DOMAIN_ENTRIES)
-DOMAINS = tuple(
-    str(entry["name"]) for entry in DOMAIN_ENTRIES if entry["default_enabled"]
-)
-EXCLUDED_PLATFORM_DOMAINS = frozenset(
-    str(entry["name"]) for entry in DOMAIN_ENTRIES if entry["vm_backed"]
-)
+DOMAINS = tuple(str(entry["name"]) for entry in DOMAIN_ENTRIES if entry["default_enabled"])
+EXCLUDED_PLATFORM_DOMAINS = frozenset(str(entry["name"]) for entry in DOMAIN_ENTRIES if entry["vm_backed"])
 
 
 def matrix_cases(

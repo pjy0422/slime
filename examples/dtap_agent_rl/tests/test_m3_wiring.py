@@ -19,11 +19,7 @@ SESSION = "episode-m3-wiring-0123456789abcdef"
 
 class Catalog:
     async def list_victim_tools(self, snapshot):
-        return {
-            "slack": [
-                ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})
-            ]
-        }
+        return {"slack": [ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})]}
 
     async def list_environment_tools(self, snapshot):
         return {}
@@ -49,14 +45,18 @@ class SubmittingHarness:
         token = kwargs["session_id"]
         assert self.views.resolve(token).task.malicious_goal
         controller = self.submissions.resolve(token)
-        receipt = await controller.submit({
-            "steps": [{
-                "type": "tool",
-                "mode": "override",
-                "content": "payload",
-                "injected_tool": "slack:get_messages",
-            }]
-        })
+        receipt = await controller.submit(
+            {
+                "steps": [
+                    {
+                        "type": "tool",
+                        "mode": "override",
+                        "content": "payload",
+                        "injected_tool": "slack:get_messages",
+                    }
+                ]
+            }
+        )
         assert receipt["success"] is True and receipt["terminal"] is True
         self.calls.append(kwargs)
         return 0
@@ -87,9 +87,7 @@ async def test_m3_wiring_keeps_one_policy_lifetime_for_submit_and_cleans_registr
         workdir="/workspace/empty",
         time_budget_sec=60,
         harness=harness,
-        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-            canonical_steps=expected_steps
-        ),
+        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
     )
 
     assert result.harness_return_code == 0

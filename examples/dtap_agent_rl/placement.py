@@ -37,9 +37,14 @@ class DtapPlacementRunner:
     """Apply one candidate in a fresh DTAP sandbox and read one sealed result."""
 
     def __init__(
-        self, *, dtap_root: Path | str, security_policy: M4SecurityPolicy,
-        scheduler: AttemptScheduler, python_executable: str | None = None,
-        timeout_seconds: float = 300.0, extra_env: Mapping[str, str] | None = None,
+        self,
+        *,
+        dtap_root: Path | str,
+        security_policy: M4SecurityPolicy,
+        scheduler: AttemptScheduler,
+        python_executable: str | None = None,
+        timeout_seconds: float = 300.0,
+        extra_env: Mapping[str, str] | None = None,
     ) -> None:
         self.dtap_root = Path(dtap_root).resolve()
         self.security_policy = security_policy
@@ -47,8 +52,10 @@ class DtapPlacementRunner:
         self.python_executable = python_executable or sys.executable
         self.timeout_seconds = timeout_seconds
         self.extra_env = dict(extra_env or {})
-        if (scheduler.max_parallel != security_policy.max_parallel_attempts
-                or scheduler.max_queued != security_policy.max_queued_attempts):
+        if (
+            scheduler.max_parallel != security_policy.max_parallel_attempts
+            or scheduler.max_queued != security_policy.max_queued_attempts
+        ):
             raise ValueError("placement scheduler and security policy differ")
 
     async def _kill(self, process: Any) -> None:
@@ -77,8 +84,13 @@ class DtapPlacementRunner:
         fields = value.get("repair_fields", [])
         if not isinstance(fields, list) or not all(isinstance(item, str) for item in fields):
             return PlacementRunResult(False)
-        scalar = (value.get("applied"), value.get("valid"), value.get("status"),
-                  value.get("locator", ""), value.get("code"))
+        scalar = (
+            value.get("applied"),
+            value.get("valid"),
+            value.get("status"),
+            value.get("locator", ""),
+            value.get("code"),
+        )
         if not isinstance(scalar[0], bool) or not isinstance(scalar[1], bool):
             return PlacementRunResult(False)
         if not all(isinstance(item, str) for item in scalar[2:]):
@@ -86,16 +98,16 @@ class DtapPlacementRunner:
         if scalar[2] not in {"verified", "unsupported", "not_applicable", "invalid"}:
             return PlacementRunResult(False)
         allowed_codes = {
-            "PLACEMENT_VERIFIED", "PLACEMENT_MISMATCH", "INJECTION_FAILED",
+            "PLACEMENT_VERIFIED",
+            "PLACEMENT_MISMATCH",
+            "INJECTION_FAILED",
             "UNSUPPORTED_PLACEMENT",
         }
         if scalar[4] not in allowed_codes or len(scalar[3].encode("utf-8")) > 4096:
             return PlacementRunResult(False)
         if scalar[1] != (scalar[2] == "verified" and scalar[4] == "PLACEMENT_VERIFIED"):
             return PlacementRunResult(False)
-        if len(fields) > 8 or any(
-            len(item) > 128 or not item.startswith("kwargs.") for item in fields
-        ):
+        if len(fields) > 8 or any(len(item) > 128 or not item.startswith("kwargs.") for item in fields):
             return PlacementRunResult(False)
         return PlacementRunResult(True, scalar[0], scalar[1], scalar[2], scalar[3], scalar[4], tuple(fields))
 
@@ -105,13 +117,22 @@ class DtapPlacementRunner:
         helper = Path(__file__).resolve().parent / "scripts" / "run_dtap_placement_probe.py"
         env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
         env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
-        command = [self.python_executable, str(helper), "--task-dir", str(workspace.task_dir),
-                   "--result-path", str(result_path)]
+        command = [
+            self.python_executable,
+            str(helper),
+            "--task-dir",
+            str(workspace.task_dir),
+            "--result-path",
+            str(result_path),
+        ]
         process = None
         try:
             process = await asyncio.create_subprocess_exec(
-                *command, cwd=str(self.dtap_root), env=env,
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                *command,
+                cwd=str(self.dtap_root),
+                env=env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,
             )
             await asyncio.wait_for(process.communicate(), timeout=self.timeout_seconds)
@@ -141,10 +162,19 @@ class DtapPlacementRunner:
 class PlacementCoordinator:
     """Episode-scoped M6 action registry; it cannot query arbitrary state."""
 
-    def __init__(self, *, validation_context: ValidationContext, source_task_dir: Path | str,
-                 episode_root: Path | str, runner: Any, security_policy: M4SecurityPolicy,
-                 policy_contract: PolicyContract, source_manifest: BenchmarkManifest | None = None,
-                 max_actions: int = 8, candidate_validator: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        validation_context: ValidationContext,
+        source_task_dir: Path | str,
+        episode_root: Path | str,
+        runner: Any,
+        security_policy: M4SecurityPolicy,
+        policy_contract: PolicyContract,
+        source_manifest: BenchmarkManifest | None = None,
+        max_actions: int = 8,
+        candidate_validator: Any = None,
+    ) -> None:
         self.validation_context = validation_context
         self.source_task_dir = Path(source_task_dir)
         self.episode_root = Path(episode_root)
@@ -174,29 +204,38 @@ class PlacementCoordinator:
             if not validated.valid or validated.step is None:
                 return self.policy_contract.public_payload({"accepted": False, "error": {"code": "INVALID_ACTION"}})
             if validated.step.type != "environment":
-                return self.policy_contract.public_payload({"accepted": False, "error": {"code": "PLACEMENT_NOT_APPLICABLE"}})
+                return self.policy_contract.public_payload(
+                    {"accepted": False, "error": {"code": "PLACEMENT_NOT_APPLICABLE"}}
+                )
             self._attempts += 1
             index = self._attempts
             try:
                 workspace = materialize_attempt_dir(
-                    source_task_dir=self.source_task_dir, episode_root=self.episode_root,
-                    attempt_index=index, steps=(validated.step,), source_manifest=self.source_manifest,
+                    source_task_dir=self.source_task_dir,
+                    episode_root=self.episode_root,
+                    attempt_index=index,
+                    steps=(validated.step,),
+                    source_manifest=self.source_manifest,
                     candidate_validator=self.candidate_validator,
                 )
                 result = await self.runner.run(workspace)
             except Exception:
                 result = PlacementRunResult(False)
             if not result.available:
-                return self.policy_contract.public_payload({"accepted": False, "error": {"code": "EVALUATION_UNAVAILABLE"}})
+                return self.policy_contract.public_payload(
+                    {"accepted": False, "error": {"code": "EVALUATION_UNAVAILABLE"}}
+                )
             action_id = f"act_{secrets.token_urlsafe(24)}"
             self._receipts[action_id] = result
-            self._receipt_steps[action_id] = canonical_policy_json(
-                validated.step.to_dict()
+            self._receipt_steps[action_id] = canonical_policy_json(validated.step.to_dict())
+            return self.policy_contract.public_payload(
+                {
+                    "accepted": True,
+                    "action_id": action_id,
+                    "applied": result.applied,
+                    "placement_ready": True,
+                }
             )
-            return self.policy_contract.public_payload({
-                "accepted": True, "action_id": action_id, "applied": result.applied,
-                "placement_ready": True,
-            })
 
     def validate(self, action_id: Any) -> dict[str, Any]:
         if not isinstance(action_id, str) or len(action_id) < 24:
@@ -206,7 +245,9 @@ class PlacementCoordinator:
             return self.policy_contract.public_payload({"found": False, "error": {"code": "UNKNOWN_ACTION"}})
         self._validated_ids.add(action_id)
         payload: dict[str, Any] = {
-            "found": True, "valid": result.valid, "status": result.status,
+            "found": True,
+            "valid": result.valid,
+            "status": result.status,
         }
         if result.valid:
             payload["validated_placement_locator"] = result.locator
@@ -228,9 +269,7 @@ class PlacementCoordinator:
         Only receipts explicitly read through validate_placement participate.
         """
         available = [
-            self._receipt_steps[action_id]
-            for action_id in self._validated_ids
-            if self._receipts[action_id].valid
+            self._receipt_steps[action_id] for action_id in self._validated_ids if self._receipts[action_id].valid
         ]
         missing: list[int] = []
         for index, step in enumerate(steps):

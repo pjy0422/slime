@@ -6,9 +6,9 @@ from .authority import EpisodeAuthorityRegistry, EpisodeCredentials
 from .episode import TaskSnapshot, load_task_snapshot
 from .episode_runtime import EpisodeRuntimeState, EpisodeStatus
 from .integrity import BenchmarkIntegrityGuard, BenchmarkManifest
+from .placement import DtapPlacementRunner, PlacementCoordinator, PlacementRunResult
 from .scheduler import AttemptScheduler
 from .security_policy import M4SecurityPolicy
-from .placement import DtapPlacementRunner, PlacementCoordinator, PlacementRunResult
 from .service import EpisodeRegistry, EpisodeView, build_episode_view
 from .submission import EpisodeSubmissionRegistry, SubmissionCoordinator, SubmissionPlan
 from .task_projection import PolicyTaskSpec, ProjectionPolicy, project_task

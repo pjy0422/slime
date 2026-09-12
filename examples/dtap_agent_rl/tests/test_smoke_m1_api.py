@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -71,8 +70,20 @@ def test_claude_command_allows_exact_two_m1_tools(tmp_path: Path):
 def test_stream_parser_observes_both_mcp_tool_calls():
     stdout = "\n".join(
         [
-            json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__dtap__get_task_spec", "input": {}}]}}),
-            json.dumps({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__dtap__get_attack_surface", "input": {}}]}}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "name": "mcp__dtap__get_task_spec", "input": {}}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "tool_use", "name": "mcp__dtap__get_attack_surface", "input": {}}]
+                    },
+                }
+            ),
             json.dumps({"type": "result", "result": "done"}),
         ]
     )

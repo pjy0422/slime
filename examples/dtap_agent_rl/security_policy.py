@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 
 class PolicyInputLimitError(ValueError):
@@ -37,9 +38,7 @@ def enforce_json_complexity(value: Any, *, max_depth: int, max_nodes: int) -> No
                 if not isinstance(key, str):
                     raise PolicyInputLimitError("object keys must be strings")
                 stack.append((item, depth + 1))
-        elif isinstance(current, Sequence) and not isinstance(
-            current, (str, bytes, bytearray)
-        ):
+        elif isinstance(current, Sequence) and not isinstance(current, (str, bytes, bytearray)):
             stack.extend((item, depth + 1) for item in current)
         elif current is not None and not isinstance(current, (str, int, float, bool)):
             raise PolicyInputLimitError("value is not JSON-compatible")

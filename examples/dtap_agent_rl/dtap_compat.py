@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ def load_dtap_api() -> DtapApi:
     try:
         from dt_arena.src.types.agent import AgentConfig
         from dt_arena.src.types.task import AttackConfig, TaskConfig
+
         from utils.injection_mcp_helpers import parse_injection_config
     except ImportError as exc:
         raise RuntimeError(

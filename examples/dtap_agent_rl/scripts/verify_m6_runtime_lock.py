@@ -14,9 +14,7 @@ from pathlib import Path
 
 
 def _run(*command: str, cwd: Path | None = None) -> str:
-    return subprocess.run(
-        command, cwd=cwd, check=True, capture_output=True, text=True, timeout=30
-    ).stdout.strip()
+    return subprocess.run(command, cwd=cwd, check=True, capture_output=True, text=True, timeout=30).stdout.strip()
 
 
 def verify(lock_path: Path, dtap_root: Path, *, check_images: bool) -> dict:

@@ -2,13 +2,11 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
+from examples.dtap_agent_rl.harness import DTAPClaudeCodeHarness
 
 from slime.agent.harness import HarnessContext
 
-from examples.dtap_agent_rl.harness import DTAPClaudeCodeHarness
-
 from .conftest import FakeSandbox
-
 
 _REAL_SLEEP = asyncio.sleep
 
@@ -73,9 +71,7 @@ async def test_harness_launch_preserves_slime_adapter_and_injects_mcp_capability
 
     # Current slime run_agent writes the launched command into its run.sh body.
     body = next(
-        value
-        for path, value in sb.files.items()
-        if str(path).endswith(".run.sh") or str(path).endswith("/run.sh")
+        value for path, value in sb.files.items() if str(path).endswith(".run.sh") or str(path).endswith("/run.sh")
     )
     if isinstance(body, bytes):
         body = body.decode()

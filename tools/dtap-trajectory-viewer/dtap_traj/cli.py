@@ -100,7 +100,9 @@ def _build(src: Path, args: argparse.Namespace) -> dict:
         submitted = submitted or _guess_submitted(src)
         original = original or _guess_original(src)
     policy_prompt = policy_prompt or _guess_policy_prompt(src)
-    victim_mcp_events = _resolve_optional(args.victim_mcp_events) or (find_victim_mcp_events(src) if src.is_dir() else None)
+    victim_mcp_events = _resolve_optional(args.victim_mcp_events) or (
+        find_victim_mcp_events(src) if src.is_dir() else None
+    )
     if victim_trace is None and policy_trace is None:
         raise FileNotFoundError(f"no victim or policy trace found under {src}")
     data = build_timeline(
@@ -134,7 +136,9 @@ def _explorer_main(argv: list[str]) -> int:
     if command == "serve":
         parser.add_argument("--host", default="127.0.0.1")
         parser.add_argument("--port", type=int, default=8765)
-        parser.add_argument("--watch", action="store_true", help="continuously index completed/updated episode bundles")
+        parser.add_argument(
+            "--watch", action="store_true", help="continuously index completed/updated episode bundles"
+        )
         parser.add_argument("--refresh-seconds", type=float, default=2.0)
         parser.add_argument("--open", action="store_true", help="open the explorer in a browser")
     args = parser.parse_args(argv[1:])
@@ -149,8 +153,9 @@ def _explorer_main(argv: list[str]) -> int:
     if command == "index":
         print(f"✓ indexed {result['scanned']} episodes ({result['updated']} updated) → {db_path}")
         return 0
-    from .server import create_app
     import uvicorn
+
+    from .server import create_app
 
     url = f"http://{args.host}:{args.port}"
     print(f"✓ DTAP Explorer: {url} ({result['scanned']} episodes indexed)")
@@ -203,7 +208,9 @@ def main(argv: list[str] | None = None) -> int:
 
     output = Path(args.out).expanduser().resolve()
     write_html(data, output, title=args.title)
-    print(f"✓ {len(data['policy_timeline'])} policy events, {len(data['timeline'])} victim events, {len(data['payloads'])} submitted payloads → {output}")
+    print(
+        f"✓ {len(data['policy_timeline'])} policy events, {len(data['timeline'])} victim events, {len(data['payloads'])} submitted payloads → {output}"
+    )
     if args.open:
         webbrowser.open(output.as_uri())
     return 0

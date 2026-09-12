@@ -1,11 +1,7 @@
 from pathlib import Path
 
 import pytest
-
-from examples.dtap_agent_rl.scripts.prepare_macos_baseline import (
-    normalize_data_root,
-    snapshot_names,
-)
+from examples.dtap_agent_rl.scripts.prepare_macos_baseline import normalize_data_root, snapshot_names
 
 
 def test_normalize_macos_data_root_accepts_root_or_version(tmp_path: Path):

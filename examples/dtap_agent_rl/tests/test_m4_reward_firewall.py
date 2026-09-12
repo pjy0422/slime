@@ -2,12 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from examples.dtap_agent_rl.reward_firewall import (
-    JudgeVerdictReader,
-    VerdictError,
-    find_single_judge_result,
-)
+from examples.dtap_agent_rl.reward_firewall import JudgeVerdictReader, VerdictError, find_single_judge_result
 from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 
 
@@ -33,7 +28,7 @@ def test_only_boolean_attack_success_crosses_reward_firewall(tmp_path: Path):
         '{"attack_success":0}',
         '{"attack_success":null}',
         '{"attack_success":false,"attack_success":true}',
-        '[]',
+        "[]",
     ],
 )
 def test_malformed_or_ambiguous_verdict_is_rejected(tmp_path: Path, body: str):

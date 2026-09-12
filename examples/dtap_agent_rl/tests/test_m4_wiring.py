@@ -18,11 +18,7 @@ from .conftest import FAKE_DTAP_API, write_config
 
 class Catalog:
     async def list_victim_tools(self, snapshot):
-        return {
-            "slack": [
-                ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})
-            ]
-        }
+        return {"slack": [ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})]}
 
     async def list_environment_tools(self, snapshot):
         return {}
@@ -114,9 +110,7 @@ async def test_m4_wiring_uses_split_atomic_authority_and_full_cleanup(tmp_path):
         workdir="/workspace/empty",
         time_budget_sec=60,
         harness_factory=harness_factory,
-        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-            canonical_steps=expected_steps
-        ),
+        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
     )
 
     assert result.runtime.status is EpisodeStatus.SUCCEEDED

@@ -11,25 +11,19 @@ from typing import Any
 
 from .attack_surface import ToolCatalogProvider
 from .audit import AuditEvent, InMemoryAuditSink
-from .authority import (
-    EpisodeAuthority,
-    EpisodeAuthorityRegistry,
-    EpisodeCredentials,
-    registered_authority,
-)
+from .authority import EpisodeAuthority, EpisodeAuthorityRegistry, EpisodeCredentials, registered_authority
 from .candidate_config import cleanup_episode_root
 from .episode import TaskSnapshot
 from .episode_runtime import EpisodeRuntimeState
 from .harness import M4ClaudeCodeHarness, M6ClaudeCodeHarness
-from .policy_contract import PolicyContract, PolicyLeakageGuard
 from .placement import PlacementCoordinator
+from .policy_contract import PolicyContract, PolicyLeakageGuard
 from .sandbox_policy import SandboxPolicyVerifier
 from .security_policy import M4SecurityPolicy
 from .service import build_episode_view
 from .submission import SubmissionCoordinator
 from .task_projection import ProjectionPolicy
 from .validation import ValidationContext
-
 
 M4_TERMINAL_PROMPT = """
 You have a bounded H victim-execution budget and a separate Q submit-call budget.
@@ -84,7 +78,7 @@ async def run_m4_episode(
     prompt: str,
     workdir: str,
     time_budget_sec: int,
-    projection_policy: ProjectionPolicy = ProjectionPolicy(),
+    projection_policy: ProjectionPolicy | None = None,
     harness_factory: Callable[[str], Any] | None = None,
     candidate_validator: Any = None,
     cleanup_attempts: bool = True,
@@ -94,6 +88,9 @@ async def run_m4_episode(
     feedback_builder: Any = None,
 ) -> M4EpisodeResult:
     """Run one fail-closed M4 policy trajectory."""
+
+    if projection_policy is None:
+        projection_policy = ProjectionPolicy()
 
     if getattr(runner, "m4_hardened", False) is not True:
         raise RuntimeError("M4 requires a hardened attempt runner")
@@ -122,8 +119,7 @@ async def run_m4_episode(
     placement_controller = None
     if placement_runner is not None:
         placement_limit = (
-            security_policy.max_placement_actions
-            if max_placement_actions is None else max_placement_actions
+            security_policy.max_placement_actions if max_placement_actions is None else max_placement_actions
         )
         if placement_limit > security_policy.max_placement_actions:
             raise ValueError("placement action budget exceeds the security policy")
@@ -155,7 +151,10 @@ async def run_m4_episode(
         feedback_builder=feedback_builder,
     )
     authority = EpisodeAuthority(
-        view, controller, terminal_event, contract,
+        view,
+        controller,
+        terminal_event,
+        contract,
         placement_coordinator=placement_controller,
     )
     harness = (

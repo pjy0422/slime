@@ -111,13 +111,15 @@ async def test_submit_attack_routes_to_the_bearer_episode_only():
     controller_a, controller_b = FakeController(), FakeController()
     server = _server({TOKEN_A: controller_a, TOKEN_B: controller_b})
     port = _free_port()
-    server_task = asyncio.create_task(server.run_async(
-        transport="http",
-        host="127.0.0.1",
-        port=port,
-        stateless_http=True,
-        show_banner=False,
-    ))
+    server_task = asyncio.create_task(
+        server.run_async(
+            transport="http",
+            host="127.0.0.1",
+            port=port,
+            stateless_http=True,
+            show_banner=False,
+        )
+    )
     try:
         await _wait(port)
         async with Client(f"http://127.0.0.1:{port}/mcp/", auth=TOKEN_A) as client:
@@ -140,13 +142,15 @@ async def test_terminal_episode_rejects_all_further_mutation():
 
     server = _server({TOKEN_A: FakeController(terminal=True), TOKEN_B: FakeController()})
     port = _free_port()
-    server_task = asyncio.create_task(server.run_async(
-        transport="http",
-        host="127.0.0.1",
-        port=port,
-        stateless_http=True,
-        show_banner=False,
-    ))
+    server_task = asyncio.create_task(
+        server.run_async(
+            transport="http",
+            host="127.0.0.1",
+            port=port,
+            stateless_http=True,
+            show_banner=False,
+        )
+    )
     try:
         await _wait(port)
         async with Client(f"http://127.0.0.1:{port}/mcp/", auth=TOKEN_A) as client:

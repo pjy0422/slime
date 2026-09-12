@@ -26,9 +26,12 @@ async def build_episode_view(
     snapshot: TaskSnapshot,
     provider: ToolCatalogProvider,
     *,
-    projection_policy: ProjectionPolicy = ProjectionPolicy(),
+    projection_policy: ProjectionPolicy | None = None,
 ) -> EpisodeView:
     """Build an immutable read-only view before the policy starts."""
+
+    if projection_policy is None:
+        projection_policy = ProjectionPolicy()
 
     snapshot.assert_config_unchanged()
     task = project_task(snapshot, policy=projection_policy)

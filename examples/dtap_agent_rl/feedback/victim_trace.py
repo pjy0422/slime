@@ -44,9 +44,7 @@ def sanitize_trace_value(
         ]
     if isinstance(value, Mapping):
         return {
-            str(key): sanitize_trace_value(
-                item, redactions=redactions, max_chars=max_chars, depth=depth + 1
-            )
+            str(key): sanitize_trace_value(item, redactions=redactions, max_chars=max_chars, depth=depth + 1)
             for key, item in list(value.items())[:100]
         }
     if value is None or isinstance(value, (bool, int, float)):
@@ -122,7 +120,9 @@ def build_victim_trace(
                     if isinstance(rationale, str) and rationale:
                         items.append(
                             VictimTraceItem(
-                                "provider_reasoning", index, "reasoning",
+                                "provider_reasoning",
+                                index,
+                                "reasoning",
                                 rationale[:max_item_chars],
                             )
                         )
@@ -136,9 +136,7 @@ def build_victim_trace(
                 content = raw.get("content", raw.get("state"))
             if kind is None or not isinstance(content, (str, dict, list)):
                 continue
-            content = sanitize_trace_value(
-                content, redactions=redactions, max_chars=max_item_chars
-            )
+            content = sanitize_trace_value(content, redactions=redactions, max_chars=max_item_chars)
             items.append(VictimTraceItem("trajectory", index, kind, content))  # type: ignore[arg-type]
 
     # MCP records are an execution stream, not reconstructed model messages.
@@ -156,11 +154,11 @@ def build_victim_trace(
     reasoning_source = (
         "explicit_reasoning"
         if include_reasoning and reasoning_seen
-        else "assistant_rationale"
-        if include_reasoning and assistant_rationale_seen
-        else "unavailable"
-        if include_reasoning
-        else "disabled"
+        else (
+            "assistant_rationale"
+            if include_reasoning and assistant_rationale_seen
+            else "unavailable" if include_reasoning else "disabled"
+        )
     )
     return VictimVisibleTrace(
         tuple(items),
