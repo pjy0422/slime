@@ -2,10 +2,10 @@
 
 slime CI 分成两层：
 
-1. **默认运行的 CPU 正确性测试**：每个 PR、每次 push 到 `main`、以及手动 `workflow_dispatch` 都会运行。
+1. **Nightly CPU 正确性测试**：每天 18:00 UTC（Asia/Seoul 03:00）运行，也可以通过显式 label 或手动 `workflow_dispatch` 启动。
 2. **通过 label 触发的 GPU end-to-end 测试**：在自托管 GPU runner 上验证真实的 Megatron + SGLang training/rollout 路径。
 
-这个拆分是有意为之。大部分 correctness invariant 应该在不等待 GPU 集群的情况下快速检查；真正依赖完整训练和 rollout 的行为，则由 GPU e2e job 覆盖。
+创建、更新或合并 PR 不会自动启动 test matrix。Push 前应在本地运行相关 CPU tests；nightly run 提供全仓库 regression coverage，需要 GitHub 侧验证时仍可使用显式 label。
 
 ## 工作原理
 
@@ -47,8 +47,8 @@ changed-test job 本身走 self-hosted Docker 路径。当 `NUM_GPUS = 0` 时，
 
 | Trigger | Job | 类型 | 说明 |
 |---|---|---|---|
-| 自动运行 | `cpu-unittest` | CPU | 默认运行的 unit/contract tests，覆盖 argument validation、schedule、reward、sample、rollout validation、checkpoint utilities 和 plugin contracts。 |
-| 自动运行 | `agent-adapter-test` | CPU | 默认运行的 agent adapter tests，包含额外 provider SDK 依赖。 |
+| Nightly / `run-ci-cpu-unittest` | `cpu-unittest` | CPU | Unit/contract tests，覆盖 argument validation、schedule、reward、sample、rollout validation、checkpoint utilities 和 plugin contracts。 |
+| Nightly / `run-ci-agent` | `agent-test` | CPU | Agent tests，包含额外 provider SDK 依赖。 |
 | `run-ci-sglang-config` | `e2e-test-sglang-config` | GPU | SGLang config 测试，覆盖高级 rollout engine deployment 和 mixed/offload 场景。 |
 | `run-ci-megatron` | `e2e-test-megatron` | GPU | 核心 Megatron 训练测试，覆盖 dense、MoE、PPO、MTP、OPD、async rollout、PD/Mooncake 和 debug replay 路径。 |
 | `run-ci-precision` | `e2e-test-precision` | GPU | 数值精度和并行一致性检查。 |
@@ -91,7 +91,7 @@ GPU e2e tests 验证 CPU tests 无法覆盖的集成训练/rollout 行为：
 - `run-ci-ckpt`：checkpoint save/load 组合和 async save。
 - `run-ci-image`：与 `run-ci-megatron` 相同的 matrix，但运行在 release/test image 上。
 
-日常 PR 优先使用 targeted labels。`run-ci-image` 消耗 GPU 时间较多，应谨慎使用。
+日常 PR 应先在本地运行相关 CPU tests。需要 GitHub 侧执行时再使用 targeted labels；`run-ci-image` 消耗 GPU 时间较多，应谨慎使用。
 
 ## 编写新测试
 
@@ -162,7 +162,7 @@ python .github/workflows/generate_github_workflows.py
 
 ## PR 应该选择哪些检查
 
-- 纯 argument parsing、reward、schedule、sample、trajectory 或 hook-contract 改动：优先依赖 CPU tests。
+- 纯 argument parsing、reward、schedule、sample、trajectory 或 hook-contract 改动：在本地运行相关 CPU tests；只有需要 GitHub 侧执行时才使用 `run-ci-cpu-unittest` 或 `run-ci-agent`。
 - SGLang topology 或 rollout engine deployment 改动：使用 `run-ci-sglang-config`。
 - Megatron training、loss、checkpoint conversion 或 model recipe 改动：使用 `run-ci-megatron`；必要时加 `run-ci-precision` 或 `run-ci-ckpt`。
 - Docker image 或 dependency 改动：使用 `run-ci-image`。

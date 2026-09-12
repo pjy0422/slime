@@ -2,10 +2,10 @@
 
 slime CI has two layers:
 
-1. **Always-on CPU correctness tests** that run on every PR, every push to `main`, and manual `workflow_dispatch`.
+1. **Nightly CPU correctness tests** that run at 18:00 UTC (03:00 Asia/Seoul), as well as on explicit labels or manual `workflow_dispatch`.
 2. **Label-gated GPU end-to-end tests** that validate real Megatron + SGLang training and rollout paths on self-hosted GPU runners.
 
-This split is intentional. Most invariants should be checked quickly without waiting for the GPU fleet, while full training/rollout behavior is still covered by GPU e2e jobs.
+Opening, updating, or merging a PR does not automatically start the test matrix. Run relevant CPU tests locally before pushing; the nightly run provides repository-wide regression coverage, while explicit labels remain available when GitHub-side validation is useful.
 
 ## How It Works
 
@@ -47,8 +47,8 @@ The changed-test job itself runs through the self-hosted Docker path. When `NUM_
 
 | Trigger | Job | Type | Description |
 |---|---|---|---|
-| Automatic | `cpu-unittest` | CPU | Always-on unit and contract tests for argument validation, schedules, rewards, samples, rollout validation, checkpoint utilities, and plugin contracts. |
-| Automatic | `agent-adapter-test` | CPU | Always-on agent adapter tests with optional provider SDK dependencies. |
+| Nightly / `run-ci-cpu-unittest` | `cpu-unittest` | CPU | Unit and contract tests for argument validation, schedules, rewards, samples, rollout validation, checkpoint utilities, and plugin contracts. |
+| Nightly / `run-ci-agent` | `agent-test` | CPU | Agent tests with optional provider SDK dependencies. |
 | `run-ci-sglang-config` | `e2e-test-sglang-config` | GPU | SGLang config tests for advanced rollout engine deployment and mixed/offload scenarios. |
 | `run-ci-megatron` | `e2e-test-megatron` | GPU | Core Megatron training tests covering dense, MoE, PPO, MTP, OPD, async rollout, PD/Mooncake, and debug replay paths. |
 | `run-ci-precision` | `e2e-test-precision` | GPU | Numerical precision validation and parallel consistency checks. |
@@ -91,7 +91,7 @@ GPU e2e tests validate the integrated training/rollout behavior that CPU tests c
 - `run-ci-ckpt`: checkpoint save/load combinations and async save.
 - `run-ci-image`: the same matrix as `run-ci-megatron`, but on the release/test image.
 
-Use targeted labels for routine PRs. Use `run-ci-image` sparingly because it consumes significantly more GPU time.
+Run relevant CPU tests locally for routine PRs. Use targeted labels when a GitHub-side run is needed, and use `run-ci-image` sparingly because it consumes significantly more GPU time.
 
 ## Writing a New Test
 
@@ -162,7 +162,7 @@ python .github/workflows/generate_github_workflows.py
 
 ## Choosing Checks for a PR
 
-- Pure argument parsing, reward, schedule, sample, trajectory, or hook-contract changes: rely on CPU tests first.
+- Pure argument parsing, reward, schedule, sample, trajectory, or hook-contract changes: run the relevant CPU tests locally; use `run-ci-cpu-unittest` or `run-ci-agent` only when a GitHub-side run is useful.
 - SGLang topology or rollout engine deployment changes: use `run-ci-sglang-config`.
 - Megatron training, loss, checkpoint conversion, or model recipe changes: use `run-ci-megatron`; add `run-ci-precision` or `run-ci-ckpt` when relevant.
 - Docker image or dependency changes: use `run-ci-image`.
