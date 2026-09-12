@@ -17,11 +17,11 @@ from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import Any
 
+from slime.utils.multi_turn import MULTI_TURN_METADATA_VERSION, validate_multi_turn_training_samples
 from slime.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-MULTI_TURN_METADATA_VERSION = 1
 _ROLE_SPAN_KEYS = ("switch", "subgoal", "high_subgoal", "low_subgoal", "action")
 _VALUE_POSITION_KEYS = ("high", "low")
 _TURN_ANNOTATION_KEYS = {
@@ -787,41 +787,11 @@ class TrajectoryManager:
     def _resolve_logical_turns(samples: list[Sample], *, terminal_reward: float) -> None:
         """Validate rollout ownership and resolve the canonical turn rewards."""
         owned: list[tuple[int, dict[str, Any]]] = []
-        seen: set[tuple[int | None, int]] = set()
         for sample in samples:
             multi_turn = (sample.train_metadata or {}).get("multi_turn")
             if multi_turn is None:
                 continue
             for turn in multi_turn["turns"]:
-                response_span = turn["response_span"]
-                if (
-                    len(response_span) != 2
-                    or response_span[0] < 0
-                    or response_span[0] >= response_span[1]
-                    or response_span[1] > sample.response_length
-                ):
-                    raise ValueError(f"logical turn has an invalid response span: {response_span!r}")
-                if sample.loss_mask is None or not all(sample.loss_mask[response_span[0] : response_span[1]]):
-                    raise ValueError(f"logical turn span is not fully owned: turn_idx={turn['turn_idx']}")
-                for spans in turn["role_spans"].values():
-                    if any(
-                        span_start < response_span[0] or span_start >= span_end or span_end > response_span[1]
-                        for span_start, span_end in spans
-                    ):
-                        raise ValueError(f"logical turn has a semantic span outside its response: {spans!r}")
-                if any(
-                    position is not None and not response_span[0] <= position < response_span[1]
-                    for position in turn["value_positions"].values()
-                ):
-                    raise ValueError(
-                        f"logical turn has a value position outside its response: {turn['value_positions']!r}"
-                    )
-                identity = (sample.rollout_id, turn["turn_idx"])
-                if identity in seen:
-                    raise ValueError(
-                        f"logical turn has multiple owners: rollout_id={identity[0]!r}, turn_idx={identity[1]}"
-                    )
-                seen.add(identity)
                 owned.append((turn["turn_idx"], turn))
 
         if not owned:
@@ -839,6 +809,7 @@ class TrajectoryManager:
             if not final_turn["truncated"]:
                 final_turn["reward"] = float(terminal_reward)
                 final_turn["done"] = True
+        validate_multi_turn_training_samples(samples)
 
 
 __all__ = [

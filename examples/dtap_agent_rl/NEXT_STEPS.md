@@ -260,10 +260,10 @@ and segment recurrence are turn/segment-level quantities; the existing slime
 policy objective remains token-level after semantic advantages are projected to
 owned generated-token spans.
 
-- [ ] Add versioned logical-turn metadata to training samples and preserve
+- [x] Add versioned logical-turn metadata to training samples and preserve
   exactly-one-owner semantics through CLEAN, REALIGN, FORK, compaction, packing,
   DP split, and context parallelism.
-- [ ] Add rollout-DP affinity for temporal estimators so sibling samples from one
+- [x] Add rollout-DP affinity for temporal estimators so sibling samples from one
   `rollout_id` remain available to the same critic/training rank.
 - [ ] Implement multi-turn vanilla PPO with turn-level GAE and sparse per-turn
   critic targets.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from slime.agent.trajectory import MULTI_TURN_METADATA_VERSION, TrajectoryManager, TurnRecord
+from slime.utils.multi_turn import build_training_metadata_fields, validate_multi_turn_training_samples
 from slime.utils.types import Sample
 
 
@@ -47,6 +49,23 @@ def _turns(samples: list[Sample]) -> list[dict]:
         [turn for sample in samples for turn in sample.train_metadata["multi_turn"]["turns"]],
         key=lambda turn: turn["turn_idx"],
     )
+
+
+def _one_training_sample() -> Sample:
+    manager = TrajectoryManager()
+    _record(
+        manager,
+        "training-boundary",
+        prompt_ids=[1],
+        output_ids=[2, 3],
+        prompt_messages=[{"role": "user", "content": "u"}],
+        response_content="a",
+    )
+    return manager.get_trajectory(
+        "training-boundary",
+        base_sample=Sample(index=4, group_index=9),
+        reward=1.0,
+    )[0]
 
 
 def test_clean_turns_emit_response_relative_metadata_and_terminal_reward() -> None:
@@ -399,6 +418,59 @@ def test_reserved_base_metadata_namespace_is_rejected() -> None:
             "reserved",
             base_sample=Sample(index=1, train_metadata={"multi_turn": {"version": 0}}),
         )
+
+
+def test_training_boundary_preserves_sparse_metadata_and_group_identity() -> None:
+    multi_turn = _one_training_sample()
+    legacy = Sample(index=5, group_index=11)
+
+    fields = build_training_metadata_fields([legacy, multi_turn])
+
+    assert fields["group_indices"] == [11, 9]
+    assert fields["metadata"][0] == {}
+    assert fields["metadata"][1] == multi_turn.train_metadata
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("version", "unsupported"),
+        ("boolean_version", "unsupported"),
+        ("missing_turn_field", "invalid turn fields"),
+        ("reward", "finite number"),
+        ("response_span", "outside"),
+        ("ownership", "fully owned"),
+        ("missing_rollout_id", "requires rollout_id"),
+    ],
+)
+def test_training_boundary_rejects_malformed_multi_turn_metadata(mutation: str, match: str) -> None:
+    sample = _one_training_sample()
+    turn = sample.train_metadata["multi_turn"]["turns"][0]
+    if mutation == "version":
+        sample.train_metadata["multi_turn"]["version"] = 99
+    elif mutation == "boolean_version":
+        sample.train_metadata["multi_turn"]["version"] = True
+    elif mutation == "missing_turn_field":
+        del turn["done"]
+    elif mutation == "reward":
+        turn["reward"] = None
+    elif mutation == "response_span":
+        turn["response_span"] = [0, sample.response_length + 1]
+    elif mutation == "ownership":
+        sample.loss_mask[0] = 0
+    elif mutation == "missing_rollout_id":
+        sample.rollout_id = None
+
+    with pytest.raises(ValueError, match=match):
+        validate_multi_turn_training_samples([sample])
+
+
+def test_training_boundary_rejects_duplicate_logical_turn_owner() -> None:
+    sample = _one_training_sample()
+    duplicate = deepcopy(sample)
+
+    with pytest.raises(ValueError, match="multiple owners"):
+        validate_multi_turn_training_samples([sample, duplicate])
 
 
 if __name__ == "__main__":
