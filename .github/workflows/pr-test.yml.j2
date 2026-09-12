@@ -151,19 +151,17 @@
       'tests': megatron_tests,
     },
 } %>
-name: PR Test
+name: Tests
 
 on:
-  # Push to main triggers the default GitHub-hosted jobs (cheap CPU/unit and
-  # agent checks), catching PR-pair regressions where two PRs pass
-  # individually but main is broken after both land. GPU jobs stay label-gated
-  # — see each job's `if:` below — so push events never burn the self-hosted
-  # fleet.
-  push:
-    branches: [main]
+  # Keep routine PRs and pushes free of the full CPU matrix. The default suite
+  # runs nightly at 03:00 Asia/Seoul; labels and workflow_dispatch remain
+  # available for explicit validation.
+  schedule:
+    - cron: '0 18 * * *'
   pull_request:
     branches: [main]
-    types: [opened, reopened, synchronize, labeled]
+    types: [labeled]
   workflow_dispatch:
     inputs:
       infinite_run:
@@ -180,7 +178,7 @@ jobs:
 <% for job_name, config in jobs.items() %>
   << job_name >>:
 <% if config.get('always') %>
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
 <% else %>
     if: (github.event_name == 'workflow_dispatch') || (github.event.pull_request && contains(github.event.pull_request.labels.*.name, '<< config.label >>'))
 <% endif %>
