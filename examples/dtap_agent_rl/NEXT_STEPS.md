@@ -265,7 +265,7 @@ owned generated-token spans.
   DP split, and context parallelism.
 - [x] Add rollout-DP affinity for temporal estimators so sibling samples from one
   `rollout_id` remain available to the same critic/training rank.
-- [ ] Implement multi-turn vanilla PPO with turn-level GAE and sparse per-turn
+- [x] Implement multi-turn vanilla PPO with turn-level GAE and sparse per-turn
   critic targets.
 - [ ] Implement DC-GRPO DW and SW with group credit computed before DP split.
 - [ ] Implement GiGPO with stable environment-state `anchor_key` grouping;
@@ -351,8 +351,8 @@ owned generated-token spans.
 - [x] PR D: M7 feedback observability, schema v2, and Linux access adapters.
 - [x] PR E: M7 live H=2 repair and A/B/C feedback gate.
 - [x] PR F1: M8.0a logical-turn metadata and compaction ownership.
-- [ ] PR F2: M8.0b rollout affinity and metadata DP passthrough.
-- [ ] PR F3: M8.1 multi-turn vanilla PPO.
+- [x] PR F2: M8.0b rollout affinity and metadata DP passthrough.
+- [x] PR F3: M8.1 multi-turn vanilla PPO.
 - [ ] PR F4: M8.2 DC-GRPO DW/SW.
 - [ ] PR F5: M8.3 GiGPO.
 - [ ] PR F6: M8.4a two-head critic infrastructure.

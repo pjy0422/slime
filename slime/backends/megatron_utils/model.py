@@ -593,6 +593,8 @@ def train_one_step(
                     "values",
                     "advantages",
                     "returns",
+                    "value_masks",
+                    "value_mask_sums",
                     "rollout_log_probs",
                     "teacher_log_probs",
                     "rollout_mask_sums",
