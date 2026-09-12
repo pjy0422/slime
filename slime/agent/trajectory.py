@@ -12,12 +12,121 @@ from __future__ import annotations
 import dataclasses
 import enum
 import logging
-from collections.abc import Iterator
+import math
+from collections.abc import Iterator, Mapping
+from copy import deepcopy
 from typing import Any
 
 from slime.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
+MULTI_TURN_METADATA_VERSION = 1
+_ROLE_SPAN_KEYS = ("switch", "subgoal", "high_subgoal", "low_subgoal", "action")
+_VALUE_POSITION_KEYS = ("high", "low")
+_TURN_ANNOTATION_KEYS = {
+    "version",
+    "context_revision",
+    "reward",
+    "done",
+    "anchor_key",
+    "switch",
+    "role_spans",
+    "value_positions",
+    "format_valid",
+}
+
+
+def _normalize_turn_annotation(metadata: Mapping[str, Any] | None, response_length: int) -> dict[str, Any]:
+    """Validate optional per-turn training annotations.
+
+    Input role spans and value positions are relative to the current generated
+    response. They are converted to full Sample response coordinates only when
+    the trajectory builder is linearized.
+    """
+    raw = (metadata or {}).get("multi_turn", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("metadata.multi_turn must be a mapping")
+    unknown = set(raw) - _TURN_ANNOTATION_KEYS
+    if unknown:
+        raise ValueError(f"metadata.multi_turn has unknown fields: {sorted(unknown)}")
+
+    version = raw.get("version", MULTI_TURN_METADATA_VERSION)
+    if version != MULTI_TURN_METADATA_VERSION:
+        raise ValueError(f"unsupported multi-turn metadata version: {version!r}")
+    context_revision = raw.get("context_revision", 0)
+    if isinstance(context_revision, bool) or not isinstance(context_revision, int) or context_revision < 0:
+        raise ValueError("multi-turn context_revision must be a nonnegative integer")
+
+    reward = raw.get("reward")
+    if reward is not None:
+        if isinstance(reward, bool) or not isinstance(reward, (int, float)) or not math.isfinite(float(reward)):
+            raise ValueError("multi-turn reward must be a finite number or null")
+        reward = float(reward)
+    done = raw.get("done", False)
+    format_valid = raw.get("format_valid", True)
+    if not isinstance(done, bool) or not isinstance(format_valid, bool):
+        raise ValueError("multi-turn done and format_valid must be booleans")
+
+    anchor_key = raw.get("anchor_key")
+    switch = raw.get("switch")
+    if anchor_key is not None and not isinstance(anchor_key, str):
+        raise ValueError("multi-turn anchor_key must be a string or null")
+    if switch is not None and not isinstance(switch, str):
+        raise ValueError("multi-turn switch must be a string or null")
+
+    raw_role_spans = raw.get("role_spans", {})
+    if not isinstance(raw_role_spans, Mapping):
+        raise ValueError("multi-turn role_spans must be a mapping")
+    unknown_roles = set(raw_role_spans) - set(_ROLE_SPAN_KEYS)
+    if unknown_roles:
+        raise ValueError(f"multi-turn role_spans has unknown roles: {sorted(unknown_roles)}")
+    role_spans: dict[str, list[list[int]]] = {}
+    for role in _ROLE_SPAN_KEYS:
+        spans = raw_role_spans.get(role, [])
+        if not isinstance(spans, list):
+            raise ValueError(f"multi-turn role_spans.{role} must be a list")
+        normalized_spans: list[list[int]] = []
+        for span in spans:
+            if (
+                not isinstance(span, (list, tuple))
+                or len(span) != 2
+                or any(isinstance(value, bool) or not isinstance(value, int) for value in span)
+            ):
+                raise ValueError(f"multi-turn role_spans.{role} contains an invalid span")
+            start, end = span
+            if start < 0 or start >= end or end > response_length:
+                raise ValueError(f"multi-turn role_spans.{role} lies outside the generated response")
+            normalized_spans.append([start, end])
+        role_spans[role] = normalized_spans
+
+    raw_value_positions = raw.get("value_positions", {})
+    if not isinstance(raw_value_positions, Mapping):
+        raise ValueError("multi-turn value_positions must be a mapping")
+    unknown_positions = set(raw_value_positions) - set(_VALUE_POSITION_KEYS)
+    if unknown_positions:
+        raise ValueError(f"multi-turn value_positions has unknown heads: {sorted(unknown_positions)}")
+    value_positions: dict[str, int | None] = {}
+    for head in _VALUE_POSITION_KEYS:
+        position = raw_value_positions.get(head)
+        if position is not None and (
+            isinstance(position, bool) or not isinstance(position, int) or position < 0 or position >= response_length
+        ):
+            raise ValueError(f"multi-turn value_positions.{head} lies outside the generated response")
+        value_positions[head] = position
+
+    return {
+        "context_revision": context_revision,
+        "reward": reward,
+        "done": done,
+        "anchor_key": anchor_key,
+        "switch": switch,
+        "role_spans": role_spans,
+        "value_positions": value_positions,
+        "format_valid": format_valid,
+    }
 
 
 # ===========================================================================
@@ -158,13 +267,17 @@ class _SampleBuilder:
     Each surviving builder yields one Sample.
     """
 
-    def __init__(self, fork_threshold: int) -> None:
+    def __init__(self, fork_threshold: int, *, context_revision: int = 0) -> None:
         self._fork_threshold = fork_threshold
+        self.context_revision = context_revision
         self.tokens: list[int] = []
         self.loss_mask: list[int] = []
         self.logprobs: list[float] = []
         self.last_response_start_idx: int | None = None
         self.leading_prompt_len: int = 0
+        # Spans are builder-absolute until to_sample() strips the leading prompt.
+        self.owned_turns: list[dict[str, Any]] = []
+        self.dropped_turns: list[dict[str, Any]] = []
 
     def classify_token_drift(self, turn: TurnRecord) -> DriftKind:
         """Decide how this builder should absorb ``turn``'s prompt.
@@ -190,11 +303,15 @@ class _SampleBuilder:
             return DriftKind.REALIGN
         return DriftKind.FORK
 
-    def append_turn(self, turn: TurnRecord, kind: DriftKind, *, trained: bool = True) -> None:
+    def append_turn(self, node: MessageNode, kind: DriftKind, *, trained: bool = True) -> None:
         """Append one turn into this SampleBuilder, branching on ``kind``: for REALIGN
         we overwrite the already-saved response span, for CLEAN we just append this
         turn's prompt tail."""
         assert kind is not DriftKind.FORK, "append_turn called on a builder that would fork"
+        assert node.turn is not None and node.turn_index is not None
+        turn = node.turn
+        annotation = node.metadata["multi_turn"]
+        self.context_revision = max(self.context_revision, annotation["context_revision"])
 
         is_first_turn = self.last_response_start_idx is None
 
@@ -204,11 +321,51 @@ class _SampleBuilder:
         else:  # CLEAN: held tokens are an exact prefix of prompt_ids; append the tail beyond them
             self._append_tokens(turn.prompt_ids[len(self.tokens) :], loss_mask=0)
 
-        # --- append this turn's generated response (loss_mask=1 unless re-emitted as context) ---
+        # A length-limited response is incomplete. Keep its tokens for diagnostics
+        # and replay, but never give it logical ownership or policy-loss signal.
+        owns_response = trained and turn.finish_reason != "length" and bool(turn.output_ids)
+
+        # --- append this turn's generated response (loss_mask=1 only when owned) ---
         self.last_response_start_idx = len(self.tokens)
         self._append_tokens(
-            turn.output_ids, loss_mask=int(trained), logprobs=turn.output_log_probs if trained else None
+            turn.output_ids,
+            loss_mask=int(owns_response),
+            logprobs=turn.output_log_probs if owns_response else None,
         )
+
+        turn_idx = node.turn_index - 1
+        if owns_response:
+            response_start = self.last_response_start_idx
+            self.owned_turns.append(
+                {
+                    "turn_idx": turn_idx,
+                    "response_span": [response_start, response_start + len(turn.output_ids)],
+                    "reward": annotation["reward"],
+                    "done": annotation["done"],
+                    "truncated": False,
+                    "anchor_key": annotation["anchor_key"],
+                    "switch": annotation["switch"],
+                    "role_spans": {
+                        role: [
+                            [response_start + span_start, response_start + span_end] for span_start, span_end in spans
+                        ]
+                        for role, spans in annotation["role_spans"].items()
+                    },
+                    "value_positions": {
+                        head: None if position is None else response_start + position
+                        for head, position in annotation["value_positions"].items()
+                    },
+                    "format_valid": annotation["format_valid"],
+                }
+            )
+        elif trained and turn.finish_reason == "length":
+            self.dropped_turns.append(
+                {
+                    "turn_idx": turn_idx,
+                    "reason": "partial_turn",
+                    "generated_tokens": len(turn.output_ids),
+                }
+            )
 
         if is_first_turn:
             self.leading_prompt_len = len(turn.prompt_ids)
@@ -218,10 +375,21 @@ class _SampleBuilder:
         ``prompt_ids`` as loss_mask=0: the drifted tokens carry no signal, and re-appending
         from the prompt keeps the builder contiguous. Earlier turns are untouched."""
         response_start = self.last_response_start_idx
+        removed = [turn for turn in self.owned_turns if turn["response_span"][1] > response_start]
+        self.owned_turns = [turn for turn in self.owned_turns if turn["response_span"][1] <= response_start]
+        self.dropped_turns.extend(
+            {
+                "turn_idx": turn["turn_idx"],
+                "reason": "realigned_context",
+                "generated_tokens": turn["response_span"][1] - turn["response_span"][0],
+            }
+            for turn in removed
+        )
         tail = prompt_ids[response_start:]
         self.tokens[response_start:] = tail
         self.loss_mask[response_start:] = [0] * len(tail)
         self.logprobs[response_start:] = [0.0] * len(tail)
+        self.context_revision += 1
 
     def _append_tokens(self, ids: list[int], *, loss_mask: int, logprobs: list[float] | None = None) -> None:
         self.tokens.extend(ids)
@@ -233,18 +401,77 @@ class _SampleBuilder:
 
     def to_sample(
         self, base_sample: Sample, extra_metadata: dict[str, Any] | None, max_sample_tokens: int = 0
-    ) -> Sample:
+    ) -> Sample | None:
         """Emit the accumulated tokens as one ``Sample``, stripping the first-turn
         prompt so loss_mask / logprobs cover only the response region."""
         start = self.leading_prompt_len  # first-turn prompt stripped; response region starts here
         tokens = list(self.tokens)
-        loss_mask = self.loss_mask
-        logprobs = self.logprobs
+        loss_mask = list(self.loss_mask)
+        logprobs = list(self.logprobs)
+        owned_turns = deepcopy(self.owned_turns)
+        dropped_turns = deepcopy(self.dropped_turns)
         if max_sample_tokens and len(tokens) > max_sample_tokens:
+            retained_turns: list[dict[str, Any]] = []
+            for owned_turn in owned_turns:
+                turn_start, turn_end = owned_turn["response_span"]
+                if turn_end <= max_sample_tokens:
+                    retained_turns.append(owned_turn)
+                    continue
+                # A cutoff through a turn cannot carry a complete turn-level
+                # target. Zero any visible prefix and remove logical ownership.
+                if turn_start < max_sample_tokens:
+                    loss_mask[turn_start:max_sample_tokens] = [0] * (max_sample_tokens - turn_start)
+                dropped_turns.append(
+                    {
+                        "turn_idx": owned_turn["turn_idx"],
+                        "reason": "max_sample_tokens",
+                        "generated_tokens": max(0, max_sample_tokens - turn_start),
+                    }
+                )
+            owned_turns = retained_turns
             tokens = tokens[:max_sample_tokens]
             loss_mask = loss_mask[:max_sample_tokens]
             logprobs = logprobs[:max_sample_tokens]
+        # Preserve cutoff diagnostics for the caller even when the cutoff
+        # removes this builder's entire trainable response.
+        self.dropped_turns = deepcopy(dropped_turns)
+        if not any(loss_mask[start:]):
+            return None
+
+        is_truncated = any(turn["reason"] in {"partial_turn", "max_sample_tokens"} for turn in dropped_turns)
+        if is_truncated and owned_turns:
+            owned_turns[-1]["truncated"] = True
+            owned_turns[-1]["done"] = False
+
+        train_metadata = deepcopy(base_sample.train_metadata or {})
+        if "multi_turn" in train_metadata:
+            raise ValueError("base_sample.train_metadata already contains reserved 'multi_turn' metadata")
+
+        response_turns = []
+        for owned_turn in owned_turns:
+            converted = deepcopy(owned_turn)
+            converted["response_span"] = [position - start for position in owned_turn["response_span"]]
+            converted["role_spans"] = {
+                role: [[span_start - start, span_end - start] for span_start, span_end in spans]
+                for role, spans in owned_turn["role_spans"].items()
+            }
+            converted["value_positions"] = {
+                head: None if position is None else position - start
+                for head, position in owned_turn["value_positions"].items()
+            }
+            response_turns.append(converted)
+
+        multi_turn = {
+            "version": MULTI_TURN_METADATA_VERSION,
+            "context_revision": self.context_revision,
+            "turns": response_turns,
+        }
+        if dropped_turns:
+            multi_turn["dropped_turns"] = dropped_turns
+        train_metadata["multi_turn"] = multi_turn
         md = dict(extra_metadata or {})
+        if is_truncated:
+            md["truncated"] = True
         return Sample(
             index=base_sample.index,
             group_index=base_sample.group_index,
@@ -256,8 +483,9 @@ class _SampleBuilder:
             loss_mask=loss_mask[start:],
             rollout_log_probs=logprobs[start:],
             reward=0.0,
-            status=Sample.Status.COMPLETED,
+            status=Sample.Status.TRUNCATED if is_truncated else Sample.Status.COMPLETED,
             metadata=md,
+            train_metadata=train_metadata,
         )
 
 
@@ -296,13 +524,21 @@ class TrajectoryManager:
             f"turn.output_log_probs length {len(turn.output_log_probs)} != "
             f"turn.output_ids length {len(turn.output_ids)}"
         )
+        turn_metadata = dict(metadata or {})
+        turn_metadata["multi_turn"] = _normalize_turn_annotation(metadata, len(turn.output_ids))
 
         root = self._trees.setdefault(sid, MessageNode())
 
         node, depth = self._find_mount_point(root, prompt_messages)
         node, depth = self._try_merge_assistant_rewrite(sid, node, prompt_messages, depth)
         node = self._mount_prompt_messages(node, prompt_messages[depth:])
-        self._attach_assistant_leaf(sid, node, turn=turn, response_message=response_message, metadata=metadata)
+        self._attach_assistant_leaf(
+            sid,
+            node,
+            turn=turn,
+            response_message=response_message,
+            metadata=turn_metadata,
+        )
 
     def get_trajectory(
         self,
@@ -325,23 +561,31 @@ class TrajectoryManager:
         if root is None:
             return []
 
-        samples: list[Sample] = []
-        for routing_leaf in root.leaves():
-            if routing_leaf.is_root:
-                continue
-            chain = routing_leaf.path_from_root()
-            samples.extend(
-                self._chain_to_samples(
-                    chain, base_sample=base_sample, extra_metadata=extra_metadata, max_sample_tokens=max_sample_tokens
+        try:
+            samples: list[Sample] = []
+            for routing_leaf in root.leaves():
+                if routing_leaf.is_root:
+                    continue
+                chain = routing_leaf.path_from_root()
+                samples.extend(
+                    self._chain_to_samples(
+                        chain,
+                        base_sample=base_sample,
+                        extra_metadata=extra_metadata,
+                        max_sample_tokens=max_sample_tokens,
+                    )
                 )
-            )
 
-        for s in samples:
-            s.reward = reward
+            for sample in samples:
+                sample.reward = reward
 
-        self._trees.pop(sid, None)
-        self._turn_count.pop(sid, None)
-        return samples
+            self._resolve_logical_turns(samples, terminal_reward=reward)
+            return samples
+        finally:
+            # Linearization mutates response ownership. A failed validation is
+            # therefore terminal for this in-memory session as well.
+            self._trees.pop(sid, None)
+            self._turn_count.pop(sid, None)
 
     def drop_session(self, sid: str) -> None:
         self._trees.pop(sid, None)
@@ -466,14 +710,19 @@ class TrajectoryManager:
 
         builders: list[_SampleBuilder] = []
         for asst_node in asst_nodes:
+            assert asst_node.turn is not None
             trained = not asst_node.response_trained
             asst_node.response_trained = True
 
             if not builders or (kind := builders[-1].classify_token_drift(asst_node.turn)) is DriftKind.FORK:
-                builders.append(_SampleBuilder(self._fork_threshold))
-                builders[-1].append_turn(asst_node.turn, DriftKind.CLEAN, trained=trained)
+                previous_revision = builders[-1].context_revision + 1 if builders else 0
+                annotated_revision = asst_node.metadata["multi_turn"]["context_revision"]
+                builders.append(
+                    _SampleBuilder(self._fork_threshold, context_revision=max(previous_revision, annotated_revision))
+                )
+                builders[-1].append_turn(asst_node, DriftKind.CLEAN, trained=trained)
             else:
-                builders[-1].append_turn(asst_node.turn, kind, trained=trained)
+                builders[-1].append_turn(asst_node, kind, trained=trained)
         return builders
 
     def _chain_to_samples(
@@ -495,14 +744,105 @@ class TrajectoryManager:
             "use_tool": use_tool,
             "ill_formed": ill_formed,
         }
-        return [
-            builder.to_sample(base_sample, md, max_sample_tokens)
-            for builder in self._split_chain_into_builders(chain)
-            if builder.has_trained_response()
+        builders = self._split_chain_into_builders(chain)
+        rewrite_diagnostics = [
+            {
+                "turn_idx": node.metadata["merged_rewrite"]["abandoned_turn_index"] - 1,
+                "reason": "assistant_rewrite",
+                "generated_tokens": node.metadata["merged_rewrite"]["abandoned_response_tokens"],
+            }
+            for node in chain
+            if node.metadata.get("merged_rewrite", {}).get("abandoned_turn_index") is not None
         ]
+        if rewrite_diagnostics and builders:
+            builders[-1].dropped_turns.extend(rewrite_diagnostics)
+
+        samples: list[Sample] = []
+        pending_diagnostics: list[dict[str, Any]] = []
+        for builder in builders:
+            if not builder.has_trained_response():
+                pending_diagnostics.extend(builder.dropped_turns)
+                continue
+            if pending_diagnostics:
+                builder.dropped_turns[:0] = pending_diagnostics
+                pending_diagnostics = []
+            sample = builder.to_sample(base_sample, md, max_sample_tokens)
+            if sample is not None:
+                samples.append(sample)
+            else:
+                pending_diagnostics.extend(builder.dropped_turns)
+
+        if pending_diagnostics and samples:
+            multi_turn = samples[-1].train_metadata["multi_turn"]
+            multi_turn.setdefault("dropped_turns", []).extend(pending_diagnostics)
+            if any(turn["reason"] in {"partial_turn", "max_sample_tokens"} for turn in pending_diagnostics):
+                samples[-1].status = Sample.Status.TRUNCATED
+                samples[-1].metadata["truncated"] = True
+                if multi_turn["turns"]:
+                    multi_turn["turns"][-1]["truncated"] = True
+                    multi_turn["turns"][-1]["done"] = False
+        return samples
+
+    @staticmethod
+    def _resolve_logical_turns(samples: list[Sample], *, terminal_reward: float) -> None:
+        """Validate rollout ownership and resolve the canonical turn rewards."""
+        owned: list[tuple[int, dict[str, Any]]] = []
+        seen: set[tuple[int | None, int]] = set()
+        for sample in samples:
+            multi_turn = (sample.train_metadata or {}).get("multi_turn")
+            if multi_turn is None:
+                continue
+            for turn in multi_turn["turns"]:
+                response_span = turn["response_span"]
+                if (
+                    len(response_span) != 2
+                    or response_span[0] < 0
+                    or response_span[0] >= response_span[1]
+                    or response_span[1] > sample.response_length
+                ):
+                    raise ValueError(f"logical turn has an invalid response span: {response_span!r}")
+                if sample.loss_mask is None or not all(sample.loss_mask[response_span[0] : response_span[1]]):
+                    raise ValueError(f"logical turn span is not fully owned: turn_idx={turn['turn_idx']}")
+                for spans in turn["role_spans"].values():
+                    if any(
+                        span_start < response_span[0] or span_start >= span_end or span_end > response_span[1]
+                        for span_start, span_end in spans
+                    ):
+                        raise ValueError(f"logical turn has a semantic span outside its response: {spans!r}")
+                if any(
+                    position is not None and not response_span[0] <= position < response_span[1]
+                    for position in turn["value_positions"].values()
+                ):
+                    raise ValueError(
+                        f"logical turn has a value position outside its response: {turn['value_positions']!r}"
+                    )
+                identity = (sample.rollout_id, turn["turn_idx"])
+                if identity in seen:
+                    raise ValueError(
+                        f"logical turn has multiple owners: rollout_id={identity[0]!r}, turn_idx={identity[1]}"
+                    )
+                seen.add(identity)
+                owned.append((turn["turn_idx"], turn))
+
+        if not owned:
+            return
+        owned.sort(key=lambda item: item[0])
+        explicit = [turn["reward"] is not None for _, turn in owned]
+        if any(explicit) and not all(explicit):
+            raise ValueError(
+                "multi-turn rewards must be either explicit for every owned turn or omitted for every turn"
+            )
+        if not any(explicit):
+            for _, turn in owned:
+                turn["reward"] = 0.0
+            final_turn = owned[-1][1]
+            if not final_turn["truncated"]:
+                final_turn["reward"] = float(terminal_reward)
+                final_turn["done"] = True
 
 
 __all__ = [
+    "MULTI_TURN_METADATA_VERSION",
     "TrajectoryManager",
     "TurnRecord",
 ]

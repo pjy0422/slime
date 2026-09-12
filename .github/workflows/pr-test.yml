@@ -885,6 +885,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_agent/test_multi_turn_metadata.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_agent/test_adapters.py"
             },
             {

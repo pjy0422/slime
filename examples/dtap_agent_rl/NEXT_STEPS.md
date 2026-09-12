@@ -350,7 +350,7 @@ owned generated-token spans.
 - [x] PR C scope: complete OpenClaw structured victim trajectories and viewer support.
 - [x] PR D: M7 feedback observability, schema v2, and Linux access adapters.
 - [x] PR E: M7 live H=2 repair and A/B/C feedback gate.
-- [ ] PR F1: M8.0a logical-turn metadata and compaction ownership.
+- [x] PR F1: M8.0a logical-turn metadata and compaction ownership.
 - [ ] PR F2: M8.0b rollout affinity and metadata DP passthrough.
 - [ ] PR F3: M8.1 multi-turn vanilla PPO.
 - [ ] PR F4: M8.2 DC-GRPO DW/SW.
