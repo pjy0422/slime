@@ -16,9 +16,7 @@ from examples.dtap_agent_rl.submission import SubmissionCoordinator
 from examples.dtap_agent_rl.tests.test_m2_validation import indirect
 
 
-VALID_PLAN = {
-    "steps": [{"type": "prompt", "turn_id": 1, "mode": "suffix", "content": "try"}]
-}
+VALID_PLAN = {"steps": [{"type": "prompt", "turn_id": 1, "mode": "suffix", "content": "try"}]}
 
 
 class Runner:
@@ -51,8 +49,15 @@ def _source(tmp_path: Path) -> Path:
 
 
 def _coordinator(
-    tmp_path, *, h, q, runner, policy_overrides=None, audit_sink=None,
-    placement_coordinator=None, feedback_builder=None,
+    tmp_path,
+    *,
+    h,
+    q,
+    runner,
+    policy_overrides=None,
+    audit_sink=None,
+    placement_coordinator=None,
+    feedback_builder=None,
 ):
     source = _source(tmp_path)
     policy = M4SecurityPolicy(max_submit_calls=q, **(policy_overrides or {}))
@@ -66,9 +71,7 @@ def _coordinator(
         security_policy=policy,
         policy_contract=PolicyContract(),
         terminal_event=asyncio.Event(),
-        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-            canonical_steps=expected_steps
-        ),
+        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
         audit_sink=audit_sink,
         audit_episode_digest="episode-digest" if audit_sink is not None else None,
         placement_coordinator=placement_coordinator,
@@ -102,10 +105,12 @@ async def test_invalid_submits_spend_q_not_h_and_q_terminal_is_trainable(tmp_pat
 
 @pytest.mark.asyncio
 async def test_invalid_submissions_preserve_both_h_victim_runs(tmp_path):
-    runner = Runner([
-        AttemptResult(evaluation_started=True, attack_success=False),
-        AttemptResult(evaluation_started=True, attack_success=False),
-    ])
+    runner = Runner(
+        [
+            AttemptResult(evaluation_started=True, attack_success=False),
+            AttemptResult(evaluation_started=True, attack_success=False),
+        ]
+    )
     coordinator = _coordinator(tmp_path, h=2, q=4, runner=runner)
 
     invalid = await coordinator.submit({"steps": []})
@@ -129,11 +134,12 @@ async def test_invalid_submissions_preserve_both_h_victim_runs(tmp_path):
 @pytest.mark.asyncio
 async def test_m6_unverified_environment_guard_spends_q_before_runner(tmp_path):
     runner = Runner()
-    placement = SimpleNamespace(
-        unverified_environment_indices=lambda _steps: (0,)
-    )
+    placement = SimpleNamespace(unverified_environment_indices=lambda _steps: (0,))
     coordinator = _coordinator(
-        tmp_path, h=1, q=2, runner=runner,
+        tmp_path,
+        h=1,
+        q=2,
+        runner=runner,
         placement_coordinator=placement,
     )
 
@@ -271,10 +277,12 @@ class FeedbackBuilder:
 @pytest.mark.asyncio
 async def test_m7_feedback_is_only_for_genuine_nonterminal_failure(tmp_path):
     builder = FeedbackBuilder({"schema_version": 1, "final_response": "failed"})
-    runner = Runner([
-        AttemptResult(evaluation_started=True, attack_success=False),
-        AttemptResult(evaluation_started=True, attack_success=False),
-    ])
+    runner = Runner(
+        [
+            AttemptResult(evaluation_started=True, attack_success=False),
+            AttemptResult(evaluation_started=True, attack_success=False),
+        ]
+    )
     coordinator = _coordinator(tmp_path, h=2, q=3, runner=runner, feedback_builder=builder)
 
     invalid = await coordinator.submit({"steps": []})
@@ -291,23 +299,31 @@ async def test_m7_feedback_is_only_for_genuine_nonterminal_failure(tmp_path):
 
 @pytest.mark.asyncio
 async def test_m7_attempt_feedback_can_drive_next_plan_while_invalid_calls_preserve_h(tmp_path):
-    builder = FeedbackBuilder({
-        "schema_version": 1,
-        "final_response": "The victim ignored the first wording.",
-    })
-    runner = Runner([
-        AttemptResult(evaluation_started=True, attack_success=False),
-        AttemptResult(evaluation_started=True, attack_success=True),
-    ])
+    builder = FeedbackBuilder(
+        {
+            "schema_version": 1,
+            "final_response": "The victim ignored the first wording.",
+        }
+    )
+    runner = Runner(
+        [
+            AttemptResult(evaluation_started=True, attack_success=False),
+            AttemptResult(evaluation_started=True, attack_success=True),
+        ]
+    )
     coordinator = _coordinator(tmp_path, h=2, q=4, runner=runner, feedback_builder=builder)
 
     invalid = await coordinator.submit({"steps": []})
     first = await coordinator.submit(VALID_PLAN)
     repaired = {
-        "steps": [{
-            "type": "prompt", "turn_id": 1, "mode": "suffix",
-            "content": "repaired after: " + first["feedback"]["final_response"],
-        }]
+        "steps": [
+            {
+                "type": "prompt",
+                "turn_id": 1,
+                "mode": "suffix",
+                "content": "repaired after: " + first["feedback"]["final_response"],
+            }
+        ]
     }
     second = await coordinator.submit(repaired)
 

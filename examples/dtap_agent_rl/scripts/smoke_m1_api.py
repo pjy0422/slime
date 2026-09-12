@@ -30,9 +30,10 @@ import shutil
 import socket
 import sys
 import tempfile
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from examples.dtap_agent_rl.episode import TaskSnapshot, load_task_snapshot
 from examples.dtap_agent_rl.live_catalog import LiveDtapCatalogProvider
@@ -160,9 +161,7 @@ async def _build_live_episode_view(
             result_box["view"] = await build_episode_view(
                 snapshot,
                 provider,
-                projection_policy=ProjectionPolicy(
-                    expose_additional_information=expose_additional_information
-                ),
+                projection_policy=ProjectionPolicy(expose_additional_information=expose_additional_information),
             )
         return 0
 
@@ -262,9 +261,7 @@ def _collect_observed_tool_names(events: list[dict[str, Any]]) -> set[str]:
                 continue
             name = node.get("name")
             node_type = node.get("type")
-            if isinstance(name, str) and (
-                name.startswith("mcp__") or node_type in {"tool_use", "server_tool_use"}
-            ):
+            if isinstance(name, str) and (name.startswith("mcp__") or node_type in {"tool_use", "server_tool_use"}):
                 names.add(name)
     return names
 
@@ -365,9 +362,7 @@ def _assert_no_privileged_leak(
 def _find_claude(binary: str) -> str:
     resolved = shutil.which(binary)
     if not resolved:
-        raise RuntimeError(
-            f"Claude Code executable not found: {binary!r}. Install Claude Code or pass --claude-bin."
-        )
+        raise RuntimeError(f"Claude Code executable not found: {binary!r}. Install Claude Code or pass --claude-bin.")
     return resolved
 
 
@@ -405,10 +400,10 @@ async def _run_claude(
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             proc.kill()
             await proc.wait()
-            raise RuntimeError(f"Claude Code direct API smoke timed out after {timeout_sec}s")
+            raise RuntimeError(f"Claude Code direct API smoke timed out after {timeout_sec}s") from exc
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
@@ -471,11 +466,7 @@ async def run_smoke(args: argparse.Namespace) -> int:
             )
 
             if rc != 0:
-                raise RuntimeError(
-                    "Claude Code exited non-zero.\n"
-                    f"exit_code={rc}\n"
-                    f"stderr:\n{stderr[-6000:]}"
-                )
+                raise RuntimeError("Claude Code exited non-zero.\n" f"exit_code={rc}\n" f"stderr:\n{stderr[-6000:]}")
 
             print("[4/5] Verifying tool calls and no privileged leakage...", flush=True)
             missing = REQUIRED_MCP_TOOLS - tools
@@ -539,10 +530,10 @@ def main() -> None:
     try:
         raise SystemExit(asyncio.run(run_smoke(args)))
     except KeyboardInterrupt:
-        raise SystemExit(130)
+        raise SystemExit(130) from None
     except Exception as exc:
         print(f"M1 DIRECT API SMOKE: FAIL: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

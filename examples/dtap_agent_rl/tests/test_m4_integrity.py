@@ -2,12 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from examples.dtap_agent_rl.integrity import (
-    BenchmarkIntegrityGuard,
-    IntegrityError,
-    safe_copy_tree,
-)
+from examples.dtap_agent_rl.integrity import BenchmarkIntegrityGuard, IntegrityError, safe_copy_tree
 
 
 def _task(tmp_path: Path) -> Path:

@@ -34,6 +34,7 @@ async def drain_sse_shutdown_watcher() -> None:
     await asyncio.sleep(0.55)
     AppStatus.should_exit = False
 
+
 # The deliverable is intended to live inside the slime repository. This execution
 # environment does not have slime installed, so provide a tiny API-compatible stub
 # only when slime is absent. In a real slime checkout the production classes load.
@@ -88,12 +89,17 @@ if importlib.util.find_spec("slime") is None:
         await sb.write_file(launcher, body, user="agent")
         await sb.exec(
             f"rm -rf /tmp/.run.spawned; rm -f {meta_dir}/trajectory.jsonl {done}",
-            user="agent", check=True, timeout=30,
+            user="agent",
+            check=True,
+            timeout=30,
         )
         await sb.exec(
             f"chmod +x {launcher}; mkdir /tmp/.run.spawned 2>/dev/null || exit 0; "
             f"setsid bash {launcher} < /dev/null > {meta_dir}/trajectory.jsonl 2>&1 &",
-            user="agent", env=env, check=True, timeout=30,
+            user="agent",
+            env=env,
+            check=True,
+            timeout=30,
         )
         code, out, _ = await sb.exec(f"test -f {done} && cat {done}", user="agent", check=False, timeout=15)
         return int(out.strip()) if code == 0 and out.strip() else 0
@@ -120,9 +126,7 @@ from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
 
 
 def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "integration: requires a real DTAP installation and Docker environment"
-    )
+    config.addinivalue_line("markers", "integration: requires a real DTAP installation and Docker environment")
 
 
 class FakeSandbox:

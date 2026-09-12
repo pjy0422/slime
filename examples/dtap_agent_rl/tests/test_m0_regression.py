@@ -12,11 +12,7 @@ from .conftest import FAKE_DTAP_API, write_config
 
 class Catalog:
     async def list_victim_tools(self, snapshot):
-        return {
-            "slack": [
-                ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})
-            ]
-        }
+        return {"slack": [ToolSpec("slack", "get_messages", "slack:get_messages", None, {"type": "object"})]}
 
     async def list_environment_tools(self, snapshot):
         return {
@@ -30,9 +26,7 @@ class Catalog:
                     "verified",
                 )
             ],
-            "gmail-injection": [
-                ToolSpec("gmail-injection", "inject_email", "gmail-injection:inject_email", None, {})
-            ],
+            "gmail-injection": [ToolSpec("gmail-injection", "inject_email", "gmail-injection:inject_email", None, {})],
         }
 
 
@@ -42,18 +36,30 @@ class MaintenanceCatalog(Catalog):
         catalog["slack-injection"] = [
             *catalog["slack-injection"],
             ToolSpec(
-                "slack-injection", "inject_status", "slack-injection:inject_status",
-                None, {}, "not_applicable",
+                "slack-injection",
+                "inject_status",
+                "slack-injection:inject_status",
+                None,
+                {},
+                "not_applicable",
             ),
             ToolSpec(
-                "slack-injection", "write_unregistered",
-                "slack-injection:write_unregistered", None, {}, "unsupported",
+                "slack-injection",
+                "write_unregistered",
+                "slack-injection:write_unregistered",
+                None,
+                {},
+                "unsupported",
             ),
             # A verified mutator remains visible even when its name looks like
             # an observation. Classification must not depend on a prefix.
             ToolSpec(
-                "slack-injection", "get_poisoned_message",
-                "slack-injection:get_poisoned_message", None, {}, "verified",
+                "slack-injection",
+                "get_poisoned_message",
+                "slack-injection:get_poisoned_message",
+                None,
+                {},
+                "verified",
             ),
         ]
         return catalog
@@ -84,9 +90,7 @@ async def test_direct_surface_exposes_cross_step_turn_constraints(tmp_path):
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
-    constraints = (await build_attack_surface(snapshot, Catalog())).to_dict()[
-        "plan_constraints"
-    ]
+    constraints = (await build_attack_surface(snapshot, Catalog())).to_dict()["plan_constraints"]
 
     assert constraints == [
         "direct plans require at least one jailbreak prompt",
@@ -97,24 +101,25 @@ async def test_direct_surface_exposes_cross_step_turn_constraints(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("platform", ["windows", "macos"])
-async def test_legacy_guest_direct_surface_enables_jailbreak_without_private_example(
-    tmp_path, platform
-):
+async def test_legacy_guest_direct_surface_enables_jailbreak_without_private_example(tmp_path, platform):
     task_dir = write_config(tmp_path)
     config_path = task_dir / "config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config.pop("RedTeamingAgent")
     config["Attack"]["threat_model"] = "direct"
-    config["Attack"]["attack_turns"] = [{
-        "turn_id": 1,
-        "attack_steps": [{
-            "type": "prompt", "mode": "jailbreak",
-            "content": "PRIVATE_PLATFORM_EXAMPLE",
-        }],
-    }]
-    config["Environment"] = {
-        "docker_compose_path": f"dt_arena/envs/{platform}/docker-compose.yml"
-    }
+    config["Attack"]["attack_turns"] = [
+        {
+            "turn_id": 1,
+            "attack_steps": [
+                {
+                    "type": "prompt",
+                    "mode": "jailbreak",
+                    "content": "PRIVATE_PLATFORM_EXAMPLE",
+                }
+            ],
+        }
+    ]
+    config["Environment"] = {"docker_compose_path": f"dt_arena/envs/{platform}/docker-compose.yml"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
@@ -133,9 +138,7 @@ async def test_missing_red_team_config_does_not_enable_non_guest_direct_prompt(t
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config.pop("RedTeamingAgent")
     config["Attack"]["threat_model"] = "direct"
-    config["Environment"] = {
-        "docker_compose_path": "dt_arena/envs/slack/docker-compose.yml"
-    }
+    config["Environment"] = {"docker_compose_path": "dt_arena/envs/slack/docker-compose.yml"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
@@ -152,9 +155,7 @@ async def test_guest_path_substring_cannot_enable_legacy_direct_prompt(tmp_path)
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     config.pop("RedTeamingAgent")
     config["Attack"]["threat_model"] = "direct"
-    config["Environment"] = {
-        "docker_compose_path": "untrusted/envs/windows/docker-compose.yml"
-    }
+    config["Environment"] = {"docker_compose_path": "untrusted/envs/windows/docker-compose.yml"}
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     snapshot = load_task_snapshot(task_dir, dtap_api=FAKE_DTAP_API)
@@ -168,22 +169,24 @@ async def test_surface_uses_explicit_placement_capabilities_not_name_prefixes(tm
     snapshot = load_task_snapshot(write_config(tmp_path), dtap_api=FAKE_DTAP_API)
     surface = await build_attack_surface(snapshot, MaintenanceCatalog())
 
-    assert [tool.tool_name for tool in surface.environment_tools] == [
-        "get_poisoned_message",
-        "inject_slack_message"
-    ]
+    assert [tool.tool_name for tool in surface.environment_tools] == ["get_poisoned_message", "inject_slack_message"]
 
 
 @pytest.mark.asyncio
 async def test_unclassified_environment_tool_fails_closed(tmp_path):
     class UnclassifiedCatalog(Catalog):
         async def list_environment_tools(self, snapshot):
-            return {"slack-injection": [
-                ToolSpec(
-                    "slack-injection", "inject_new_payload",
-                    "slack-injection:inject_new_payload", None, {},
-                )
-            ]}
+            return {
+                "slack-injection": [
+                    ToolSpec(
+                        "slack-injection",
+                        "inject_new_payload",
+                        "slack-injection:inject_new_payload",
+                        None,
+                        {},
+                    )
+                ]
+            }
 
     snapshot = load_task_snapshot(write_config(tmp_path), dtap_api=FAKE_DTAP_API)
     surface = await build_attack_surface(snapshot, UnclassifiedCatalog())

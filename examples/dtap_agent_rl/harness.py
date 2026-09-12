@@ -167,9 +167,7 @@ class M4ClaudeCodeHarness(DTAPClaudeCodeHarness):
         harness_url = os.environ.get(self.harness_url_env, "").strip()
         if not harness_url:
             raise RuntimeError(f"{self.harness_url_env} must point to the host-side MCP endpoint")
-        if os.environ.get(self.extra_args_env, "").strip() or os.environ.get(
-            self.extra_envs_env, ""
-        ).strip():
+        if os.environ.get(self.extra_args_env, "").strip() or os.environ.get(self.extra_envs_env, "").strip():
             raise RuntimeError("M4 forbids arbitrary Claude Code launch overrides")
 
         cmd = f"/usr/local/bin/claude -p {shlex.quote(prompt)} {self.strict_launch_flags}"

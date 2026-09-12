@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 
 class PolicyContractViolation(RuntimeError):
@@ -90,15 +91,25 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(deterministic["injections"], (list, tuple)):
             raise PolicyContractViolation("invalid feedback schema")
         injection_keys = {
-            "step_index", "injection_type", "polluted_tool_called",
-            "injected_target_accessed", "access_state", "matched_tool", "match_basis",
-            "locator_targeted", "access_call_status", "response_contains_injection",
+            "step_index",
+            "injection_type",
+            "polluted_tool_called",
+            "injected_target_accessed",
+            "access_state",
+            "matched_tool",
+            "match_basis",
+            "locator_targeted",
+            "access_call_status",
+            "response_contains_injection",
             "presented_to_model",
         }
         if schema_version == 2:
             injection_keys |= {
-                "evidence_call_indices", "response_match_state",
-                "presentation_state", "skill_use_state", "unknown_reasons",
+                "evidence_call_indices",
+                "response_match_state",
+                "presentation_state",
+                "skill_use_state",
+                "unknown_reasons",
             }
         for item in deterministic["injections"]:
             if not isinstance(item, Mapping):
@@ -109,18 +120,28 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(item["step_index"], int) or isinstance(item["step_index"], bool):
                 raise PolicyContractViolation("invalid feedback schema")
             for boolean_name in (
-                "polluted_tool_called", "injected_target_accessed", "locator_targeted",
-                "response_contains_injection", "presented_to_model",
+                "polluted_tool_called",
+                "injected_target_accessed",
+                "locator_targeted",
+                "response_contains_injection",
+                "presented_to_model",
             ):
                 if item[boolean_name] is not None and not isinstance(item[boolean_name], bool):
                     raise PolicyContractViolation("invalid feedback schema")
             if item["matched_tool"] is not None and not isinstance(item["matched_tool"], str):
                 raise PolicyContractViolation("invalid feedback schema")
             if item["match_basis"] not in {
-                "qualified_tool", "exact_hashed_arguments", "injection_receipt",
-                "exact_locator", "collection_locator",
-                "payload_probe", "message_correlation", "structured_skill_event",
-                "not_supported", "not_applicable", None,
+                "qualified_tool",
+                "exact_hashed_arguments",
+                "injection_receipt",
+                "exact_locator",
+                "collection_locator",
+                "payload_probe",
+                "message_correlation",
+                "structured_skill_event",
+                "not_supported",
+                "not_applicable",
+                None,
             }:
                 raise PolicyContractViolation("invalid feedback schema")
             if item["access_state"] not in {"accessed", "not_accessed", "unknown", "not_applicable"}:
@@ -134,35 +155,34 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
                         not isinstance(index, int) or isinstance(index, bool) or index < 0
                         for index in item["evidence_call_indices"]
                     )
-                    or item["response_match_state"] not in {
-                        "matched", "not_matched", "unknown", "not_applicable"
-                    }
-                    or item["presentation_state"] not in {
-                        "presented", "not_presented", "unknown", "not_applicable"
-                    }
-                    or item["skill_use_state"] not in {
-                        "used", "not_used", "unknown", "not_applicable"
-                    }
+                    or item["response_match_state"] not in {"matched", "not_matched", "unknown", "not_applicable"}
+                    or item["presentation_state"] not in {"presented", "not_presented", "unknown", "not_applicable"}
+                    or item["skill_use_state"] not in {"used", "not_used", "unknown", "not_applicable"}
                     or not isinstance(item["unknown_reasons"], (list, tuple))
-                    or any(reason not in {
-                        "trace_incomplete", "adapter_unsupported", "identity_unavailable",
-                        "result_incomplete", "result_truncated",
-                        "message_boundary_unavailable", "skill_event_unavailable",
-                        "instrumentation_unavailable",
-                    } for reason in item["unknown_reasons"])
+                    or any(
+                        reason
+                        not in {
+                            "trace_incomplete",
+                            "adapter_unsupported",
+                            "identity_unavailable",
+                            "result_incomplete",
+                            "result_truncated",
+                            "message_boundary_unavailable",
+                            "skill_event_unavailable",
+                            "instrumentation_unavailable",
+                        }
+                        for reason in item["unknown_reasons"]
+                    )
                 ):
                     raise PolicyContractViolation("invalid feedback schema")
-                expected_response = {
-                    True: "matched", False: "not_matched", None: "unknown"
-                }[item["response_contains_injection"]]
-                if (
-                    item["injection_type"] == "environment"
-                    and item["response_match_state"] != expected_response
-                ):
+                expected_response = {True: "matched", False: "not_matched", None: "unknown"}[
+                    item["response_contains_injection"]
+                ]
+                if item["injection_type"] == "environment" and item["response_match_state"] != expected_response:
                     raise PolicyContractViolation("inconsistent feedback schema")
-                expected_presentation = {
-                    True: "presented", False: "not_presented", None: "unknown"
-                }[item["presented_to_model"]]
+                expected_presentation = {True: "presented", False: "not_presented", None: "unknown"}[
+                    item["presented_to_model"]
+                ]
                 if item["presentation_state"] != expected_presentation:
                     raise PolicyContractViolation("inconsistent feedback schema")
     digest = value.get("digest")
@@ -183,9 +203,7 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
         if any(not isinstance(path, str) for path in (*digest["preserve"], *digest["reconsider"])):
             raise PolicyContractViolation("invalid feedback schema")
         if schema_version == 2 and (
-            digest["payload_effect"] not in {
-                "followed", "partially_followed", "rejected", "ignored", "unclear"
-            }
+            digest["payload_effect"] not in {"followed", "partially_followed", "rejected", "ignored", "unclear"}
             or not isinstance(digest["evidence_refs"], (list, tuple))
             or any(not isinstance(path, str) for path in digest["evidence_refs"])
         ):
@@ -195,7 +213,9 @@ def _validate_feedback_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(summary, Mapping):
             raise PolicyContractViolation("invalid feedback schema")
         _exact_keys(summary, {"source", "summary"}, required={"source", "summary"})
-        if summary["source"] not in {"explicit_reasoning", "assistant_rationale", "unavailable"} or not isinstance(summary["summary"], str):
+        if summary["source"] not in {"explicit_reasoning", "assistant_rationale", "unavailable"} or not isinstance(
+            summary["summary"], str
+        ):
             raise PolicyContractViolation("invalid feedback schema")
     return value
 
@@ -298,11 +318,7 @@ class PolicyContract:
                 success=receipt["success"],
                 terminal=bool(receipt["terminal"]),
                 remaining_submissions=int(receipt["remaining_submissions"]),
-                feedback=(
-                    receipt.get("feedback")
-                    if isinstance(receipt.get("feedback"), Mapping)
-                    else None
-                ),
+                feedback=(receipt.get("feedback") if isinstance(receipt.get("feedback"), Mapping) else None),
             )
         raw_code = None
         error = receipt.get("error")

@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path.cwd()))
-from smoke_m5_env import run
 from dt_arena.src.env_verification import PlacementValidationError
+from smoke_m5_env import run
 
 
 def _write_exclusive(path: Path, payload: dict) -> None:

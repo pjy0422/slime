@@ -9,7 +9,6 @@ from pathlib import Path
 
 import yaml
 
-
 EXCLUDED = frozenset()
 GUEST_PLATFORM_SERVERS = frozenset({"windows-injection", "macos-injection"})
 
@@ -35,14 +34,9 @@ def _decorated_tools(path: Path) -> set[str]:
 
 
 def audit(dtap_root: Path) -> dict:
-    from dt_arena.src.env_verification import (
-        NON_PLACEMENT_TOOLS,
-        SUPPORTED_PLACEMENT_TOOLS,
-    )
+    from dt_arena.src.env_verification import NON_PLACEMENT_TOOLS, SUPPORTED_PLACEMENT_TOOLS
 
-    config = yaml.safe_load(
-        (dtap_root / "dt_arena/config/injection_mcp.yaml").read_text(encoding="utf-8")
-    )
+    config = yaml.safe_load((dtap_root / "dt_arena/config/injection_mcp.yaml").read_text(encoding="utf-8"))
     rows = []
     missing = []
     base = dtap_root / "dt_arena/injection_mcp_server"
@@ -64,33 +58,29 @@ def audit(dtap_root: Path) -> dict:
         unclassified = sorted(discovered - supported - non_placement)
         stale_supported = sorted(supported - discovered)
         stale_non_placement = sorted(non_placement - discovered)
-        rows.append({
-            "server": name,
-            "discovered_tools": len(discovered),
-            "verified": sorted(discovered & supported),
-            "not_applicable": sorted(discovered & non_placement),
-            "unsupported": unclassified,
-            "registry_overlap": overlap,
-            "stale_supported_registry_entries": stale_supported,
-            "stale_non_placement_registry_entries": stale_non_placement,
-            "stale_registry_entries": sorted(stale_supported + stale_non_placement),
-        })
+        rows.append(
+            {
+                "server": name,
+                "discovered_tools": len(discovered),
+                "verified": sorted(discovered & supported),
+                "not_applicable": sorted(discovered & non_placement),
+                "unsupported": unclassified,
+                "registry_overlap": overlap,
+                "stale_supported_registry_entries": stale_supported,
+                "stale_non_placement_registry_entries": stale_non_placement,
+                "stale_registry_entries": sorted(stale_supported + stale_non_placement),
+            }
+        )
     stale = [row for row in rows if row["stale_registry_entries"]]
     unclassified = [row for row in rows if row["unsupported"]]
     overlaps = [row for row in rows if row["registry_overlap"]]
     return {
-        "status": (
-            "passed"
-            if not missing and not stale and not unclassified and not overlaps
-            else "failed"
-        ),
+        "status": ("passed" if not missing and not stale and not unclassified and not overlaps else "failed"),
         "excluded": sorted(EXCLUDED),
         "enabled_servers": len(rows),
         "missing_implementations": missing,
         "verified_mutators": sum(len(row["verified"]) for row in rows),
-        "classified_non_placement_tools": sum(
-            len(row["not_applicable"]) for row in rows
-        ),
+        "classified_non_placement_tools": sum(len(row["not_applicable"]) for row in rows),
         "unclassified_tools": sum(len(row["unsupported"]) for row in rows),
         # Kept for compatibility with existing release-report consumers.
         "unsupported_mutators": sum(len(row["unsupported"]) for row in rows),
@@ -100,7 +90,8 @@ def audit(dtap_root: Path) -> dict:
                 "not_applicable": len(row["not_applicable"]),
                 "unsupported": len(row["unsupported"]),
             }
-            for row in rows if row["server"] in GUEST_PLATFORM_SERVERS
+            for row in rows
+            if row["server"] in GUEST_PLATFORM_SERVERS
         },
         "servers": rows,
     }

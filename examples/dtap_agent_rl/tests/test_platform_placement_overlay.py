@@ -9,9 +9,7 @@ def test_platform_patch_is_last_managed_overlay():
     apply_script = (ROOT / "dtap_integration/apply.sh").read_text(encoding="utf-8")
     platform = '"$script_dir/patches/p5-windows-macos-placement.patch"'
     assert platform in apply_script
-    assert apply_script.index(platform) > apply_script.index(
-        '"$script_dir/patches/p4-h2-live-stability.patch"'
-    )
+    assert apply_script.index(platform) > apply_script.index('"$script_dir/patches/p4-h2-live-stability.patch"')
 
 
 def test_platform_patch_keeps_guest_verification_and_startup_fail_closed():

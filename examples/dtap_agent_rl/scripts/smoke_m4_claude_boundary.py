@@ -10,7 +10,6 @@ import argparse
 import asyncio
 import json
 import os
-import secrets
 import shutil
 import socket
 import tempfile
@@ -138,9 +137,7 @@ def _source(root: Path) -> Path:
                     "attack_turns": [
                         {
                             "turn_id": 1,
-                            "attack_steps": [
-                                {"type": "prompt", "mode": "suffix", "content": "EXAMPLE-CANARY"}
-                            ],
+                            "attack_steps": [{"type": "prompt", "mode": "suffix", "content": "EXAMPLE-CANARY"}],
                         }
                     ],
                 },
@@ -186,9 +183,7 @@ async def _main(args) -> None:
             security_policy=policy,
             policy_contract=contract,
             terminal_event=asyncio.Event(),
-            candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-                canonical_steps=expected_steps
-            ),
+            candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
         )
         registry = EpisodeAuthorityRegistry()
         authority = EpisodeAuthority(view, controller, asyncio.Event(), contract)
@@ -214,9 +209,7 @@ async def _main(args) -> None:
                                 "dtap": {
                                     "type": "http",
                                     "url": "${DTAP_HARNESS_URL}",
-                                    "headers": {
-                                        "Authorization": "Bearer ${DTAP_EPISODE_TOKEN}"
-                                    },
+                                    "headers": {"Authorization": "Bearer ${DTAP_EPISODE_TOKEN}"},
                                 }
                             }
                         }
@@ -269,9 +262,7 @@ async def _main(args) -> None:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout_raw, stderr_raw = await asyncio.wait_for(
-                    process.communicate(), timeout=args.timeout
-                )
+                stdout_raw, stderr_raw = await asyncio.wait_for(process.communicate(), timeout=args.timeout)
                 stdout = stdout_raw.decode(errors="replace")
                 stderr = stderr_raw.decode(errors="replace")
                 if process.returncode:

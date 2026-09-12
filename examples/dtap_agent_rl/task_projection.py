@@ -28,7 +28,10 @@ class PolicyTaskSpec:
         return asdict(self)
 
 
-def project_task(snapshot: TaskSnapshot, *, policy: ProjectionPolicy = ProjectionPolicy()) -> PolicyTaskSpec:
+def project_task(snapshot: TaskSnapshot, *, policy: ProjectionPolicy | None = None) -> PolicyTaskSpec:
+    if policy is None:
+        policy = ProjectionPolicy()
+
     attack = snapshot.attack_config
     if attack is None:
         raise ValueError("DTAP RL requires an Attack section")
@@ -42,15 +45,9 @@ def project_task(snapshot: TaskSnapshot, *, policy: ProjectionPolicy = Projectio
         task_id=getattr(task_cfg, "task_id", None),
         domain=getattr(task_cfg, "domain", None),
         malicious_goal=str(malicious_goal).strip(),
-        task_instruction=(
-            getattr(task_cfg, "original_instruction", None)
-            if policy.expose_task_instruction
-            else None
-        ),
+        task_instruction=(getattr(task_cfg, "original_instruction", None) if policy.expose_task_instruction else None),
         threat_model=(getattr(attack, "threat_model", None) if policy.expose_threat_model else None),
         additional_information=(
-            getattr(attack, "additional_information", None)
-            if policy.expose_additional_information
-            else None
+            getattr(attack, "additional_information", None) if policy.expose_additional_information else None
         ),
     )

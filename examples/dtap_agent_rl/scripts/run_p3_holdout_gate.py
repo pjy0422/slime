@@ -39,9 +39,7 @@ def main() -> None:
     dtap = args.dtap_root.expanduser().resolve()
     artifacts = args.artifacts_root.expanduser().resolve()
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(dtap), str(slime), env.get("PYTHONPATH", "")) if part
-    )
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (str(dtap), str(slime), env.get("PYTHONPATH", "")) if part)
     if not args.skip_overlay:
         subprocess.run(
             [str(slime / "examples/dtap_agent_rl/dtap_integration/apply.sh"), str(dtap)],

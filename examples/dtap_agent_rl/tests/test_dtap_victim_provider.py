@@ -2,11 +2,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-
-from examples.dtap_agent_rl.scripts.run_dtap_attempt import (
-    _configure_victim_provider,
-    _restored_environment,
-)
+from examples.dtap_agent_rl.scripts.run_dtap_attempt import _configure_victim_provider, _restored_environment
 
 
 def test_victim_provider_aliases_are_consumed_inside_dtap_child():

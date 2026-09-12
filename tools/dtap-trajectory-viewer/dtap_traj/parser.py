@@ -14,13 +14,15 @@ def find_openclaw_trace(root: str | Path) -> Path | None:
     if root.is_file():
         return root
     hits = [
-        path for path in sorted(root.rglob("traces/openclaw_runtime/*.jsonl"))
+        path
+        for path in sorted(root.rglob("traces/openclaw_runtime/*.jsonl"))
         if not path.name.endswith(".mcp-events.jsonl")
     ]
     if hits:
         return hits[0]
     hits = [
-        p for p in sorted(root.rglob("*.jsonl"))
+        p
+        for p in sorted(root.rglob("*.jsonl"))
         if "policy" not in p.name.lower() and not p.name.endswith("mcp-events.jsonl")
     ]
     return hits[0] if hits else None
@@ -97,9 +99,7 @@ def extract_attack_payloads(yaml_path: str | Path | None) -> list[dict[str, Any]
             common = {
                 "kind": kind,
                 "mode": step.get("mode"),
-                "tool": step.get("injected_tool")
-                or step.get("injection_mcp_tool")
-                or step.get("tool"),
+                "tool": step.get("injected_tool") or step.get("injection_mcp_tool") or step.get("tool"),
                 "skill": step.get("skill_name"),
             }
             if step.get("content") is not None:
@@ -196,12 +196,14 @@ def _append_message(timeline: list[dict[str, Any]], message: Any) -> None:
                 timeline.append({"kind": "say", "text": text})
         elif role == "assistant" and kind in {"toolCall", "tool_use", "server_tool_use"}:
             server, tool = _split_tool(str(block.get("name", "")))
-            timeline.append({
-                "kind": "tool_call",
-                "server": server,
-                "tool": tool,
-                "args": block.get("arguments") or block.get("input") or {},
-            })
+            timeline.append(
+                {
+                    "kind": "tool_call",
+                    "server": server,
+                    "tool": tool,
+                    "args": block.get("arguments") or block.get("input") or {},
+                }
+            )
 
 
 def _mark_final(timeline: list[dict[str, Any]]) -> None:
@@ -245,12 +247,14 @@ def parse_dtap_trajectory(trace_path: str | Path) -> list[dict[str, Any]]:
         elif role == "tool":
             timeline.append({"kind": "tool_result", "text": _text(step.get("state", ""))})
         elif role == "agent" and metadata.get("tool_name"):
-            timeline.append({
-                "kind": "tool_call",
-                "server": str(metadata.get("server") or ""),
-                "tool": str(metadata["tool_name"]),
-                "args": metadata.get("tool_params") or {},
-            })
+            timeline.append(
+                {
+                    "kind": "tool_call",
+                    "server": str(metadata.get("server") or ""),
+                    "tool": str(metadata["tool_name"]),
+                    "args": metadata.get("tool_params") or {},
+                }
+            )
         elif role == "agent":
             message = metadata.get("message")
             text = message if message is not None else step.get("action", "")
@@ -284,24 +288,28 @@ def parse_victim_mcp_events(trace_path: str | Path) -> list[dict[str, Any]]:
             "source": "mcp_proxy",
         }
         if event.get("type") == "tool.started":
-            timeline.append({
-                "kind": "tool_call",
-                "args": event.get("arguments") or {},
-                "arguments_digest": event.get("arguments_digest"),
-                **common,
-            })
+            timeline.append(
+                {
+                    "kind": "tool_call",
+                    "args": event.get("arguments") or {},
+                    "arguments_digest": event.get("arguments_digest"),
+                    **common,
+                }
+            )
         elif event.get("type") == "tool.completed":
-            timeline.append({
-                "kind": "tool_result",
-                "text": (
-                    f"{common['server']}:{common['tool']} completed; "
-                    f"is_error={bool(event.get('is_error'))}; "
-                    f"result_sha256={event.get('result_digest', '')}"
-                ),
-                "is_error": bool(event.get("is_error")),
-                "result_digest": event.get("result_digest"),
-                **common,
-            })
+            timeline.append(
+                {
+                    "kind": "tool_result",
+                    "text": (
+                        f"{common['server']}:{common['tool']} completed; "
+                        f"is_error={bool(event.get('is_error'))}; "
+                        f"result_sha256={event.get('result_digest', '')}"
+                    ),
+                    "is_error": bool(event.get("is_error")),
+                    "result_digest": event.get("result_digest"),
+                    **common,
+                }
+            )
     return timeline
 
 
@@ -344,14 +352,16 @@ def find_payload_spans(text: str, payloads: list[dict[str, Any]]) -> list[dict[s
         for probe in (needle, needle[:80]):
             start = text.find(probe)
             if start >= 0:
-                spans.append({
-                    "start": start,
-                    "end": start + len(probe),
-                    "kind": payload.get("kind"),
-                    "mode": payload.get("mode"),
-                    "tool": payload.get("tool"),
-                    "field": payload.get("field"),
-                })
+                spans.append(
+                    {
+                        "start": start,
+                        "end": start + len(probe),
+                        "kind": payload.get("kind"),
+                        "mode": payload.get("mode"),
+                        "tool": payload.get("tool"),
+                        "field": payload.get("field"),
+                    }
+                )
                 break
     spans.sort(key=lambda item: item["start"])
     result: list[dict[str, Any]] = []
@@ -378,9 +388,7 @@ def mark_injections(
         qual = f"{event.get('server')}:{event.get('tool')}"
         arg_spans = {}
         for key, value in (event.get("args") or {}).items():
-            rendered = value if isinstance(value, str) else json.dumps(
-                value, ensure_ascii=False, sort_keys=True
-            )
+            rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
             hits = find_payload_spans(rendered, payloads)
             if hits:
                 arg_spans[key] = hits
@@ -409,12 +417,14 @@ def compare_configs(original: str | Path | None, submitted: str | Path | None) -
         after = submitted_path.read_text(encoding="utf-8")
     except OSError:
         return None
-    diff = "".join(difflib.unified_diff(
-        before.splitlines(keepends=True),
-        after.splitlines(keepends=True),
-        fromfile="original/config.yaml",
-        tofile="submitted/config.yaml",
-    ))
+    diff = "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile="original/config.yaml",
+            tofile="submitted/config.yaml",
+        )
+    )
     return {
         "original_path": str(original_path),
         "submitted_path": str(submitted_path),
@@ -467,9 +477,7 @@ def build_timeline(
         "policy_prompt": str(policy_prompt_path) if policy_prompt_path else None,
         "yaml": str(submitted) if submitted else None,
         "original_yaml": str(original_yaml_path) if original_yaml_path else None,
-        "victim_mcp_events": (
-            str(victim_mcp_events_path) if victim_mcp_events_path else None
-        ),
+        "victim_mcp_events": (str(victim_mcp_events_path) if victim_mcp_events_path else None),
         "payloads": payloads,
         "timeline": victim_timeline,
         "policy_timeline": policy_timeline,
@@ -477,16 +485,12 @@ def build_timeline(
         **(meta or {}),
     }
     event_episode_ids = {
-        event["episode_id"] for event in victim_timeline
+        event["episode_id"]
+        for event in victim_timeline
         if event.get("source") == "mcp_proxy" and event.get("episode_id")
     }
     if not result.get("episode_id") and len(event_episode_ids) == 1:
         result["episode_id"] = next(iter(event_episode_ids))
-    elif (
-        result.get("episode_id") and event_episode_ids
-        and event_episode_ids != {result["episode_id"]}
-    ):
-        result.setdefault("trajectory_warnings", []).append(
-            "victim MCP events do not match the bundle episode_id"
-        )
+    elif result.get("episode_id") and event_episode_ids and event_episode_ids != {result["episode_id"]}:
+        result.setdefault("trajectory_warnings", []).append("victim MCP events do not match the bundle episode_id")
     return result

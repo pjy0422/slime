@@ -19,9 +19,7 @@ def _environment_placement_capability(server_name: str, tool_name: str) -> str:
     try:
         from dt_arena.src.env_verification import placement_capability
     except (ImportError, ModuleNotFoundError) as exc:
-        raise RuntimeError(
-            "DTAP environment catalog requires the slime M6 placement overlay"
-        ) from exc
+        raise RuntimeError("DTAP environment catalog requires the slime M6 placement overlay") from exc
     capability = placement_capability(server_name, tool_name)
     return str(getattr(capability, "value", capability))
 
@@ -53,9 +51,7 @@ async def _list_url_tools(
                 description=getattr(tool, "description", None),
                 input_schema=dict(input_schema),
                 placement_capability=(
-                    _environment_placement_capability(server_name, name)
-                    if classify_environment
-                    else None
+                    _environment_placement_capability(server_name, name) if classify_environment else None
                 ),
             )
         )

@@ -130,9 +130,7 @@ async def test_current_slime_adapter_signature_opens_and_finishes_once():
 
     adapter = SlimeAdapter()
     policy = FakePolicy([{"steps": [1]}])
-    controller = FakeController(
-        [{"accepted": True, "success": True, "terminal": True}], reward=1.0
-    )
+    controller = FakeController([{"accepted": True, "success": True, "terminal": True}], reward=1.0)
     base_sample = Sample()
 
     samples = await run_h_turn_episode(
@@ -145,10 +143,12 @@ async def test_current_slime_adapter_signature_opens_and_finishes_once():
         max_context_tokens=4096,
     )
 
-    assert adapter.opened == [(
-        "slime-session",
-        {"sampling_defaults": {"temperature": 1.0}, "max_context_tokens": 4096},
-    )]
+    assert adapter.opened == [
+        (
+            "slime-session",
+            {"sampling_defaults": {"temperature": 1.0}, "max_context_tokens": 4096},
+        )
+    ]
     assert adapter.finished[0][0] == "slime-session"
     assert adapter.finished[0][1]["base_sample"] is base_sample
     assert adapter.finished[0][1]["reward"] == 1.0

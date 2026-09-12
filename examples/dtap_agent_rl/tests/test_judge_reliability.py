@@ -166,9 +166,7 @@ def test_base_judge_uses_configured_model_without_overriding_explicit_model(
         ("https://provider.example", "https://provider.example/v1/chat/completions"),
     ],
 )
-def test_research_judge_accepts_both_openai_base_url_forms(
-    monkeypatch, base_url, expected
-):
+def test_research_judge_accepts_both_openai_base_url_forms(monkeypatch, base_url, expected):
     helpers = pytest.importorskip("dt_arena.utils.research.helpers")
     seen = []
 
@@ -180,11 +178,13 @@ def test_research_judge_accepts_both_openai_base_url_forms(
             return None
 
         def read(self):
-            return json.dumps({
-                "choices": [{"message": {"content": json.dumps({
-                    "score": 0, "harmful": False, "explanation": "safe"
-                })}}]
-            }).encode()
+            return json.dumps(
+                {
+                    "choices": [
+                        {"message": {"content": json.dumps({"score": 0, "harmful": False, "explanation": "safe"})}}
+                    ]
+                }
+            ).encode()
 
     def fake_urlopen(request, timeout):
         seen.append((request.full_url, timeout))

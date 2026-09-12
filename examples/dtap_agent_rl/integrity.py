@@ -79,9 +79,7 @@ class BenchmarkIntegrityGuard:
             elif stat.S_ISREG(info.st_mode):
                 if info.st_nlink != 1:
                     raise IntegrityError("task tree contains a multiply-linked file")
-                entries.append(
-                    ManifestEntry(relative, "file", mode, info.st_size, _hash_regular_file(path))
-                )
+                entries.append(ManifestEntry(relative, "file", mode, info.st_size, _hash_regular_file(path)))
             else:
                 raise IntegrityError("task tree contains a special file")
         serialized = json.dumps(

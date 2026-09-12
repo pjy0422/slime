@@ -28,36 +28,46 @@ def main() -> None:
     artifacts = args.artifacts_root.expanduser().resolve()
     python = sys.executable
     env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(dtap), str(slime), env.get("PYTHONPATH", "")) if part
-    )
+    env["PYTHONPATH"] = os.pathsep.join(part for part in (str(dtap), str(slime), env.get("PYTHONPATH", "")) if part)
     env["DTAP_ROOT"] = str(dtap)
 
     _run(
         [str(slime / "examples/dtap_agent_rl/dtap_integration/apply.sh"), str(dtap)],
-        cwd=slime, env=env,
+        cwd=slime,
+        env=env,
     )
     runtime_command = [
-        python, "-m", "examples.dtap_agent_rl.scripts.verify_m6_runtime_lock",
-        "--dtap-root", str(dtap),
+        python,
+        "-m",
+        "examples.dtap_agent_rl.scripts.verify_m6_runtime_lock",
+        "--dtap-root",
+        str(dtap),
     ]
     if args.skip_images:
         runtime_command.append("--skip-images")
     _run(runtime_command, cwd=slime, env=env)
     _run(
-        [python, "-m", "pytest", "-q", "tests/test_env_verification.py",
-         "tests/test_openclaw_mcp_events.py"],
-        cwd=dtap, env=env,
+        [python, "-m", "pytest", "-q", "tests/test_env_verification.py", "tests/test_openclaw_mcp_events.py"],
+        cwd=dtap,
+        env=env,
     )
     _run(
-        [python, "-m", "pytest", "-q", "examples/dtap_agent_rl/tests",
-         "tools/dtap-trajectory-viewer/tests"],
-        cwd=slime, env=env,
+        [python, "-m", "pytest", "-q", "examples/dtap_agent_rl/tests", "tools/dtap-trajectory-viewer/tests"],
+        cwd=slime,
+        env=env,
     )
     _run(
-        [python, "-m", "examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage",
-         "--dtap-root", str(dtap), "--output", str(artifacts / "adapter-coverage.json")],
-        cwd=slime, env=env,
+        [
+            python,
+            "-m",
+            "examples.dtap_agent_rl.scripts.audit_m6_adapter_coverage",
+            "--dtap-root",
+            str(dtap),
+            "--output",
+            str(artifacts / "adapter-coverage.json"),
+        ],
+        cwd=slime,
+        env=env,
     )
     if args.skip_e2e:
         return
@@ -65,15 +75,26 @@ def main() -> None:
         raise RuntimeError("ANTHROPIC_API_KEY is required for the 24-case E2E gate")
     _run(
         [
-            python, "-m", "examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix",
-            "--dtap-root", str(dtap), "--slime-root", str(slime),
-            "--artifacts-root", str(artifacts / "domain-matrix"),
-            "--max-parallel", str(args.max_parallel),
-            "--policy-model", "deepseek-v4-flash",
-            "--victim-model", "deepseek-v4-flash",
-            "--victim-agent-type", "openclaw",
+            python,
+            "-m",
+            "examples.dtap_agent_rl.scripts.smoke_m6_domain_matrix",
+            "--dtap-root",
+            str(dtap),
+            "--slime-root",
+            str(slime),
+            "--artifacts-root",
+            str(artifacts / "domain-matrix"),
+            "--max-parallel",
+            str(args.max_parallel),
+            "--policy-model",
+            "deepseek-v4-flash",
+            "--victim-model",
+            "deepseek-v4-flash",
+            "--victim-agent-type",
+            "openclaw",
         ],
-        cwd=slime, env=env,
+        cwd=slime,
+        env=env,
     )
 
 

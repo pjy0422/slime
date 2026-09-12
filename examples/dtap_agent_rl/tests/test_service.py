@@ -61,13 +61,19 @@ def test_bearer_parser():
 
 def test_m6_surface_compacts_docstrings_without_changing_tool_schema():
     tool = ToolSpec(
-        server_name="crm", tool_name="inject", qualified_name="crm:inject",
+        server_name="crm",
+        tool_name="inject",
+        qualified_name="crm:inject",
         description="Semantic summary.\n\nArgs:\n" + "repetitive documentation " * 200,
         input_schema={"type": "object", "required": ["payload"]},
     )
     surface = AttackSurface(
-        prompt_enabled=False, tool_enabled=True, environment_enabled=True,
-        skill_enabled=False, skill_modes=(), victim_tools=(tool,),
+        prompt_enabled=False,
+        tool_enabled=True,
+        environment_enabled=True,
+        skill_enabled=False,
+        skill_modes=(),
+        victim_tools=(tool,),
         environment_tools=(tool,),
     )
 

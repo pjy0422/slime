@@ -21,33 +21,29 @@ async def test_environment_catalog_retries_transient_startup_failure(monkeypatch
         starts += 1
         if starts == 1:
             return None, config
-        return Manager(), {"environment_servers": {
-            "mail-injection": {"url": "http://catalog.test/mcp", "tools": "all"},
-        }}
+        return Manager(), {
+            "environment_servers": {
+                "mail-injection": {"url": "http://catalog.test/mcp", "tools": "all"},
+            }
+        }
 
     async def list_tools(server_name, url, *, classify_environment=False):
         assert (server_name, url) == ("mail-injection", "http://catalog.test/mcp")
         assert classify_environment is True
         return ["tool"]
 
-    monkeypatch.setattr(
-        "utils.injection_mcp_helpers.start_injection_mcp_servers", start
-    )
-    monkeypatch.setattr(
-        "utils.injection_mcp_helpers.wait_for_injection_mcp_ready", lambda config: None
-    )
-    monkeypatch.setattr(
-        "utils.resource_manager.ResourceManager.instance", lambda: object()
-    )
+    monkeypatch.setattr("utils.injection_mcp_helpers.start_injection_mcp_servers", start)
+    monkeypatch.setattr("utils.injection_mcp_helpers.wait_for_injection_mcp_ready", lambda config: None)
+    monkeypatch.setattr("utils.resource_manager.ResourceManager.instance", lambda: object())
     monkeypatch.setattr(live_catalog, "_list_url_tools", list_tools)
     monkeypatch.setattr(live_catalog.asyncio, "sleep", _no_sleep)
-    snapshot = SimpleNamespace(injection_config={
-        "environment_servers": {"mail-injection": "all"},
-    })
+    snapshot = SimpleNamespace(
+        injection_config={
+            "environment_servers": {"mail-injection": "all"},
+        }
+    )
 
-    result = await LiveDtapCatalogProvider(
-        task_runtime_id="episode"
-    ).list_environment_tools(snapshot)
+    result = await LiveDtapCatalogProvider(task_runtime_id="episode").list_environment_tools(snapshot)
 
     assert starts == 2
     assert result == {"mail-injection": ["tool"]}
@@ -63,21 +59,17 @@ async def test_environment_catalog_fails_closed_after_startup_retries(monkeypatc
         starts += 1
         return None, config
 
-    monkeypatch.setattr(
-        "utils.injection_mcp_helpers.start_injection_mcp_servers", start
-    )
-    monkeypatch.setattr(
-        "utils.resource_manager.ResourceManager.instance", lambda: object()
-    )
+    monkeypatch.setattr("utils.injection_mcp_helpers.start_injection_mcp_servers", start)
+    monkeypatch.setattr("utils.resource_manager.ResourceManager.instance", lambda: object())
     monkeypatch.setattr(live_catalog.asyncio, "sleep", _no_sleep)
-    snapshot = SimpleNamespace(injection_config={
-        "environment_servers": {"mail-injection": "all"},
-    })
+    snapshot = SimpleNamespace(
+        injection_config={
+            "environment_servers": {"mail-injection": "all"},
+        }
+    )
 
     with pytest.raises(RuntimeError, match="after 3 attempts"):
-        await LiveDtapCatalogProvider(
-            task_runtime_id="episode"
-        ).list_environment_tools(snapshot)
+        await LiveDtapCatalogProvider(task_runtime_id="episode").list_environment_tools(snapshot)
     assert starts == 3
 
 
@@ -109,11 +101,7 @@ async def test_environment_catalog_attaches_explicit_placement_capability(monkey
     monkeypatch.setattr(
         live_catalog,
         "_environment_placement_capability",
-        lambda server, tool: (
-            "verified"
-            if (server, tool) == ("mail-injection", "get_payload")
-            else "unsupported"
-        ),
+        lambda server, tool: ("verified" if (server, tool) == ("mail-injection", "get_payload") else "unsupported"),
     )
 
     tools = await live_catalog._list_url_tools(

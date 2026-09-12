@@ -20,7 +20,7 @@ class EpisodeCredentials:
     public_episode_id: str
 
     @classmethod
-    def issue(cls, adapter_session_id: str) -> "EpisodeCredentials":
+    def issue(cls, adapter_session_id: str) -> EpisodeCredentials:
         if not isinstance(adapter_session_id, str) or len(adapter_session_id.strip()) < 8:
             raise ValueError("adapter session id is invalid")
         return cls(

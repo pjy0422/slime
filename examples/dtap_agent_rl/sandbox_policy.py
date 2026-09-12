@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 
 class SandboxPolicyError(RuntimeError):
@@ -26,7 +27,7 @@ class SandboxSecurityProfile:
     allowed_endpoints: frozenset[str]
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "SandboxSecurityProfile":
+    def from_mapping(cls, raw: Mapping[str, Any]) -> SandboxSecurityProfile:
         boolean_fields = (
             "non_root",
             "no_linux_capabilities",

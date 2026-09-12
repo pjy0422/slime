@@ -15,7 +15,8 @@ from .authority import EpisodeAuthorityRegistry
 from .policy_contract import PolicyContract
 from .security_policy import M4SecurityPolicy, PolicyInputLimitError
 from .service import EpisodeAccessError, EpisodeRegistry
-from .validation import ValidationContext, validate_attack_step as validate_candidate_step
+from .validation import ValidationContext
+from .validation import validate_attack_step as validate_candidate_step
 
 
 def parse_bearer_token(headers: Mapping[str, str]) -> str:
@@ -187,9 +188,7 @@ class M4EpisodeService:
     async def submit_attack(self, token: str, plan: Any) -> dict[str, Any]:
         authority = self.registry.resolve(token)
         try:
-            return self._contract(authority).public_payload(
-                await authority.coordinator.submit(plan)
-            )
+            return self._contract(authority).public_payload(await authority.coordinator.submit(plan))
         except Exception:
             if not authority.coordinator.runtime.terminal:
                 authority.coordinator.runtime.record_security_failure(stage="submit_boundary")

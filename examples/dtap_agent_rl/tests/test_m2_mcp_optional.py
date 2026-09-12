@@ -19,12 +19,23 @@ async def test_m2_fastmcp_preserves_the_three_read_only_tools():
     view = EpisodeView(
         task=PolicyTaskSpec("task", "workflow", "goal", "normal", "indirect", None),
         attack_surface=AttackSurface(
-            True, True, True, False, (),
+            True,
+            True,
+            True,
+            False,
+            (),
             (ToolSpec("slack", "read", "slack:read", None, {"type": "object"}),),
-            (ToolSpec("slack-injection", "inject", "slack-injection:inject", None, {
-                "type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]
-            }),),
-            prompt_modes=("suffix", "override"), tool_modes=("suffix", "override"),
+            (
+                ToolSpec(
+                    "slack-injection",
+                    "inject",
+                    "slack-injection:inject",
+                    None,
+                    {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+                ),
+            ),
+            prompt_modes=("suffix", "override"),
+            tool_modes=("suffix", "override"),
         ),
     )
     registry = EpisodeRegistry()

@@ -9,9 +9,10 @@ import os
 import re
 import signal
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .candidate_config import AttemptWorkspace
 from .reward_firewall import JudgeVerdictReader, VerdictError, find_single_judge_result
@@ -39,7 +40,7 @@ class AttemptResult:
         evaluation_started: bool,
         runtime_identity: str | None = None,
         runtime_destroyed: bool = True,
-    ) -> "AttemptResult":
+    ) -> AttemptResult:
         return cls(
             evaluation_started=evaluation_started,
             attack_success=None,
@@ -153,149 +154,135 @@ class DtapAttemptRunner:
         await process.wait()
 
     @staticmethod
-    def _retain_stderr_diagnostic(
-        workspace: AttemptWorkspace, stderr: bytes, env: Mapping[str, str]
-    ) -> None:
+    def _retain_stderr_diagnostic(workspace: AttemptWorkspace, stderr: bytes, env: Mapping[str, str]) -> None:
         """Keep a bounded trusted diagnostic without retaining credentials."""
         if not stderr:
             return
         text = stderr.decode("utf-8", errors="replace")[-32_768:]
         for name, value in env.items():
-            if (
-                value
-                and len(value) >= 6
-                and re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", name, re.I)
-            ):
+            if value and len(value) >= 6 and re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", name, re.I):
                 text = text.replace(value, "<redacted>")
-        text = re.sub(
-            r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{12,}", r"\1<redacted>", text
-        )
-        (workspace.output_root / ".dtap-stderr.log").write_text(
-            text, encoding="utf-8"
-        )
+        text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/-]{12,}", r"\1<redacted>", text)
+        (workspace.output_root / ".dtap-stderr.log").write_text(text, encoding="utf-8")
 
     async def _run_once(self, workspace: AttemptWorkspace) -> AttemptResult:
         workspace.output_root.mkdir(parents=True, exist_ok=True)
         if self.security_policy is None:
-                env = os.environ.copy()
-                env.update(self.extra_env)
+            env = os.environ.copy()
+            env.update(self.extra_env)
         else:
-                env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
-                # DTAP's resource manager is process-local. Parallel M4 children
-                # therefore receive disjoint trusted port ranges and are told not
-                # to race for each environment's shared default ports.
-                slot = next(self._m4_launch_slots) % 80
-                port_start = self.port_range_start + slot * 512
-                if port_start + 511 > 65535:
-                    return AttemptResult.infrastructure_failure(
-                        stage="port_range",
-                        evaluation_started=False,
-                    )
-                env["DT_DISABLE_DEFAULT_PORTS"] = "1"
-                env["DT_PORT_RANGE_START"] = str(port_start)
-                env["DT_PORT_RANGE_END"] = str(port_start + 511)
+            env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
+            # DTAP's resource manager is process-local. Parallel M4 children
+            # therefore receive disjoint trusted port ranges and are told not
+            # to race for each environment's shared default ports.
+            slot = next(self._m4_launch_slots) % 80
+            port_start = self.port_range_start + slot * 512
+            if port_start + 511 > 65535:
+                return AttemptResult.infrastructure_failure(
+                    stage="port_range",
+                    evaluation_started=False,
+                )
+            env["DT_DISABLE_DEFAULT_PORTS"] = "1"
+            env["DT_PORT_RANGE_START"] = str(port_start)
+            env["DT_PORT_RANGE_END"] = str(port_start + 511)
         env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
         env["DTAP_M4_ATTEMPT_INDEX"] = str(workspace.attempt_index)
         process = None
         runtime_identity = None
         try:
-                process = await asyncio.create_subprocess_exec(
-                    *self._command(workspace),
-                    cwd=str(self.dtap_root) if self.dtap_root is not None else None,
-                    env=env,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
-                runtime_identity = str(process.pid)
-                communicate = process.communicate()
-                if self.timeout_seconds is None:
-                    stdout, stderr = await communicate
-                else:
-                    stdout, stderr = await asyncio.wait_for(
-                        communicate, timeout=self.timeout_seconds
-                    )
+            process = await asyncio.create_subprocess_exec(
+                *self._command(workspace),
+                cwd=str(self.dtap_root) if self.dtap_root is not None else None,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            runtime_identity = str(process.pid)
+            communicate = process.communicate()
+            if self.timeout_seconds is None:
+                stdout, stderr = await communicate
+            else:
+                stdout, stderr = await asyncio.wait_for(communicate, timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
-                if process is not None:
-                    await self._kill_process_group(process)
-                return AttemptResult.infrastructure_failure(
-                    stage="timeout",
-                    evaluation_started=False,
-                    runtime_identity=runtime_identity,
-                )
+            if process is not None:
+                await self._kill_process_group(process)
+            return AttemptResult.infrastructure_failure(
+                stage="timeout",
+                evaluation_started=False,
+                runtime_identity=runtime_identity,
+            )
         except asyncio.CancelledError:
-                if process is not None:
-                    await self._kill_process_group(process)
-                raise
+            if process is not None:
+                await self._kill_process_group(process)
+            raise
         except Exception:
-                if process is not None:
-                    await self._kill_process_group(process)
-                return AttemptResult.infrastructure_failure(
-                    stage="process_start",
-                    evaluation_started=False,
-                    runtime_identity=runtime_identity,
-                )
+            if process is not None:
+                await self._kill_process_group(process)
+            return AttemptResult.infrastructure_failure(
+                stage="process_start",
+                evaluation_started=False,
+                runtime_identity=runtime_identity,
+            )
 
         output = stdout.decode("utf-8", errors="replace")
         self._retain_stderr_diagnostic(workspace, stderr, env)
         if self.security_policy is None:
-                evaluation_started = "[DTAP_STATUS] phase=running" in output
-                try:
-                    judge_path = find_single_judge_result(workspace.output_root)
-                except VerdictError:
-                    return AttemptResult.infrastructure_failure(
-                        stage="judge_result",
-                        evaluation_started=evaluation_started,
-                        runtime_identity=runtime_identity,
-                    )
-                try:
-                    judge = json.loads(judge_path.read_text(encoding="utf-8"))
-                except Exception:
-                    return AttemptResult.infrastructure_failure(
-                        stage="judge_result",
-                        evaluation_started=evaluation_started,
-                        runtime_identity=runtime_identity,
-                    )
-                attack_success = judge.get("attack_success") if isinstance(judge, dict) else None
-                if not isinstance(attack_success, bool):
-                    return AttemptResult.infrastructure_failure(
-                        stage="judge_verdict",
-                        evaluation_started=evaluation_started,
-                        runtime_identity=runtime_identity,
-                    )
-                task_success = judge.get("task_success")
-                return AttemptResult(
-                    evaluation_started=evaluation_started,
-                    attack_success=attack_success,
-                    task_success=task_success if isinstance(task_success, bool) else None,
-                    judge_result=judge,
-                    runtime_identity=runtime_identity,
-                    runtime_destroyed=True,
-                )
-
-        started_path = workspace.output_root / ".m4-started"
-        try:
-            started_info = started_path.lstat()
-            evaluation_started = (
-                not started_path.is_symlink()
-                and started_info.st_size == 1
-                and started_path.read_bytes() == b"1"
-            )
-        except OSError:
-            evaluation_started = False
-        verdict_path = workspace.output_root / ".m4-verdict.json"
-        try:
-                assert self.verdict_reader is not None
-                verdict = self.verdict_reader.read(
-                    verdict_path,
-                    result_root=workspace.output_root,
-                )
-        except (VerdictError, OSError):
+            evaluation_started = "[DTAP_STATUS] phase=running" in output
+            try:
+                judge_path = find_single_judge_result(workspace.output_root)
+            except VerdictError:
                 return AttemptResult.infrastructure_failure(
                     stage="judge_result",
                     evaluation_started=evaluation_started,
                     runtime_identity=runtime_identity,
                 )
+            try:
+                judge = json.loads(judge_path.read_text(encoding="utf-8"))
+            except Exception:
+                return AttemptResult.infrastructure_failure(
+                    stage="judge_result",
+                    evaluation_started=evaluation_started,
+                    runtime_identity=runtime_identity,
+                )
+            attack_success = judge.get("attack_success") if isinstance(judge, dict) else None
+            if not isinstance(attack_success, bool):
+                return AttemptResult.infrastructure_failure(
+                    stage="judge_verdict",
+                    evaluation_started=evaluation_started,
+                    runtime_identity=runtime_identity,
+                )
+            task_success = judge.get("task_success")
+            return AttemptResult(
+                evaluation_started=evaluation_started,
+                attack_success=attack_success,
+                task_success=task_success if isinstance(task_success, bool) else None,
+                judge_result=judge,
+                runtime_identity=runtime_identity,
+                runtime_destroyed=True,
+            )
+
+        started_path = workspace.output_root / ".m4-started"
+        try:
+            started_info = started_path.lstat()
+            evaluation_started = (
+                not started_path.is_symlink() and started_info.st_size == 1 and started_path.read_bytes() == b"1"
+            )
+        except OSError:
+            evaluation_started = False
+        verdict_path = workspace.output_root / ".m4-verdict.json"
+        try:
+            assert self.verdict_reader is not None
+            verdict = self.verdict_reader.read(
+                verdict_path,
+                result_root=workspace.output_root,
+            )
+        except (VerdictError, OSError):
+            return AttemptResult.infrastructure_failure(
+                stage="judge_result",
+                evaluation_started=evaluation_started,
+                runtime_identity=runtime_identity,
+            )
         return AttemptResult(
             evaluation_started=evaluation_started,
             attack_success=verdict.attack_success,

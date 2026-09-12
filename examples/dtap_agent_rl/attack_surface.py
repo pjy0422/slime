@@ -8,10 +8,12 @@ from typing import Any, Protocol
 from .episode import TaskSnapshot
 
 
-_LEGACY_GUEST_DIRECT_COMPOSE_PATHS = frozenset({
-    "dt_arena/envs/macos/docker-compose.yml",
-    "dt_arena/envs/windows/docker-compose.yml",
-})
+_LEGACY_GUEST_DIRECT_COMPOSE_PATHS = frozenset(
+    {
+        "dt_arena/envs/macos/docker-compose.yml",
+        "dt_arena/envs/windows/docker-compose.yml",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -67,13 +69,9 @@ class AttackSurface:
                 "tool_modes": list(self.tool_modes),
                 "skill_modes": list(self.skill_modes),
             },
-            "victim_tools": [
-                tool.to_dict(compact_description=compact_descriptions)
-                for tool in self.victim_tools
-            ],
+            "victim_tools": [tool.to_dict(compact_description=compact_descriptions) for tool in self.victim_tools],
             "environment_tools": [
-                tool.to_dict(compact_description=compact_descriptions)
-                for tool in self.environment_tools
+                tool.to_dict(compact_description=compact_descriptions) for tool in self.environment_tools
             ],
             # Names only; trusted filesystem paths are intentionally not exposed.
             "skill_targets": list(self.skill_targets),
@@ -82,13 +80,9 @@ class AttackSurface:
 
 
 class ToolCatalogProvider(Protocol):
-    async def list_victim_tools(
-        self, snapshot: TaskSnapshot
-    ) -> Mapping[str, Sequence[ToolSpec]]: ...
+    async def list_victim_tools(self, snapshot: TaskSnapshot) -> Mapping[str, Sequence[ToolSpec]]: ...
 
-    async def list_environment_tools(
-        self, snapshot: TaskSnapshot
-    ) -> Mapping[str, Sequence[ToolSpec]]: ...
+    async def list_environment_tools(self, snapshot: TaskSnapshot) -> Mapping[str, Sequence[ToolSpec]]: ...
 
 
 def _iter_raw_agent_servers(agent: Mapping[str, Any]):
@@ -194,9 +188,7 @@ async def build_attack_surface(
         catalog = await provider.list_environment_tools(snapshot)
         for server_name, allowed in _environment_server_rules(snapshot).items():
             for tool in catalog.get(server_name, ()):
-                if (
-                    allowed == "all" or tool.tool_name in allowed
-                ) and _is_verified_environment_tool(tool):
+                if (allowed == "all" or tool.tool_name in allowed) and _is_verified_environment_tool(tool):
                     environment_tools.append(tool)
 
     threat_model = getattr(snapshot.attack_config, "threat_model", None)
@@ -204,11 +196,12 @@ async def build_attack_surface(
     # have no available_injections block. Direct DTAP semantics still require a
     # jailbreak prompt. Infer that public contract from the threat model and
     # guest compose path, never from the private Attack.attack_turns example.
-    compose_path = str(
-        (snapshot.raw_config.get("Environment") or {}).get(
-            "docker_compose_path", ""
-        )
-    ).replace("\\", "/").strip("/").lower()
+    compose_path = (
+        str((snapshot.raw_config.get("Environment") or {}).get("docker_compose_path", ""))
+        .replace("\\", "/")
+        .strip("/")
+        .lower()
+    )
     legacy_guest_direct = (
         threat_model == "direct"
         and "RedTeamingAgent" not in snapshot.raw_config

@@ -2,11 +2,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from examples.dtap_agent_rl.attempt_runner import DtapAttemptRunner
 from examples.dtap_agent_rl.candidate_config import AttemptWorkspace
-from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 from examples.dtap_agent_rl.scheduler import AttemptScheduler
+from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 
 
 def _workspace(tmp_path: Path) -> AttemptWorkspace:

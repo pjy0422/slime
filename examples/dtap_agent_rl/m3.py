@@ -14,14 +14,9 @@ from .episode_runtime import EpisodeRuntimeState
 from .harness import DTAPClaudeCodeHarness
 from .runtime import registered_episode
 from .service import EpisodeRegistry, build_episode_view
-from .submission import (
-    EpisodeSubmissionRegistry,
-    SubmissionCoordinator,
-    registered_submission,
-)
+from .submission import EpisodeSubmissionRegistry, SubmissionCoordinator, registered_submission
 from .task_projection import ProjectionPolicy
 from .validation import ValidationContext
-
 
 TERMINAL_PROMPT = """
 H counts victim executions during this single policy session. INVALID_SUBMISSION
@@ -53,12 +48,15 @@ async def run_m3_episode(
     prompt: str,
     workdir: str,
     time_budget_sec: int,
-    projection_policy: ProjectionPolicy = ProjectionPolicy(),
+    projection_policy: ProjectionPolicy | None = None,
     harness: Any = None,
     candidate_validator: Any = None,
     cleanup_attempts: bool = True,
 ) -> M3EpisodeResult:
     """Keep one policy context alive for up to H victim executions."""
+
+    if projection_policy is None:
+        projection_policy = ProjectionPolicy()
 
     snapshot.assert_config_unchanged()
     view = await build_episode_view(

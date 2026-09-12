@@ -67,8 +67,12 @@ def _bool_db(value: Any) -> int | None:
 def _row(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     for key in (
-        "attack_success", "evaluation_completed", "placement_applicable",
-        "placement_covered", "h1_attack_success", "h2_attack_success",
+        "attack_success",
+        "evaluation_completed",
+        "placement_applicable",
+        "placement_covered",
+        "h1_attack_success",
+        "h2_attack_success",
     ):
         if item.get(key) is not None:
             item[key] = bool(item[key])
@@ -101,17 +105,11 @@ class TrajectoryDB:
     def init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
-            existing = {
-                row["name"] for row in conn.execute("PRAGMA table_info(episodes)")
-            }
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info(episodes)")}
             for column, sql_type in _OPTIONAL_COLUMNS.items():
                 if column not in existing:
-                    conn.execute(
-                        f"ALTER TABLE episodes ADD COLUMN {column} {sql_type}"
-                    )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_episodes_task ON episodes(task_id)"
-            )
+                    conn.execute(f"ALTER TABLE episodes ADD COLUMN {column} {sql_type}")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_episodes_task ON episodes(task_id)")
 
     def upsert_episode(self, item: dict[str, Any]) -> None:
         values = {
@@ -123,12 +121,10 @@ class TrajectoryDB:
             "h1_attack_success": _bool_db(item.get("h1_attack_success")),
             "h2_attack_success": _bool_db(item.get("h2_attack_success")),
             "policy_usage_json": (
-                json.dumps(item["policy_usage"], sort_keys=True)
-                if item.get("policy_usage") else None
+                json.dumps(item["policy_usage"], sort_keys=True) if item.get("policy_usage") else None
             ),
             "victim_usage_json": (
-                json.dumps(item["victim_usage"], sort_keys=True)
-                if item.get("victim_usage") else None
+                json.dumps(item["victim_usage"], sort_keys=True) if item.get("victim_usage") else None
             ),
         }
         columns = [
@@ -186,7 +182,12 @@ class TrajectoryDB:
     ) -> dict[str, Any]:
         cohort_clauses: list[str] = []
         cohort_params: list[Any] = []
-        for column, value in (("run_name", run_name), ("domain", domain), ("threat_model", threat_model), ("status", status)):
+        for column, value in (
+            ("run_name", run_name),
+            ("domain", domain),
+            ("threat_model", threat_model),
+            ("status", status),
+        ):
             if value:
                 cohort_clauses.append(f"{column} = ?")
                 cohort_params.append(value)
@@ -206,9 +207,7 @@ class TrajectoryDB:
         if attack_evaluated is not None:
             clauses.append("attack_success IS NOT NULL" if attack_evaluated else "attack_success IS NULL")
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        cohort_where = (
-            f" WHERE {' AND '.join(cohort_clauses)}" if cohort_clauses else ""
-        )
+        cohort_where = f" WHERE {' AND '.join(cohort_clauses)}" if cohort_clauses else ""
         limit = max(1, min(int(limit), 500))
         offset = max(0, int(offset))
         with self.connect() as conn:
@@ -255,7 +254,9 @@ class TrajectoryDB:
 
     def facets(self) -> dict[str, Any]:
         def counts(conn: sqlite3.Connection, column: str) -> list[dict[str, Any]]:
-            rows = conn.execute(f"SELECT {column} AS value, COUNT(*) AS count FROM episodes WHERE {column} IS NOT NULL GROUP BY {column} ORDER BY {column}").fetchall()
+            rows = conn.execute(
+                f"SELECT {column} AS value, COUNT(*) AS count FROM episodes WHERE {column} IS NOT NULL GROUP BY {column} ORDER BY {column}"
+            ).fetchall()
             return [{"value": row["value"], "count": row["count"]} for row in rows]
 
         with self.connect() as conn:

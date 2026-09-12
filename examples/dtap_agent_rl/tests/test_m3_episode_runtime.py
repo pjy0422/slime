@@ -1,10 +1,5 @@
 import pytest
-
-from examples.dtap_agent_rl.episode_runtime import (
-    EpisodeRuntimeState,
-    EpisodeStatus,
-    EpisodeTerminalError,
-)
+from examples.dtap_agent_rl.episode_runtime import EpisodeRuntimeState, EpisodeStatus, EpisodeTerminalError
 
 
 def test_new_episode_is_active_with_full_h_budget():

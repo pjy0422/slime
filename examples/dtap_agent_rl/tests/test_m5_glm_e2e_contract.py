@@ -1,11 +1,12 @@
 import inspect
 import os
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
-
+from examples.dtap_agent_rl.feedback import FeedbackMode
 from examples.dtap_agent_rl.scripts import smoke_m5_glm_e2e
 from examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e import (
     M6_PROMPT,
@@ -13,11 +14,10 @@ from examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e import (
     PROMPT,
     TOOLS,
     RecordingRunner,
-    _victim_artifacts_complete,
     _environment_step_count,
+    _victim_artifacts_complete,
     policy_prompt,
 )
-from examples.dtap_agent_rl.feedback import FeedbackMode
 
 
 def test_glm_e2e_prompt_requires_generation_without_shipping_a_plan():
@@ -54,18 +54,18 @@ def test_m6_glm_prompt_requires_owned_receipt_validation_before_submit():
     assert "single targeted repair is also invalid" in M6_PROMPT
     assert "stop retrying" in M6_PROMPT
     assert "omit that environment step from the final plan" in M6_PROMPT
-    assert M6_TOOLS - TOOLS == {
-        "mcp__dtap__apply_attack_step", "mcp__dtap__validate_placement"
-    }
+    assert M6_TOOLS - TOOLS == {"mcp__dtap__apply_attack_step", "mcp__dtap__validate_placement"}
 
 
 def test_m7_glm_prompt_explains_typed_feedback_only_when_enabled():
     disabled = policy_prompt(
-        m6_placement=True, max_submissions=2,
+        m6_placement=True,
+        max_submissions=2,
         feedback_mode=FeedbackMode.DISABLED,
     )
     enabled = policy_prompt(
-        m6_placement=True, max_submissions=2,
+        m6_placement=True,
+        max_submissions=2,
         feedback_mode=FeedbackMode.FINAL_DETERMINISTIC,
     )
     normalized = " ".join(enabled.split())
@@ -76,14 +76,28 @@ def test_m7_glm_prompt_explains_typed_feedback_only_when_enabled():
 
 
 def test_direct_plan_does_not_require_an_environment_placement_receipt():
-    assert _environment_step_count([{
-        "turn_id": 1,
-        "attack_steps": [{"type": "prompt", "mode": "suffix", "content": "x"}],
-    }]) == 0
-    assert _environment_step_count([{
-        "turn_id": 1,
-        "attack_steps": [{"type": "environment", "kwargs": {"message": "x"}}],
-    }]) == 1
+    assert (
+        _environment_step_count(
+            [
+                {
+                    "turn_id": 1,
+                    "attack_steps": [{"type": "prompt", "mode": "suffix", "content": "x"}],
+                }
+            ]
+        )
+        == 0
+    )
+    assert (
+        _environment_step_count(
+            [
+                {
+                    "turn_id": 1,
+                    "attack_steps": [{"type": "environment", "kwargs": {"message": "x"}}],
+                }
+            ]
+        )
+        == 1
+    )
 
 
 def test_guest_disk_paths_are_explicitly_allowlisted_for_vm_runs():
@@ -124,7 +138,10 @@ def test_glm_smoke_has_opt_in_viewer_artifact_export():
     assert "max_submissions=args.max_submissions" in source
     assert '"--feedback-mode"' in source
     assert "feedback_builder=feedback_builder" in source
-    assert "digest_timeout_seconds=2 * args.digestor_timeout + 1.0" in source
+    assert re.search(
+        r"digest_timeout_seconds\s*=\s*2\s*\*\s*args\.digestor_timeout\s*\+\s*1\.0",
+        source,
+    )
     assert '"digestor_usage"' in source
 
 
@@ -153,10 +170,12 @@ async def test_recording_runner_exports_submitted_config_and_victim_trace(tmp_pa
     artifacts = tmp_path / "artifacts"
     runner = RecordingRunner(Delegate(), artifacts_dir=artifacts)
 
-    result = await runner.run(SimpleNamespace(
-        config_path=config_path,
-        output_root=output_root,
-    ))
+    result = await runner.run(
+        SimpleNamespace(
+            config_path=config_path,
+            output_root=output_root,
+        )
+    )
 
     assert result == "receipt"
     assert runner.exported_victim_traces == 1
@@ -176,9 +195,7 @@ async def test_recording_runner_retains_each_h_submission(tmp_path):
         async def run(self, workspace):
             output = workspace.output_root / "judge_result.json"
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(
-                '{"attack_success":' + ("true" if workspace.attempt_index == 2 else "false") + '}\n'
-            )
+            output.write_text('{"attack_success":' + ("true" if workspace.attempt_index == 2 else "false") + "}\n")
             return workspace.attempt_index
 
     artifacts = tmp_path / "artifacts"
@@ -190,11 +207,13 @@ async def test_recording_runner_retains_each_h_submission(tmp_path):
         config.write_text(
             f"Attack:\n  attack_turns:\n    - attack_steps:\n        - type: prompt\n          content: attempt-{index}\n"
         )
-        await runner.run(SimpleNamespace(
-            attempt_index=index,
-            config_path=config,
-            output_root=tmp_path / f"results-{index}",
-        ))
+        await runner.run(
+            SimpleNamespace(
+                attempt_index=index,
+                config_path=config,
+                output_root=tmp_path / f"results-{index}",
+            )
+        )
 
     assert len(runner.plans) == 2
     assert "attempt-1" in (artifacts / "attempts/attempt-0001/submitted-config.yaml").read_text()
@@ -214,17 +233,18 @@ async def test_recording_runner_retains_partial_artifacts_when_delegate_fails(tm
 
     class Delegate:
         async def run(self, workspace):
-            (workspace.output_root / "judge_result.json").write_text(
-                '{"error":"judge unavailable"}\n'
-            )
+            (workspace.output_root / "judge_result.json").write_text('{"error":"judge unavailable"}\n')
             raise RuntimeError("victim failed")
 
     artifacts = tmp_path / "artifacts"
     runner = RecordingRunner(Delegate(), artifacts_dir=artifacts)
     with pytest.raises(RuntimeError, match="victim failed"):
-        await runner.run(SimpleNamespace(
-            config_path=config_path, output_root=output_root,
-        ))
+        await runner.run(
+            SimpleNamespace(
+                config_path=config_path,
+                output_root=output_root,
+            )
+        )
 
     assert (artifacts / "submitted-config.yaml").is_file()
     assert (artifacts / "victim-mcp-events.jsonl").is_file()
@@ -266,10 +286,18 @@ def test_real_glm_authored_m6_episode_optional():
     if not task_dir or not dtap_root:
         pytest.skip("set DTAP_M6_GLM_TASK_DIR and DTAP_M6_DTAP_ROOT for the real GLM gate")
     command = [
-        sys.executable, "-m", "examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e",
-        "--m6-placement", "--task-dir", task_dir, "--dtap-root", dtap_root,
-        "--python", os.environ.get("DTAP_M6_DTAP_PYTHON", sys.executable),
-        "--timeout", os.environ.get("DTAP_M6_TIMEOUT", "1800"),
+        sys.executable,
+        "-m",
+        "examples.dtap_agent_rl.scripts.smoke_m5_glm_e2e",
+        "--m6-placement",
+        "--task-dir",
+        task_dir,
+        "--dtap-root",
+        dtap_root,
+        "--python",
+        os.environ.get("DTAP_M6_DTAP_PYTHON", sys.executable),
+        "--timeout",
+        os.environ.get("DTAP_M6_TIMEOUT", "1800"),
     ]
     completed = subprocess.run(command, text=True, capture_output=True, timeout=1860)
     assert completed.returncode == 0, completed.stderr[-4000:]

@@ -1,10 +1,9 @@
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-import pytest
-
 import examples.dtap_agent_rl.generate as generate_module
-from examples.dtap_agent_rl.episode_runtime import EpisodeRuntimeState, EpisodeStatus
+import pytest
+from examples.dtap_agent_rl.episode_runtime import EpisodeRuntimeState
 from examples.dtap_agent_rl.generate import M3GenerateRuntime
 from examples.dtap_agent_rl.service import EpisodeRegistry
 from examples.dtap_agent_rl.submission import EpisodeSubmissionRegistry
@@ -68,9 +67,7 @@ async def test_generate_uses_one_real_slime_adapter_session(monkeypatch):
     monkeypatch.setattr(
         generate_module,
         "run_m3_episode",
-        lambda **_kwargs: _async_result(SimpleNamespace(
-            runtime=state, harness_return_code=0
-        )),
+        lambda **_kwargs: _async_result(SimpleNamespace(runtime=state, harness_return_code=0)),
     )
     sample = Sample()
 
@@ -94,9 +91,7 @@ async def test_generate_marks_infrastructure_trajectory_for_removal(monkeypatch)
     monkeypatch.setattr(
         generate_module,
         "run_m3_episode",
-        lambda **_kwargs: _async_result(SimpleNamespace(
-            runtime=state, harness_return_code=1
-        )),
+        lambda **_kwargs: _async_result(SimpleNamespace(runtime=state, harness_return_code=1)),
     )
     sample = Sample()
 

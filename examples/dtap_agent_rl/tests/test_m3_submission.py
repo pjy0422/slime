@@ -11,11 +11,7 @@ from examples.dtap_agent_rl.submission import SubmissionCoordinator
 from examples.dtap_agent_rl.tests.test_m2_validation import indirect
 
 
-VALID_PLAN = {
-    "steps": [
-        {"type": "prompt", "turn_id": 1, "mode": "suffix", "content": "try this"}
-    ]
-}
+VALID_PLAN = {"steps": [{"type": "prompt", "turn_id": 1, "mode": "suffix", "content": "try this"}]}
 
 
 class ScriptedRunner:
@@ -61,9 +57,7 @@ def _coordinator(tmp_path, runner, h=3):
         source_task_dir=_source_task(tmp_path),
         episode_root=tmp_path / "attempts" / "episode-1",
         runner=runner,
-        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(
-            canonical_steps=expected_steps
-        ),
+        candidate_validator=lambda _config, *, expected_steps: SimpleNamespace(canonical_steps=expected_steps),
     )
 
 
@@ -79,11 +73,13 @@ async def test_invalid_plan_is_rejected_without_runner_or_h_consumption(tmp_path
         "terminal": False,
         "submissions_used": 0,
         "remaining_submissions": 2,
-        "errors": [{
-            "code": "UNSUPPORTED_IN_M2",
-            "path": "steps[0].type",
-            "message": "a2a injection is not supported in M2",
-        }],
+        "errors": [
+            {
+                "code": "UNSUPPORTED_IN_M2",
+                "path": "steps[0].type",
+                "message": "a2a injection is not supported in M2",
+            }
+        ],
     }
     assert runner.calls == []
 
@@ -123,10 +119,12 @@ async def test_yaml_gate_failure_never_calls_runner_or_consumes_h(tmp_path, monk
     receipt = await coordinator.submit(VALID_PLAN)
 
     assert receipt["accepted"] is False
-    assert receipt["errors"] == [{
-        "code": "YAML_SCHEMA_MISMATCH",
-        "message": "candidate config failed validation",
-    }]
+    assert receipt["errors"] == [
+        {
+            "code": "YAML_SCHEMA_MISMATCH",
+            "message": "candidate config failed validation",
+        }
+    ]
     assert coordinator.runtime.submissions_used == 0
     assert runner.calls == []
 
@@ -172,10 +170,12 @@ async def test_success_is_immediate_terminal_and_reward_one(tmp_path):
 
 @pytest.mark.asyncio
 async def test_hth_failure_is_terminal_with_reward_zero(tmp_path):
-    runner = ScriptedRunner([
-        AttemptResult(evaluation_started=True, attack_success=False),
-        AttemptResult(evaluation_started=True, attack_success=False),
-    ])
+    runner = ScriptedRunner(
+        [
+            AttemptResult(evaluation_started=True, attack_success=False),
+            AttemptResult(evaluation_started=True, attack_success=False),
+        ]
+    )
     coordinator = _coordinator(tmp_path, runner, h=2)
 
     first = await coordinator.submit(VALID_PLAN)
@@ -195,9 +195,7 @@ async def test_hth_failure_is_terminal_with_reward_zero(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pre_start_infrastructure_failure_does_not_become_reward_zero(tmp_path):
-    runner = ScriptedRunner([
-        AttemptResult.infrastructure_failure(stage="docker_start", evaluation_started=False)
-    ])
+    runner = ScriptedRunner([AttemptResult.infrastructure_failure(stage="docker_start", evaluation_started=False)])
     coordinator = _coordinator(tmp_path, runner, h=2)
 
     receipt = await coordinator.submit(VALID_PLAN)
@@ -212,9 +210,7 @@ async def test_pre_start_infrastructure_failure_does_not_become_reward_zero(tmp_
 
 @pytest.mark.asyncio
 async def test_post_start_infrastructure_failure_records_started_h_but_removes_sample(tmp_path):
-    runner = ScriptedRunner([
-        AttemptResult.infrastructure_failure(stage="judge", evaluation_started=True)
-    ])
+    runner = ScriptedRunner([AttemptResult.infrastructure_failure(stage="judge", evaluation_started=True)])
     coordinator = _coordinator(tmp_path, runner, h=2)
 
     receipt = await coordinator.submit(VALID_PLAN)
@@ -228,16 +224,18 @@ async def test_post_start_infrastructure_failure_records_started_h_but_removes_s
 
 @pytest.mark.asyncio
 async def test_policy_receipt_never_leaks_trusted_runner_data(tmp_path):
-    runner = ScriptedRunner([
-        AttemptResult(
-            evaluation_started=True,
-            attack_success=False,
-            task_success=True,
-            judge_result={"rationale": "SECRET", "attack_success": False},
-            victim_output="SECRET VICTIM OUTPUT",
-            trajectory_path=Path("/trusted/trajectory.json"),
-        )
-    ])
+    runner = ScriptedRunner(
+        [
+            AttemptResult(
+                evaluation_started=True,
+                attack_success=False,
+                task_success=True,
+                judge_result={"rationale": "SECRET", "attack_success": False},
+                victim_output="SECRET VICTIM OUTPUT",
+                trajectory_path=Path("/trusted/trajectory.json"),
+            )
+        ]
+    )
     coordinator = _coordinator(tmp_path, runner, h=2)
 
     receipt = await coordinator.submit(VALID_PLAN)
@@ -253,9 +251,7 @@ async def test_policy_receipt_never_leaks_trusted_runner_data(tmp_path):
 @pytest.mark.asyncio
 async def test_episode_lock_prevents_two_parallel_calls_from_spending_same_h(tmp_path):
     pause = asyncio.Event()
-    runner = ScriptedRunner(
-        [AttemptResult(evaluation_started=True, attack_success=False)], pause=pause
-    )
+    runner = ScriptedRunner([AttemptResult(evaluation_started=True, attack_success=False)], pause=pause)
     coordinator = _coordinator(tmp_path, runner, h=1)
 
     first = asyncio.create_task(coordinator.submit(VALID_PLAN))
@@ -266,17 +262,20 @@ async def test_episode_lock_prevents_two_parallel_calls_from_spending_same_h(tmp
     receipts = await asyncio.gather(first, second)
 
     assert sum(receipt["accepted"] is True for receipt in receipts) == 1
-    assert sum(receipt["errors"][0]["code"] == "EPISODE_TERMINAL"
-               for receipt in receipts if not receipt["accepted"]) == 1
+    assert (
+        sum(receipt["errors"][0]["code"] == "EPISODE_TERMINAL" for receipt in receipts if not receipt["accepted"]) == 1
+    )
     assert len(runner.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_each_accepted_submission_gets_a_fresh_attempt_directory(tmp_path):
-    runner = ScriptedRunner([
-        AttemptResult(evaluation_started=True, attack_success=False),
-        AttemptResult(evaluation_started=True, attack_success=True),
-    ])
+    runner = ScriptedRunner(
+        [
+            AttemptResult(evaluation_started=True, attack_success=False),
+            AttemptResult(evaluation_started=True, attack_success=True),
+        ]
+    )
     coordinator = _coordinator(tmp_path, runner, h=2)
 
     await coordinator.submit(VALID_PLAN)

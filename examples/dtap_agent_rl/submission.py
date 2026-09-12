@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import copy
 import threading
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
-from .audit import AuditEvent
 from .attempt_runner import AttemptResult
+from .audit import AuditEvent
 from .candidate_config import CandidateConfigError, materialize_attempt_dir
 from .episode_runtime import EpisodeRuntimeState, EpisodeStatus, EpisodeTerminalError
 from .integrity import BenchmarkManifest, IntegrityError
@@ -65,7 +66,7 @@ class SubmissionPlan:
     steps: tuple[Any, ...]
 
     @classmethod
-    def from_policy(cls, raw: Any) -> "SubmissionPlan":
+    def from_policy(cls, raw: Any) -> SubmissionPlan:
         if not isinstance(raw, Mapping):
             raise SubmissionPlanError("INVALID_SHAPE", "plan must be an object", "$")
         unknown = set(raw) - {"steps"}
@@ -167,11 +168,7 @@ class SubmissionCoordinator:
         assert self.policy_contract is not None
         self._signal_terminal()
         if code == "EVALUATION_UNAVAILABLE":
-            event = (
-                "security_abort"
-                if self.runtime.status is EpisodeStatus.SECURITY_ABORT
-                else "infra_abort"
-            )
+            event = "security_abort" if self.runtime.status is EpisodeStatus.SECURITY_ABORT else "infra_abort"
             self._audit(event, self.runtime.infrastructure_stage)
         else:
             self._audit("submit_rejected", code)
@@ -202,11 +199,7 @@ class SubmissionCoordinator:
         async with self._submission_lock:
             if self.runtime.terminal:
                 if self.policy_contract is not None:
-                    code = (
-                        "POLICY_LIMIT"
-                        if self.runtime.status is EpisodeStatus.POLICY_LIMIT
-                        else "EPISODE_TERMINAL"
-                    )
+                    code = "POLICY_LIMIT" if self.runtime.status is EpisodeStatus.POLICY_LIMIT else "EPISODE_TERMINAL"
                     return self._m4_reject(code)
                 return self._terminal_rejection()
             if self.security_policy is not None:
@@ -217,45 +210,34 @@ class SubmissionCoordinator:
                     return self._m4_reject("POLICY_LIMIT")
                 except PolicyInputLimitError:
                     self._finish_policy_rejection()
-                    return self._m4_reject(
-                        "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
-                    )
+                    return self._m4_reject("POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION")
             try:
                 parsed_plan = SubmissionPlan.from_policy(plan)
             except SubmissionPlanError as exc:
                 if self.policy_contract is not None:
                     self._finish_policy_rejection()
-                    return self._m4_reject(
-                        "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
-                    )
+                    return self._m4_reject("POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION")
                 return self._reject(exc.code, exc.safe_message, path=exc.path)
 
             validated = validate_attack_plan(parsed_plan.steps, self.validation_context)
             if not validated.valid:
                 if self.policy_contract is not None:
                     self._finish_policy_rejection()
-                    return self._m4_reject(
-                        "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
-                    )
+                    return self._m4_reject("POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION")
                 return {
                     "accepted": False,
                     **self._state_fields(),
                     "errors": [error.to_dict() for error in validated.errors],
                 }
 
-            if (
-                self.placement_coordinator is not None
-                and self.placement_coordinator.unverified_environment_indices(
-                    validated.steps
-                )
+            if self.placement_coordinator is not None and self.placement_coordinator.unverified_environment_indices(
+                validated.steps
             ):
                 # M6 final plans may contain only environment actions that this
                 # episode applied and then positively read back. The generic
                 # response intentionally reveals no environment oracle data.
                 self._finish_policy_rejection()
-                return self._m4_reject(
-                    "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
-                )
+                return self._m4_reject("POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION")
 
             attempt_index = self.runtime.victim_runs_started + 1
             try:
@@ -282,12 +264,8 @@ class SubmissionCoordinator:
                     return self._reject("INFRA_ERROR", "evaluation unavailable")
                 if self.policy_contract is not None:
                     self._finish_policy_rejection()
-                    return self._m4_reject(
-                        "POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION"
-                    )
-                return self._reject(
-                    "YAML_SCHEMA_MISMATCH", "candidate config failed validation"
-                )
+                    return self._m4_reject("POLICY_LIMIT" if self.runtime.terminal else "INVALID_SUBMISSION")
+                return self._reject("YAML_SCHEMA_MISMATCH", "candidate config failed validation")
             except Exception:
                 self.runtime.record_infrastructure_failure(stage="materialization")
                 if self.policy_contract is not None:
@@ -315,9 +293,7 @@ class SubmissionCoordinator:
                 self._audit("evaluation_started")
 
             if result.is_infrastructure_failure or started_index is None:
-                self.runtime.record_infrastructure_failure(
-                    stage=result.infrastructure_stage or "evaluation_start"
-                )
+                self.runtime.record_infrastructure_failure(stage=result.infrastructure_stage or "evaluation_start")
                 if self.policy_contract is not None:
                     return self._m4_reject("EVALUATION_UNAVAILABLE")
                 return self._reject("INFRA_ERROR", "evaluation unavailable")
@@ -349,17 +325,11 @@ class SubmissionCoordinator:
                     feedback = await self.feedback_builder.build(
                         attempt_root=workspace.output_root,
                         submitted_steps=validated.steps,
-                        submitted_plan={
-                            "steps": [step.to_dict() for step in validated.steps]
-                        },
+                        submitted_plan={"steps": [step.to_dict() for step in validated.steps]},
                         redactions=(
                             str(self.source_task_dir.resolve()),
                             str(self.episode_root.resolve()),
-                            *(
-                                self.policy_contract.guard.secrets
-                                if self.policy_contract is not None
-                                else ()
-                            ),
+                            *(self.policy_contract.guard.secrets if self.policy_contract is not None else ()),
                         ),
                     )
                     if feedback is not None:

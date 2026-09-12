@@ -74,9 +74,7 @@ async def test_runner_retains_bounded_redacted_stderr_for_infrastructure_failure
     workspace = _workspace(tmp_path)
 
     result = await runner.run(workspace)
-    diagnostic = (workspace.output_root / ".dtap-stderr.log").read_text(
-        encoding="utf-8"
-    )
+    diagnostic = (workspace.output_root / ".dtap-stderr.log").read_text(encoding="utf-8")
 
     assert result.infrastructure_stage == "judge_result"
     assert "do-not-retain-this-value" not in diagnostic
@@ -86,9 +84,7 @@ async def test_runner_retains_bounded_redacted_stderr_for_infrastructure_failure
 @pytest.mark.asyncio
 async def test_runner_timeout_kills_process_and_returns_no_reward_verdict(tmp_path):
     executable = _executable(tmp_path, "sleep 10\n")
-    runner = DtapAttemptRunner(
-        python_executable=str(executable), model="fake", timeout_seconds=0.01
-    )
+    runner = DtapAttemptRunner(python_executable=str(executable), model="fake", timeout_seconds=0.01)
 
     result = await runner.run(_workspace(tmp_path))
 

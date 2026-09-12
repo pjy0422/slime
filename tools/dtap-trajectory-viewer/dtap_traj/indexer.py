@@ -55,32 +55,34 @@ def normalize_usage(
 ) -> dict[str, Any] | None:
     if not isinstance(usage, dict):
         return None
-    input_tokens = _number(
-        usage.get("input_tokens", usage.get("inputTokens", usage.get("input")))
-    )
-    output_tokens = _number(
-        usage.get("output_tokens", usage.get("outputTokens", usage.get("output")))
-    )
+    input_tokens = _number(usage.get("input_tokens", usage.get("inputTokens", usage.get("input"))))
+    output_tokens = _number(usage.get("output_tokens", usage.get("outputTokens", usage.get("output"))))
     if input_tokens is None and output_tokens is None:
         return None
-    cache_read = _number(
-        usage.get(
-            "cache_read_input_tokens",
+    cache_read = (
+        _number(
             usage.get(
-                "cacheReadInputTokens",
-                usage.get("cacheRead", usage.get("cache_read_tokens")),
-            ),
+                "cache_read_input_tokens",
+                usage.get(
+                    "cacheReadInputTokens",
+                    usage.get("cacheRead", usage.get("cache_read_tokens")),
+                ),
+            )
         )
-    ) or 0
-    cache_write = _number(
-        usage.get(
-            "cache_creation_input_tokens",
+        or 0
+    )
+    cache_write = (
+        _number(
             usage.get(
-                "cacheCreationInputTokens",
-                usage.get("cacheWrite", usage.get("cache_write_tokens")),
-            ),
+                "cache_creation_input_tokens",
+                usage.get(
+                    "cacheCreationInputTokens",
+                    usage.get("cacheWrite", usage.get("cache_write_tokens")),
+                ),
+            )
         )
-    ) or 0
+        or 0
+    )
     exact_reasoning = _number(
         usage.get(
             "reasoning_tokens",
@@ -100,11 +102,7 @@ def normalize_usage(
     prompt_tokens = (input_tokens or 0) + cache_read + cache_write
     output_tokens = output_tokens or 0
     with_reasoning = prompt_tokens + output_tokens
-    without_reasoning = (
-        prompt_tokens + max(0, output_tokens - reasoning)
-        if reasoning is not None
-        else None
-    )
+    without_reasoning = prompt_tokens + max(0, output_tokens - reasoning) if reasoning is not None else None
     return {
         "input_tokens": input_tokens or 0,
         "cache_read_tokens": cache_read,
@@ -134,10 +132,7 @@ def _policy_metrics(path: Path) -> tuple[int | None, dict[str, Any] | None]:
                     continue
                 if not isinstance(event, dict):
                     continue
-                if (
-                    event.get("type") == "system"
-                    and event.get("subtype") == "thinking_tokens"
-                ):
+                if event.get("type") == "system" and event.get("subtype") == "thinking_tokens":
                     delta = _number(event.get("estimated_tokens_delta"))
                     if delta is not None:
                         estimated_reasoning += delta
@@ -154,17 +149,13 @@ def _policy_metrics(path: Path) -> tuple[int | None, dict[str, Any] | None]:
                                 tool_call_ids.add(tool_call_id)
                             else:
                                 anonymous_tool_calls += 1
-                if event.get("type") == "result" and isinstance(
-                    event.get("usage"), dict
-                ):
+                if event.get("type") == "result" and isinstance(event.get("usage"), dict):
                     result_usage = event["usage"]
     except OSError:
         return None, None
     return len(tool_call_ids) + anonymous_tool_calls, normalize_usage(
         result_usage,
-        estimated_reasoning_tokens=(
-            estimated_reasoning if has_reasoning_estimate else None
-        ),
+        estimated_reasoning_tokens=(estimated_reasoning if has_reasoning_estimate else None),
     )
 
 
@@ -261,9 +252,7 @@ def _victim_trace_metadata(
         ),
         None,
     )
-    usage = _nested(value, "traj_info", "metadata", "token_usage") or _nested(
-        value, "traj_info", "metadata", "usage"
-    )
+    usage = _nested(value, "traj_info", "metadata", "token_usage") or _nested(value, "traj_info", "metadata", "usage")
     return task_id, model, normalize_usage(usage)
 
 
@@ -297,9 +286,7 @@ def _attempt_outcomes(path: Path, result: dict[str, Any]) -> tuple[int, bool | N
     return len(attempts), attempts.get(1), attempts.get(2)
 
 
-def _dataset_path(
-    merged: dict[str, Any], domain: Any, threat_model: Any
-) -> str | None:
+def _dataset_path(merged: dict[str, Any], domain: Any, threat_model: Any) -> str | None:
     """Use DTAP's dataset directory convention as the human-facing name."""
     task_dir = _text(merged.get("task_dir"))
     if task_dir:
@@ -380,12 +367,8 @@ def extract_episode_metadata(
     manifest = _json(path / "episode-manifest.json")
     merged = {**manifest, **result}
     run_summary, run_summary_path = _run_summary(path, root)
-    victim_task_id, victim_trace_model, victim_usage = _victim_trace_metadata(
-        path / "victim-trajectory.json"
-    )
-    attempt_count, h1_attack_success, h2_attack_success = _attempt_outcomes(
-        path, result
-    )
+    victim_task_id, victim_trace_model, victim_usage = _victim_trace_metadata(path / "victim-trajectory.json")
+    attempt_count, h1_attack_success, h2_attack_success = _attempt_outcomes(path, result)
 
     rel_parts = relative.parts
     domain = merged.get("domain")
@@ -406,26 +389,15 @@ def extract_episode_metadata(
     if len(rel_parts) >= 3:
         run_name = rel_parts[0]
 
-    task_id = (
-        _original_task_id(path)
-        or victim_task_id
-        or _text(merged.get("task_id"))
-    )
+    task_id = _original_task_id(path) or victim_task_id or _text(merged.get("task_id"))
     policy_model = (
         _text(merged.get("policy_model"))
         or _text(run_summary.get("policy_model"))
         or _policy_trace_model(path / "policy.jsonl")
     )
-    victim_model = (
-        _text(merged.get("victim_model"))
-        or _text(run_summary.get("victim_model"))
-        or victim_trace_model
-    )
+    victim_model = _text(merged.get("victim_model")) or _text(run_summary.get("victim_model")) or victim_trace_model
     dataset_path = _dataset_path(merged, domain, threat)
-    policy_events, policy_usage = (
-        _policy_metrics(path / "policy.jsonl")
-        if include_event_counts else (None, None)
-    )
+    policy_events, policy_usage = _policy_metrics(path / "policy.jsonl") if include_event_counts else (None, None)
 
     return {
         "episode_id": episode_id,
@@ -473,15 +445,18 @@ def index_root(root: str | Path, db: TrajectoryDB) -> dict[str, Any]:
             and all(
                 existing.get(key) == item.get(key)
                 for key in (
-                    "task_id", "dataset_path", "policy_model", "victim_model",
-                    "attempt_count", "h1_attack_success", "h2_attack_success",
+                    "task_id",
+                    "dataset_path",
+                    "policy_model",
+                    "victim_model",
+                    "attempt_count",
+                    "h1_attack_success",
+                    "h2_attack_success",
                 )
             )
         ):
             continue
-        item["policy_events"], item["policy_usage"] = _policy_metrics(
-            episode_dir / "policy.jsonl"
-        )
+        item["policy_events"], item["policy_usage"] = _policy_metrics(episode_dir / "policy.jsonl")
         item["victim_events"] = _victim_count(episode_dir / "victim-trajectory.json")
         db.upsert_episode(item)
         updated += 1

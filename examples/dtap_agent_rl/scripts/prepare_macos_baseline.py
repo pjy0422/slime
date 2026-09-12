@@ -39,8 +39,7 @@ def normalize_data_root(path: Path) -> Path:
     if (resolved / VERSION / "data.qcow2").is_file():
         return resolved
     raise FileNotFoundError(
-        f"expected data.qcow2 at {resolved / 'data.qcow2'} or "
-        f"{resolved / VERSION / 'data.qcow2'}"
+        f"expected data.qcow2 at {resolved / 'data.qcow2'} or " f"{resolved / VERSION / 'data.qcow2'}"
     )
 
 
@@ -53,8 +52,15 @@ def _qemu_img(
     mount = f"{root}:/data" + (":ro" if read_only else "")
     return subprocess.run(
         [
-            "docker", "run", "--rm", "--entrypoint", "qemu-img",
-            "-v", mount, image, *arguments,
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "qemu-img",
+            "-v",
+            mount,
+            image,
+            *arguments,
         ],
         check=True,
         capture_output=True,
@@ -66,7 +72,9 @@ def snapshot_names(root: Path, image: str) -> set[str]:
     result = _qemu_img(
         image,
         root,
-        "snapshot", "-l", f"/data/{VERSION}/data.qcow2",
+        "snapshot",
+        "-l",
+        f"/data/{VERSION}/data.qcow2",
         read_only=True,
     )
     names: set[str] = set()
@@ -91,14 +99,15 @@ def prepare(source: Path, output: Path, image: str) -> Path:
             ready_root = None
         if ready_root and "booted" not in snapshot_names(ready_root, image):
             return ready_root
-        raise FileExistsError(
-            f"output exists but is not a prepared baseline: {output_root}"
-        )
+        raise FileExistsError(f"output exists but is not a prepared baseline: {output_root}")
 
     output_root.parent.mkdir(parents=True, exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(
-        prefix=f".{output_root.name}.tmp-", dir=output_root.parent,
-    ))
+    temp_root = Path(
+        tempfile.mkdtemp(
+            prefix=f".{output_root.name}.tmp-",
+            dir=output_root.parent,
+        )
+    )
     try:
         source_version = source_root / VERSION
         temp_version = temp_root / VERSION
@@ -111,11 +120,19 @@ def prepare(source: Path, output: Path, image: str) -> Path:
             shutil.copy2(path, temp_version / name)
 
         _qemu_img(
-            image, temp_root, "snapshot", "-a", "booted",
+            image,
+            temp_root,
+            "snapshot",
+            "-a",
+            "booted",
             f"/data/{VERSION}/data.qcow2",
         )
         _qemu_img(
-            image, temp_root, "snapshot", "-d", "booted",
+            image,
+            temp_root,
+            "snapshot",
+            "-d",
+            "booted",
             f"/data/{VERSION}/data.qcow2",
         )
         if snapshot_names(temp_root, image):
@@ -123,13 +140,18 @@ def prepare(source: Path, output: Path, image: str) -> Path:
 
         stat = (source_version / "data.qcow2").stat()
         (temp_root / "prepared-baseline.json").write_text(
-            json.dumps({
-                "schema": "dtap-macos-cold-boot-baseline",
-                "schema_version": 1,
-                "source_size": stat.st_size,
-                "source_mtime_ns": stat.st_mtime_ns,
-                "source_snapshot": "booted",
-            }, indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                {
+                    "schema": "dtap-macos-cold-boot-baseline",
+                    "schema_version": 1,
+                    "source_size": stat.st_size,
+                    "source_mtime_ns": stat.st_mtime_ns,
+                    "source_snapshot": "booted",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
         os.replace(temp_root, output_root)

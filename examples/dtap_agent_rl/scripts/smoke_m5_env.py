@@ -20,6 +20,7 @@ async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
     )
     from dt_arena.src.types.agent import AgentConfig
     from dt_arena.src.types.task import AttackConfig
+
     from utils import PROJECT_ROOT
     from utils.env_helpers import task_setup
     from utils.injection_helpers import (
@@ -27,10 +28,7 @@ async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
         get_env_injections_from_attack,
         get_required_injection_servers,
     )
-    from utils.injection_mcp_helpers import (
-        start_injection_mcp_servers,
-        wait_for_injection_mcp_ready,
-    )
+    from utils.injection_mcp_helpers import start_injection_mcp_servers, wait_for_injection_mcp_ready
     from utils.resource_manager import ResourceManager
     from utils.task_executor import TaskExecutor, get_task_environments
 
@@ -78,15 +76,10 @@ async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
         if injection_manager is None:
             raise RuntimeError("no injection MCP server was started")
         wait_for_injection_mcp_ready(injection_config, timeout=30)
-        urls = {
-            name: value["url"]
-            for name, value in injection_config["environment_servers"].items()
-        }
+        urls = {name: value["url"] for name, value in injection_config["environment_servers"].items()}
 
         docker = SubprocessDockerInspector.auto()
-        route_proofs = verify_started_routes(
-            PROJECT_ROOT, injection_manager, list(required), os.environ, docker
-        )
+        route_proofs = verify_started_routes(PROJECT_ROOT, injection_manager, list(required), os.environ, docker)
         results = await apply_environment_injections_async(injections, urls)
         placement_proofs = await verify_placement_batch(
             injections,
@@ -94,9 +87,7 @@ async def run(task_dir: Path, *, strict: bool) -> dict[str, Any]:
             os.environ,
             docker,
             strict=strict,
-            server_environments=build_readback_environments(
-                agent, injection_manager, list(required)
-            ),
+            server_environments=build_readback_environments(agent, injection_manager, list(required)),
         )
         return {
             "task": str(task_dir),

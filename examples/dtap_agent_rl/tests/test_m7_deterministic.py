@@ -2,10 +2,7 @@ import hashlib
 import json
 
 from examples.dtap_agent_rl.actions import ValidatedAttackStep
-from examples.dtap_agent_rl.feedback.deterministic import (
-    extract_deterministic_feedback,
-    parse_mcp_events,
-)
+from examples.dtap_agent_rl.feedback.deterministic import extract_deterministic_feedback, parse_mcp_events
 
 
 def _shape(value):
@@ -34,7 +31,9 @@ def test_parser_joins_status_in_started_order_and_marks_incomplete(tmp_path):
     )
     result = extract_deterministic_feedback((), parse_mcp_events(path))
     assert [(x.tool, x.status) for x in result.tool_sequence] == [
-        ("slack:one", "ok"), ("slack:two", "error"), ("slack:three", "incomplete")
+        ("slack:one", "ok"),
+        ("slack:two", "error"),
+        ("slack:three", "incomplete"),
     ]
     assert result.trace_complete is False
 
@@ -45,14 +44,24 @@ def test_slack_exact_hash_uses_logger_codepoint_length_and_separates_evidence(tm
         path,
         [
             {
-                "type": "tool.started", "call_id": "a", "server": "slack", "tool": "channels_history",
+                "type": "tool.started",
+                "call_id": "a",
+                "server": "slack",
+                "tool": "channels_history",
                 "arguments": {"workspace_id": _shape("W01"), "channel_name": _shape("한국어")},
             },
-            {"type": "tool.completed", "call_id": "a", "server": "slack", "tool": "channels_history", "is_error": False},
+            {
+                "type": "tool.completed",
+                "call_id": "a",
+                "server": "slack",
+                "tool": "channels_history",
+                "is_error": False,
+            },
         ],
     )
     step = ValidatedAttackStep(
-        type="environment", turn_id=1,
+        type="environment",
+        turn_id=1,
         injection_mcp_tool="slack-injection:inject_slack_message",
         kwargs={"workspace_id": "W01", "channel_name": "한국어", "message": "payload"},
     )
@@ -67,15 +76,29 @@ def test_slack_exact_hash_uses_logger_codepoint_length_and_separates_evidence(tm
 def test_failed_or_incomplete_locator_call_is_unknown_not_not_accessed(tmp_path):
     for suffix, completed in (("error", True), ("incomplete", None)):
         path = tmp_path / suffix
-        events = [{
-            "type": "tool.started", "call_id": "a", "server": "OS-filesystem", "tool": "read_file",
-            "arguments": {"filepath": _shape("/workspace/config.json")},
-        }]
+        events = [
+            {
+                "type": "tool.started",
+                "call_id": "a",
+                "server": "OS-filesystem",
+                "tool": "read_file",
+                "arguments": {"filepath": _shape("/workspace/config.json")},
+            }
+        ]
         if completed is not None:
-            events.append({"type": "tool.completed", "call_id": "a", "server": "OS-filesystem", "tool": "read_file", "is_error": completed})
+            events.append(
+                {
+                    "type": "tool.completed",
+                    "call_id": "a",
+                    "server": "OS-filesystem",
+                    "tool": "read_file",
+                    "is_error": completed,
+                }
+            )
         _write_events(path, events)
         step = ValidatedAttackStep(
-            type="environment", turn_id=1,
+            type="environment",
+            turn_id=1,
             injection_mcp_tool="os-filesystem-injection:inject_append",
             kwargs={"file_path": "/workspace/config.json", "content": "payload"},
         )
@@ -98,7 +121,14 @@ def test_absence_is_false_only_with_explicit_trace_completion(tmp_path):
 def test_duplicate_call_id_is_not_joined(tmp_path):
     path = tmp_path / "events"
     started = {"type": "tool.started", "call_id": "dup", "server": "a", "tool": "b", "arguments": {}}
-    _write_events(path, [started, started, {"type": "tool.completed", "call_id": "dup", "server": "a", "tool": "b", "is_error": False}])
+    _write_events(
+        path,
+        [
+            started,
+            started,
+            {"type": "tool.completed", "call_id": "dup", "server": "a", "tool": "b", "is_error": False},
+        ],
+    )
     assert parse_mcp_events(path).started == ()
 
 
@@ -125,26 +155,41 @@ def test_completion_marker_is_fail_closed_if_trace_is_corrupt_or_has_later_event
 
 def test_v2_observation_correlates_result_and_model_presentation(tmp_path):
     path = tmp_path / "events"
-    _write_events(path, [
-        {
-            "type": "tool.started", "call_id": "read-1", "server": "finance",
-            "tool": "browse_article", "arguments": {},
-        },
-        {
-            "type": "tool.completed", "call_id": "read-1", "server": "finance",
-            "tool": "browse_article", "is_error": False,
-        },
-        {
-            "type": "feedback.observed", "step_index": 0,
-            "call_ids": ["read-1"], "locator_targeted": True,
-            "access_call_status": "ok", "response_contains_injection": True,
-            "presented_to_model": True, "matched_tool": "finance:browse_article",
-            "match_basis": "message_correlation", "unknown_reasons": [],
-        },
-        {"type": "trace.completed"},
-    ])
+    _write_events(
+        path,
+        [
+            {
+                "type": "tool.started",
+                "call_id": "read-1",
+                "server": "finance",
+                "tool": "browse_article",
+                "arguments": {},
+            },
+            {
+                "type": "tool.completed",
+                "call_id": "read-1",
+                "server": "finance",
+                "tool": "browse_article",
+                "is_error": False,
+            },
+            {
+                "type": "feedback.observed",
+                "step_index": 0,
+                "call_ids": ["read-1"],
+                "locator_targeted": True,
+                "access_call_status": "ok",
+                "response_contains_injection": True,
+                "presented_to_model": True,
+                "matched_tool": "finance:browse_article",
+                "match_basis": "message_correlation",
+                "unknown_reasons": [],
+            },
+            {"type": "trace.completed"},
+        ],
+    )
     step = ValidatedAttackStep(
-        type="environment", turn_id=1,
+        type="environment",
+        turn_id=1,
         injection_mcp_tool="finance-injection:inject_article",
         kwargs={"title": "generated identity", "content": "payload"},
     )
@@ -163,7 +208,8 @@ def test_v2_observation_correlates_result_and_model_presentation(tmp_path):
 def test_v2_observation_rejects_duplicate_step_and_unknown_values(tmp_path):
     path = tmp_path / "events"
     observed = {
-        "type": "feedback.observed", "step_index": 0,
+        "type": "feedback.observed",
+        "step_index": 0,
         "response_contains_injection": True,
     }
     _write_events(path, [observed, observed, {"type": "trace.completed"}])
@@ -173,20 +219,35 @@ def test_v2_observation_rejects_duplicate_step_and_unknown_values(tmp_path):
 
 def test_domain_locator_precision_is_preserved_for_policy_feedback(tmp_path):
     path = tmp_path / "events"
-    _write_events(path, [
-        {"type": "tool.started", "call_id": "read-1", "server": "travel",
-         "tool": "query_flight", "arguments": {}},
-        {"type": "tool.completed", "call_id": "read-1", "server": "travel",
-         "tool": "query_flight", "is_error": False},
-        {"type": "feedback.observed", "step_index": 0,
-         "call_ids": ["read-1"], "locator_targeted": True,
-         "access_call_status": "ok", "response_contains_injection": True,
-         "presented_to_model": True, "matched_tool": "travel:query_flight",
-         "match_basis": "collection_locator", "unknown_reasons": []},
-        {"type": "trace.completed"},
-    ])
+    _write_events(
+        path,
+        [
+            {"type": "tool.started", "call_id": "read-1", "server": "travel", "tool": "query_flight", "arguments": {}},
+            {
+                "type": "tool.completed",
+                "call_id": "read-1",
+                "server": "travel",
+                "tool": "query_flight",
+                "is_error": False,
+            },
+            {
+                "type": "feedback.observed",
+                "step_index": 0,
+                "call_ids": ["read-1"],
+                "locator_targeted": True,
+                "access_call_status": "ok",
+                "response_contains_injection": True,
+                "presented_to_model": True,
+                "matched_tool": "travel:query_flight",
+                "match_basis": "collection_locator",
+                "unknown_reasons": [],
+            },
+            {"type": "trace.completed"},
+        ],
+    )
     step = ValidatedAttackStep(
-        type="environment", turn_id=1,
+        type="environment",
+        turn_id=1,
         injection_mcp_tool="travel-injection:inject_flight",
         kwargs={"flight_number": "DTAP-7"},
     )
@@ -201,7 +262,8 @@ def test_missing_v2_instrumentation_is_explicitly_unknown(tmp_path):
     path = tmp_path / "events"
     _write_events(path, [{"type": "trace.completed"}])
     step = ValidatedAttackStep(
-        type="environment", turn_id=1,
+        type="environment",
+        turn_id=1,
         injection_mcp_tool="finance-injection:inject_article",
         kwargs={"title": "generated identity", "content": "payload"},
     )
@@ -210,8 +272,11 @@ def test_missing_v2_instrumentation_is_explicitly_unknown(tmp_path):
     assert item.presentation_state == "unknown"
     assert item.unknown_reasons == ("adapter_unsupported",)
 
-    _write_events(path, [
-        {"type": "trace.completed"},
-        {"type": "tool.started", "call_id": "late", "server": "a", "tool": "b", "arguments": {}},
-    ])
+    _write_events(
+        path,
+        [
+            {"type": "trace.completed"},
+            {"type": "tool.started", "call_id": "late", "server": "a", "tool": "b", "arguments": {}},
+        ],
+    )
     assert parse_mcp_events(path).trace_complete is False

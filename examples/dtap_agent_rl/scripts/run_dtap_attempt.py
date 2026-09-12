@@ -118,10 +118,7 @@ async def _run(args) -> int:
     executor = TaskExecutor(max_parallel=1)
     auxiliary_mode = os.environ.pop(MEDICAL_AUX_MODE_ENV, "")
     victim_credentials: dict[str, str] = {}
-    if (
-        getattr(task_cfg, "domain", None) == "medical"
-        and auxiliary_mode == "deterministic"
-    ):
+    if getattr(task_cfg, "domain", None) == "medical" and auxiliary_mode == "deterministic":
         # Retained for compatibility with an unpatched DTAP checkout. The
         # managed Hospital compatibility entrypoint accepts arbitrary
         # OpenAI-compatible model names, so release runs no longer select this

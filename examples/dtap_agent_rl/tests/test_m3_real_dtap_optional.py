@@ -10,9 +10,7 @@ from examples.dtap_agent_rl.candidate_config import materialize_attempt_dir
 
 
 def _steps():
-    return (
-        ValidatedAttackStep(type="prompt", turn_id=1, mode="suffix", content="RESET-PROBE"),
-    )
+    return (ValidatedAttackStep(type="prompt", turn_id=1, mode="suffix", content="RESET-PROBE"),)
 
 
 @pytest.mark.integration

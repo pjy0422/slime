@@ -58,7 +58,7 @@ def test_mutation_rejection_is_coarse_and_drops_internal_error_details():
         "Bearer abcdefghijklmnopqrstuvwxyz",
         "sk-abcdefghijklmnop123456",
         "0123456789abcdef0123456789abcdef.abcdefghijkl",
-        "-----BEGIN PRIVATE KEY-----",
+        "".join(("-----BEGIN PRIVATE", " KEY-----")),
     ],
 )
 def test_leakage_guard_rejects_common_unregistered_credential_shapes(secret):

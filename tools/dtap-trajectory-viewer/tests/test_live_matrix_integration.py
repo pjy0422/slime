@@ -9,10 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
+from dtap_traj.bundle import load_episode_bundle
 from dtap_traj.db import TrajectoryDB
 from dtap_traj.indexer import discover_episode_dirs, index_root
-from dtap_traj.bundle import load_episode_bundle
 
 
 def _matrix_root() -> Path | None:
