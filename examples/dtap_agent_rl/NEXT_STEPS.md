@@ -288,9 +288,21 @@ owned generated-token spans.
 - [x] Make DTAP high-level option identity survive auto-compaction through
   structured trajectory metadata rather than by searching compacted summary
   text.
+- [x] Add a reusable Performance Preflight + Tuning Registry to the DTAP
+  Experiment Explorer. Keep tuning trials separate from trajectories, retain
+  failed configurations, and support manual trial creation/update, cohort
+  filtering, config comparison, bottleneck breakdown, and next-experiment
+  notes without implementing an automatic sweeper.
+- [x] Cover the tuning artifact/schema/index/API/UI boundary with synthetic CPU
+  fixtures. These fixtures validate bookkeeping only, not hardware speed.
+- [ ] When GPU capacity is available, record real SGLang, Megatron, and
+  integrated preflight trials; verify CUDA/NCCL/VRAM/profiler metrics and select
+  the first production `runtime_setup_digest`. Do not treat CPU fixtures as a
+  performance recommendation.
 - [ ] Connect the M6/M7 runtime to the production slime rollout worker and
   version the rollout/training record, including task identity, logical turns,
-  feedback mode, failure classification, reward, and hierarchy mode.
+  feedback mode, failure classification, reward, hierarchy mode,
+  `tuning_trial_id`, and `runtime_setup_digest`.
 - [ ] Exclude infrastructure-invalid and unsupported-placement episodes from
   reward learning while retaining genuine attack misses as valid reward-zero
   samples.
@@ -316,6 +328,8 @@ owned generated-token spans.
   `low_subgoal`, and `action`, and `KEEP`/`SWITCH` semantics remain correct
   across compaction.
 - [ ] Reward-zero and infrastructure-invalid samples are observably different.
+- [ ] A real-GPU preflight trial records the selected M8.6 runtime setup; this
+  remains pending while the current development environment has no usable GPU.
 - [ ] `rollout -> validated submission -> victim -> judge -> reward -> logical
   training record -> advantage/return -> optimizer step -> checkpoint -> fresh
   evaluation` passes end to end.
@@ -358,5 +372,8 @@ owned generated-token spans.
 - [x] PR F6: M8.4a two-head critic infrastructure.
 - [x] PR F7: M8.4b reference HiPER/HAE.
 - [x] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
-- [ ] PR F9: M8.6 production rollout, optimizer/checkpoint smoke, CI, and docs.
+- [ ] PR F9a: pre-M8.6 Performance Preflight + Tuning Registry (CPU contract and
+  viewer complete; real-GPU calibration deferred).
+- [ ] PR F9b: M8.6 production rollout, optimizer/checkpoint smoke, real-GPU
+  preflight linkage, CI, and docs.
 - [ ] PR G: M9 evaluation harness and ablation report.

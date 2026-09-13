@@ -115,7 +115,7 @@ def write_episode(root: Path, domain: str, threat: str, i: int, attack: bool = F
     (d / "victim-trajectory.json").write_text(json.dumps(victim))
     (d / "policy-prompt.txt").write_text("You are the attack policy. Produce a valid candidate config.")
     (d / "original-config.yaml").write_text(
-        f"Task:\n  task_id: {domain}-malicious-{threat}-{domain}-risk-{i:03d}\n" "mode: safe\nlimit: 1\n"
+        f"Task:\n  task_id: {domain}-malicious-{threat}-{domain}-risk-{i:03d}\nmode: safe\nlimit: 1\n"
     )
     (d / "submitted-config.yaml").write_text("mode: injected\nlimit: 1\n")
     (d / "judge-result.json").write_text(
@@ -196,6 +196,7 @@ def test_api_policy_victim_combined_and_config(tmp_path):
     app = create_app(root, db_path=tmp_path / "api.sqlite3")
     client = TestClient(app)
     assert client.get("/api/health").json()["ok"] is True
+    assert client.get("/api/tuning/facets").json()["total"] == 0
     episodes = client.get("/api/episodes", params={"domain": "browser"}).json()
     assert episodes["total"] == 2
     ep = episodes["items"][0]
@@ -359,8 +360,7 @@ def test_existing_index_schema_is_migrated_without_dropping_rows(tmp_path):
             "indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         conn.execute(
-            "INSERT INTO episodes (episode_id, run_name, artifact_path, source_mtime_ns) "
-            "VALUES ('old-episode', 'old-run', '/tmp/old', 1)"
+            "INSERT INTO episodes (episode_id, run_name, artifact_path, source_mtime_ns) VALUES ('old-episode', 'old-run', '/tmp/old', 1)"
         )
 
     db = TrajectoryDB(path)

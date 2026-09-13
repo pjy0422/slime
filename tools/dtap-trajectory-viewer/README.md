@@ -1,9 +1,10 @@
 # DTAP Policy + Victim Trajectory Viewer
 
-The package now supports two modes:
+The package now supports three workflows:
 
 1. `dtap-traj serve`: a local indexed explorer for many RL trajectories.
 2. Legacy single-file HTML export for sharing one self-contained trajectory.
+3. A manual Performance Preflight + Tuning Registry in the same explorer.
 
 The explorer keeps the artifact directory as the source of truth. SQLite stores only searchable episode metadata and artifact paths, while the existing parser lazily loads policy/victim/config data for the selected episode.
 
@@ -46,6 +47,73 @@ The UI opens at `http://127.0.0.1:8765` by default and supports:
 - server-side pagination,
 - live re-indexing with `--watch`.
 - persistent light/dark color themes from the top-bar toggle.
+
+## Performance preflight and tuning registry
+
+Open the **Performance** workspace to inspect planned, running, successful, and
+failed runtime trials separately from policy trajectories. It supports profile
+filters, 2–8 candidate config comparison, subsystem time breakdown, objective
+and peak-memory inspection, same-cohort Pareto candidates, and the hypothesis,
+observation, and proposed next experiment.
+
+Create a trial from reviewed JSON profiles and a candidate config:
+
+```bash
+dtap-traj tune create /path/to/artifacts \
+  --phase sglang \
+  --hardware hardware.json \
+  --model model.json \
+  --workload workload.json \
+  --software software.json \
+  --config candidate.json \
+  --hypothesis "TP=2 should reduce latency without exceeding the VRAM limit" \
+  --tag short-preflight
+```
+
+This only writes a planned artifact; it does not start a benchmark. After a
+manually launched trial, attach measurements and the decision for the next
+experiment:
+
+```bash
+dtap-traj tune update /path/to/artifacts/tuning/<trial-id> \
+  --status success \
+  --metrics metrics.json \
+  --observation "TP=2 improved generated tok/s and retained 9 GB headroom" \
+  --next-step "Compare replicas=2 at the same concurrency"
+```
+
+Profile files are JSON objects with a human-readable `label`; include stable
+facts needed to reproduce the cohort. Runtime config uses explicit sections so
+the common topology fields are searchable:
+
+```json
+{
+  "sglang": {"tp": 2, "replicas": 2, "concurrency": 32},
+  "megatron": {"tp": 2, "pp": 1, "cp": 2, "ep": 1, "etp": 1},
+  "allocation": {"train_gpus": 4, "rollout_gpus": 4}
+}
+```
+
+Metrics are also an extensible JSON object. The index recognizes
+`rollout_tok_s`, `train_tok_s`, `step_time_s`, `wall_time_s`, `gpu_seconds`,
+`peak_vram_gb`, `trainable_rollouts`, `trainable_tokens`, `wait_ratio`,
+`infra_failure_rate`, `repeats`, and an optional `durations_s` mapping. A caller
+may override the phase-derived objective with numeric `objective_value` and a
+non-empty `objective_name`. Ratios must be in `[0, 1]`, duration and throughput
+values must be nonnegative, and a successful trial must include metrics.
+
+Use `oom`, `timeout`, `nccl_error`, `engine_crash`, `invalid_config`, or
+`infra_error` instead of `success` to preserve a failed boundary. Trial status
+and notes are written atomically. An identical phase, hardware, model,
+workload, and software fingerprint is required before the explorer names a
+best-known or Pareto candidate. Trial IDs are globally unique within one
+indexed artifact root; a duplicate ID at another path is rejected instead of
+silently replacing the first trial.
+
+The current implementation is validated with synthetic CPU fixtures only.
+Actual CUDA throughput, VRAM, NCCL behavior, profiler capture, and production
+recommendations must be validated later on a GPU host. Synthetic fixture values
+must not be reported as benchmark results.
 
 ### Judge semantics
 
@@ -136,3 +204,21 @@ files are treated as latest-attempt compatibility aliases.
 
 The explorer does not rewrite these files. It indexes metadata and loads the
 selected bundle through the existing `dtap_traj.parser` implementation.
+
+A tuning trial uses this independent versioned layout:
+
+```text
+tuning/<trial-id>/
+├── tuning-manifest.json
+├── hardware.json
+├── model.json
+├── workload.json
+├── software.json
+├── config.json
+├── metrics.json          # optional until measured
+└── result.json
+```
+
+Artifact JSON remains the source of truth; the WAL-mode SQLite database stores
+only the searchable index. Do not put API keys, tokens, passwords, or other
+credentials in tuning profiles or configs.

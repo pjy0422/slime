@@ -947,6 +947,86 @@ Keep these separate from HAE math tests:
 - M7 feedback can affect the next turn without rewriting prior ownership;
 - reference and DTAP modes use separate prompt contracts but the same validated HAE core.
 
+## 9.6 Pre-M8.6 prerequisite — Performance Preflight + Tuning Registry
+
+Before the M8.6 GPU optimizer smoke, preserve performance experiments as a
+reusable part of the DTAP Experiment Explorer. This is a human-directed tuning
+workflow, not an automatic sweeper. An engineer chooses a small candidate set,
+runs it, reviews progress and failure boundaries with a collaborator, and uses
+the recorded evidence to design the next set.
+
+Keep performance trials separate from policy trajectories. A trajectory asks
+what the policy and victim did; a tuning trial asks how a runtime topology
+performed. One tuning trial may later link to many trajectories through
+`tuning_trial_id` and `runtime_setup_digest` in the M8.6 rollout record.
+
+### Artifact and index contract
+
+Artifact files are authoritative and SQLite is a rebuildable search index. A
+version-1 trial lives under `tuning/<trial-id>/`:
+
+```text
+tuning-manifest.json  # identity, phase, hypothesis, parents, tags
+hardware.json         # accelerator/count/host fingerprint inputs
+model.json            # architecture/checkpoint fingerprint inputs
+workload.json         # length/turn/tool/algorithm distribution
+software.json         # slime/SGLang/Megatron/CUDA/driver/NCCL versions
+config.json           # candidate topology and token/batch settings
+metrics.json          # measurements and subsystem duration breakdown
+result.json           # status, failure class, observation, proposed next step
+```
+
+Canonical JSON digests define hardware, model, workload, software, and config
+fingerprints. Never record credentials. Preserve unsuccessful trials as
+first-class knowledge with statuses such as `oom`, `timeout`, `nccl_error`,
+`engine_crash`, `invalid_config`, and `infra_error`; do not silently discard
+them or treat them as slow successful trials.
+
+The registry normalizes commonly compared topology fields and metrics while
+retaining arbitrary settings in `config.json`. Initial phase objectives are:
+
+- SGLang: effective generated tokens/second;
+- Megatron: train tokens/second, with MFU retained when available;
+- integrated slime: trainable tokens/GPU-second or trainable rollouts/GPU-hour.
+
+Record wall time, GPU-seconds, peak VRAM, step time, infra-failure rate, and a
+duration breakdown for generation, environment/tool wait, victim, judge,
+trainer, weight sync, and idle time when the runner exposes them. This prevents
+external API latency from being misattributed to SGLang or Megatron.
+
+### Manual experiment workflow and viewer
+
+The explorer gets a separate Performance workspace with phase/status/profile
+filters, planned/running/failed progress, 2–8 trial config comparison, time
+breakdown, failure boundaries, and experiment notes. Recommendation and Pareto
+views are valid only within an identical
+`phase × hardware × model × workload × software` cohort. Show the fastest
+known candidate and non-dominated throughput/VRAM candidates; do not present
+cross-cohort rankings as recommendations.
+
+Use `dtap-traj tune create` to materialize a planned trial and `dtap-traj tune
+update` to attach measured metrics, observations, failure classification, and
+the proposed next step. These commands never launch training or enumerate a
+Cartesian product. The intended loop is:
+
+```text
+hypothesis -> small manually chosen candidate set -> measurement
+ -> viewer comparison/failure boundary -> proposed next experiment
+```
+
+When GPUs are available, run short SGLang candidates, deterministic Megatron
+replays, then a small integrated shortlist. Do not make an exhaustive sweep or
+Bayesian tuner an M8 requirement.
+
+### Current validation boundary
+
+The registry schema, atomic record commands, SQLite migration/index, APIs,
+comparison/ranking rules, and web UI must have deterministic CPU tests. The
+current development host has no usable GPU, so measured CUDA throughput, VRAM,
+NCCL behavior, profiler artifacts, and the recommended production topology
+remain explicitly unverified until GPU capacity is available. Synthetic CPU
+fixtures prove data flow only and must never be shown as a real recommendation.
+
 ## 10. M8.6 — runtime integration and optimizer dry-run
 
 Connect M6/M7 DTAP execution to the production slime rollout worker.
@@ -966,6 +1046,8 @@ Version the rollout record with at least:
 - adaptive feedback mode;
 - HiPER policy mode/hierarchy fields when enabled;
 - deterministic seeds and non-secret reproduction metadata.
+- `tuning_trial_id` and `runtime_setup_digest` when a registered preflight
+  configuration is used.
 
 Trainer diagnostics must state whether an adaptive attacker had victim-output access.
 
@@ -1110,6 +1192,10 @@ Required classes: pure math, metadata/schema, compaction ownership, DP affinity,
 8. **M8.5** — DTAP-HiPER hierarchical prompt/state/credit projection;
 9. **M8.6** — production rollout integration, optimizer/checkpoint smoke, observability, CI, docs.
 
+The Performance Preflight + Tuning Registry lands before item 9 and is reused
+by item 9; the first real GPU calibration remains part of the M8.6 execution
+work rather than its CPU-only registry implementation.
+
 Do not mix DTAP hierarchy, two-head critic, compaction plumbing, and HAE math into one patch.
 
 ## 17. Non-goals
@@ -1137,6 +1223,10 @@ M8 is complete only when:
 - DTAP-HiPER explicitly prompts/parses switch, high-level subgoal, low-level subgoal, and action;
 - DTAP KEEP/SWITCH semantics survive compaction without prompt-text reconstruction;
 - infrastructure-invalid samples are excluded while genuine reward-zero misses remain trainable;
+- performance artifacts can be indexed and compared without conflating them
+  with policy trajectories;
+- a real-GPU preflight trial is linked to the selected M8.6 runtime setup (GPU
+  validation is pending while no GPU is available);
 - an end-to-end DTAP rollout reaches an optimizer step and checkpoint;
 - the checkpoint loads and runs a fresh DTAP evaluation;
 - no fixed/template candidate plan is required.

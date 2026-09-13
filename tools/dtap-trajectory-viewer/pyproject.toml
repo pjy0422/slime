@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dtap-traj"
-version = "0.3.0"
-description = "Local explorer and standalone export for DTAP victim and attack-policy trajectories"
+version = "0.4.0"
+description = "DTAP trajectory explorer and manual performance tuning registry"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
