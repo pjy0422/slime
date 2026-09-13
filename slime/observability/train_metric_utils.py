@@ -168,6 +168,7 @@ def log_rollout_data(
             "rollout_mask_sums",
             "group_indices",
             "metadata",
+            "turn_credits",
             "partition",
             "value_masks",
             "value_mask_sums",

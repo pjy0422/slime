@@ -549,6 +549,7 @@ def test_partition_train_data_preserves_metadata_and_group_indices():
         "tokens": [[10], [11], [12]],
         "metadata": [{"turn": 0}, {}, {"turn": 2}],
         "group_indices": [7, 8, 7],
+        "turn_credits": [[-1.0], [0.0], [1.0, 2.0]],
         "rollout_ids": [20, 21, 20],
         "raw_reward": [0.0, 1.0, 2.0],
         "total_lengths": [1, 1, 1],
@@ -559,6 +560,7 @@ def test_partition_train_data_preserves_metadata_and_group_indices():
 
     assert partitioned["metadata"] == [{"turn": 2}, {"turn": 0}]
     assert partitioned["group_indices"] == [7, 7]
+    assert partitioned["turn_credits"] == [[1.0, 2.0], [-1.0]]
     assert partitioned["rollout_ids"] == [20, 20]
     assert partitioned["raw_reward"] is data["raw_reward"]
     assert partitioned["total_lengths"] is data["total_lengths"]

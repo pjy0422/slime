@@ -17,6 +17,7 @@ class LogicalTurn:
     """One train-owned turn expressed in full response coordinates."""
 
     rollout_id: int
+    group_index: int | None
     sample_index: int
     turn_idx: int
     response_start: int
@@ -69,18 +70,26 @@ def collect_logical_turns(
     rollout_ids: Sequence[int],
     response_lengths: Sequence[int],
     loss_masks: Sequence[torch.Tensor],
+    group_indices: Sequence[int | None] | None = None,
 ) -> list[LogicalTurn]:
     """Read canonical v1 metadata and fail closed on incomplete layouts."""
 
     sample_count = len(response_lengths)
     if not (len(metadata) == len(rollout_ids) == len(loss_masks) == sample_count):
         raise ValueError("multi-turn PPO fields must contain one entry per sample")
+    if group_indices is not None and len(group_indices) != sample_count:
+        raise ValueError("multi-turn group indices must contain one entry per sample")
 
     turns: list[LogicalTurn] = []
     seen: set[tuple[int, int]] = set()
     for sample_index, (sample_metadata, rollout_id, response_length, loss_mask) in enumerate(
         zip(metadata, rollout_ids, response_lengths, loss_masks, strict=True)
     ):
+        group_index = None if group_indices is None else group_indices[sample_index]
+        if group_index is not None and (
+            isinstance(group_index, bool) or not isinstance(group_index, int) or group_index < 0
+        ):
+            raise ValueError(f"multi-turn sample {sample_index} group_index must be a nonnegative integer")
         if not isinstance(sample_metadata, Mapping):
             raise ValueError(f"multi-turn PPO sample {sample_index} metadata must be a mapping")
         namespace = sample_metadata.get("multi_turn")
@@ -127,6 +136,7 @@ def collect_logical_turns(
             turns.append(
                 LogicalTurn(
                     rollout_id=int(rollout_id),
+                    group_index=group_index,
                     sample_index=sample_index,
                     turn_idx=turn_idx,
                     response_start=response_start,

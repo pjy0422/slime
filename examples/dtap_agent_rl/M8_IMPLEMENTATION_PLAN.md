@@ -241,7 +241,8 @@ Add:
 ```text
 --advantage-estimator dcgrpo
 --dcgrpo-mode {dw,sw}
---dcgrpo-alpha <float>
+--dcgrpo-alpha <float>  # default: 1.0
+--gamma <float>         # default: 1.0
 ```
 
 Perform DC-GRPO credit assignment on the complete rollout/group collection **before DP split**.
@@ -252,7 +253,23 @@ Definitions:
 - comparison group: `(group_index, turn_idx)`;
 - suffix return: `R_t = r_t + gamma * R_{t+1}`.
 
-DW computes normalized discounted suffix-return credit. SW combines normalized immediate-reward and future components using `alpha`.
+DW is return-to-go normalization:
+
+```text
+A_DW(i,t) = (R_i,t - mean_i(R_i,t)) / std_i(R_i,t)
+```
+
+SW separately normalizes immediate and future credit, then combines them:
+
+```text
+I_i,t = (r_i,t - mean_i(r_i,t)) / std_i(r_i,t)
+F_i,t = (R_i,t+1 - mean_i(R_i,t+1)) / std_i(R_i,t+1)
+A_SW(i,t) = I_i,t + alpha * F_i,t
+```
+
+`F_i,t` receives no additional `gamma` multiplier; discounting is already
+part of the return-to-go recurrence. The terminal future component is zero.
+Normalization uses population variance.
 
 For singleton groups or zero-variance components, define the normalized component as zero.
 
@@ -266,22 +283,373 @@ Add:
 
 ```text
 --advantage-estimator gigpo
---gigpo-step-advantage-weight <float>
+--gigpo-step-advantage-weight <float>  # omega, default: 1.0
 --gigpo-normalization {mean,mean_std}
+--gamma <float>                        # reused, default: 1.0
 ```
 
-Compute group credit before DP split.
+Paper mapping:
+
+```text
+--gamma                       -> gamma in Eq. (5)
+--gigpo-step-advantage-weight -> omega in Eq. (8)
+
+--gigpo-normalization mean
+    -> F_norm = 1
+    -> A = x - mean(group)
+
+--gigpo-normalization mean_std
+    -> F_norm = std
+    -> A = (x - mean(group)) / (std(group) + 1e-6)
+```
+
+The reported GiGPO experiments commonly use `omega=1` and `gamma=0.95`.
+M8 keeps slime's shared `--gamma` default at `1.0`; experiments that require
+paper parity must pass `--gamma 0.95` explicitly.
+
+GiGPO is critic-free. It must neither instantiate nor require a value head.
+
+### 7.1 Execution boundary
+
+Compute GiGPO group credit over the complete rollout collection **before DP
+split**. Do not reconstruct episode or anchor groups independently inside each
+trainer DP rank: sibling samples from one trajectory and trajectories from one
+episode group may be assigned to different ranks.
+
+Concretely, invoke the pure GiGPO computation in
+`RolloutManager._convert_samples_to_train_data()` after canonical metadata and
+loss masks have been built, and before `generate()` calls
+`_split_train_data_by_dp()`.
+
+```text
+list[Sample]
+    |
+    | reconstruct complete logical trajectories
+    v
+Eq. (3) episode advantage
+    + Eq. (5) discounted turn return
+    + Eq. (6)/(7) anchor-relative step advantage
+    + Eq. (8) weighted combination
+    v
+scalar credit per (rollout_id, turn_idx)
+    |
+    | pack into train_data["turn_credits"]
+    v
+DP split / minibatch packing
+    |
+    | trainer projects each scalar over its owned response_span
+    v
+existing token-level PPO/GRPO policy loss
+```
+
+This produces two implementation pieces:
+
+1. CPU-pure, pre-DP group credit computation;
+2. post-DP validation and turn-to-token projection.
+
+The projection piece reuses the same response-relative ownership and CP
+slicing semantics as multi-turn PPO and DC-GRPO. GiGPO must reuse the generic
+`turn_credits` train-data field introduced by M8.2 rather than add a parallel
+`turn_advantages` representation.
+
+### 7.2 Logical identities and anchor contract
 
 Definitions:
 
-- episode group: `group_index`;
-- trajectory: `rollout_id` ordered by `turn_idx`;
-- step group: `(group_index, anchor_key)`;
-- `anchor_key`: stable fingerprint of environment observation/state, not the whole serialized conversation.
+```text
+episode group:     group_index
+trajectory:        rollout_id
+turn:              (rollout_id, turn_idx)
+step/anchor group: (group_index, anchor_key)
+```
 
-The anchor must be invariant to Claude Code compaction. `anchor_key=None` is invalid. M8 uses exact anchor equality only; do not add fuzzy matching initially.
+All sibling samples sharing `rollout_id` jointly form one trajectory. Rebuild
+it from the union of their owned complete turns, sorted by `turn_idx`. Every
+turn in a trajectory must have the same non-null `group_index`.
 
-Tests: upstream-derived fixture, episode component, step-relative component, weight zero, normalization modes, repeated anchors, missing-anchor validation, and compaction invariance.
+Every GiGPO-trainable turn must also have a non-null `anchor_key` identifying
+the environment state **before** that turn's action. Prefer a canonical state
+ID supplied by the environment. Otherwise derive a stable fingerprint from a
+canonical observation representation with fixed serialization and a stable
+digest such as SHA-256. Include any schema/version discriminator needed to
+prevent incompatible observation formats from colliding.
+
+Never derive the anchor from:
+
+- the complete serialized LLM conversation, which compaction can rewrite;
+- generated action text;
+- Python `hash()`, which is process-randomized.
+
+M8 uses exact equality only:
+
+```python
+step_group_key = (turn.group_index, turn.anchor_key)
+```
+
+Fuzzy or similarity-based state grouping is out of scope.
+
+### 7.3 Shared relative-normalization primitive
+
+Both episode and step advantages use one numeric primitive:
+
+```python
+def relative_group_advantage(values, mode, eps=1e-6):
+    values = torch.as_tensor(values, dtype=torch.float32)
+
+    if values.numel() <= 1:
+        return torch.zeros_like(values)
+
+    centered = values - values.mean()
+    if mode == "mean":
+        return centered
+    if mode != "mean_std":
+        raise ValueError(f"unknown GiGPO normalization: {mode}")
+
+    # Match upstream GiGPO and slime's ordinary GRPO convention.
+    std = values.std(unbiased=True)
+    if not torch.isfinite(std) or std <= eps:
+        return torch.zeros_like(values)
+    return centered / (std + eps)
+```
+
+Therefore `mean_std` uses sample standard deviation, unlike the population
+standard deviation explicitly selected for M8.2 DC-GRPO. Lock this distinction
+down with numeric fixtures. Singleton and zero-variance groups return zero.
+
+Do not add `gigpo` to `RolloutManager._post_process_rewards()` ordinary scalar
+GRPO normalization. Construct all GiGPO terms from resolved logical-turn
+rewards in canonical metadata and do not apply generic token-level
+`--normalize-advantages` after projection.
+
+### 7.4 Eq. (3): episode-relative advantage
+
+For trajectory `i`, ordered by `turn_idx`:
+
+```text
+R_episode[i] = sum_t r[i,t]
+```
+
+For each episode group, normalize the unique trajectory returns:
+
+```text
+A_E[i] = relative_group_advantage(
+    [R_episode[j] for j in rollouts_with_same_group_index],
+    mode=--gigpo-normalization,
+)[i]
+```
+
+Use one member per unique `rollout_id`, even when compaction emits multiple
+sibling samples for that trajectory. Do not use `Sample.reward` after ordinary
+GRPO reward normalization.
+
+### 7.5 Eq. (5): discounted turn return
+
+For each reconstructed trajectory, calculate the turn-time suffix return:
+
+```text
+R_t = r_t + gamma * R_t+1
+```
+
+Use zero bootstrap after the final observed complete turn. This is turn-time,
+not token-time, discounting. For example:
+
+```text
+rewards = [0, 0, 0, 1]
+gamma   = 0.95
+returns = [0.95^3, 0.95^2, 0.95, 1]
+```
+
+### 7.6 Eq. (6)/(7): anchor groups and step-relative advantage
+
+Build anchor groups from all turn occurrences inside the same episode group:
+
+```python
+step_groups = defaultdict(list)
+for turn in all_turns:
+    step_groups[(turn.group_index, turn.anchor_key)].append(
+        (turn.rollout_id, turn.turn_idx)
+    )
+```
+
+Do **not** deduplicate occurrences by trajectory. When one trajectory revisits
+the same state, every occurrence remains a member and may have a different
+return-to-go.
+
+For each anchor group, normalize its members' discounted returns:
+
+```text
+A_S[i,t] = relative_group_advantage(
+    [R_j,u for (j,u) in same_anchor_group],
+    mode=--gigpo-normalization,
+)[i,t]
+```
+
+The operational representation of the paper's `(action, return)` entry is
+`((rollout_id, turn_idx), discounted_return)`: the turn identity already
+locates the generated action and its response span. Singleton and
+zero-variance anchor groups receive `A_S=0`.
+
+### 7.7 Eq. (8): combined turn credit
+
+For every complete owned turn:
+
+```text
+A[i,t] = A_E[i] + omega * A_S[i,t]
+```
+
+`omega=0` must reduce to episode-only relative credit. The pure pre-DP function
+returns:
+
+```python
+dict[(rollout_id, turn_idx), float]
+```
+
+It must require no model, distributed process group, or accelerator state.
+
+### 7.8 Pre-DP representation and post-DP projection
+
+Pack the combined values in the existing generic representation:
+
+```python
+train_data["turn_credits"] = [
+    [
+        combined[(rollout_id, turn["turn_idx"])]
+        for turn in sample_metadata["multi_turn"]["turns"]
+    ]
+    for rollout_id, sample_metadata in zip(
+        train_data["rollout_ids"],
+        train_data["metadata"],
+        strict=True,
+    )
+]
+```
+
+`turn_credits[i][j]` corresponds exactly to
+`metadata[i]["multi_turn"]["turns"][j]`. Preserve it through DP partitioning;
+do not materialize response-length tensors in Ray before scheduling.
+
+The trainer validates the packed identities, projects each scalar over the
+turn's complete owned `response_span`, then applies existing CP slicing. It
+does not recompute GiGPO groups and does not run a second token-count-weighted
+advantage normalization.
+
+M8 intentionally retains slime's current token-level importance ratio and
+clipping. It does not sum token log-probabilities to introduce a new
+action-span ratio. Every owned generated token in a turn consumes the same
+turn scalar under the existing policy loss. Reference-policy KL remains in
+slime's existing KL-loss path and is not mixed into episode returns, step
+returns, `A_E`, or `A_S`.
+
+### 7.9 Required numerical fixture
+
+Use this exact fixture:
+
+```text
+gamma = 0.9
+omega = 1
+normalization = mean
+
+tau_0, group=0:
+    t=0: anchor=A, reward=0
+    t=1: anchor=B, reward=1
+
+tau_1, group=0:
+    t=0: anchor=A, reward=0
+    t=1: anchor=C, reward=0
+```
+
+Expected values:
+
+```text
+episode returns: [1, 0]
+A_E:             [+0.5, -0.5]
+
+discounted returns:
+    tau_0: [0.9, 1.0]
+    tau_1: [0.0, 0.0]
+
+anchor A step credit: [+0.45, -0.45]
+anchors B/C:           [0, 0]  # separate singleton groups
+
+combined:
+    (tau_0, t=0): +0.95
+    (tau_0, t=1): +0.50
+    (tau_1, t=0): -0.95
+    (tau_1, t=1): -0.50
+```
+
+Token projection must produce these exact scalars independently of each
+turn's response-token length.
+
+### 7.10 Failure, truncation, and compaction semantics
+
+Fail closed on:
+
+- missing `group_index` or `anchor_key`;
+- a rollout crossing episode groups;
+- duplicate `(rollout_id, turn_idx)` ownership;
+- non-finite rewards or parameters;
+- negative `--gigpo-step-advantage-weight`;
+- collector-truncated trajectories.
+
+The initial F5 implementation rejects an entire truncated trajectory before
+constructing any episode or anchor statistics; it must not fabricate missing
+future return. Partial generated turns never receive full-turn credit.
+
+CLEAN and FORK sibling layouts reconstruct credit from the union of owned
+turns. REALIGN is eligible only when that union retains every complete turn
+needed by the episode/return calculation. If realignment moves a complete turn
+into `dropped_turns` while discarding its reward or anchor, fail closed rather
+than compute a different trajectory return. Supporting such histories requires
+a versioned canonical non-trainable credit-history record before GiGPO math;
+the dropped turn still receives no token advantage.
+
+### 7.11 Target code organization
+
+```text
+slime/utils/advantages/gigpo.py
+    relative_group_advantage()
+    discounted_turn_returns()
+    compute_gigpo_turn_credits()
+    precompute_gigpo_train_data()
+
+slime/ray/rollout.py
+    compute and attach turn_credits before _split_train_data_by_dp()
+
+slime/backends/megatron_utils/loss.py
+    validate and project precomputed turn_credits only
+```
+
+Before adding GiGPO, move the now-shared `LogicalTurn`, metadata collection,
+turn-credit pack/unpack, and token projection machinery out of PPO/DC-GRPO-
+specific helpers into a clearly named shared multi-turn module. Do not create a
+third metadata parser or another DP field. The shared `LogicalTurn` must expose
+the canonical pre-action `anchor_key` in addition to its existing group and
+ownership fields.
+
+### 7.12 Tests
+
+Required tests:
+
+- paper/upstream-derived numerical fixture with provenance;
+- Eq. (3) episode advantage;
+- Eq. (5) discounted turn return;
+- Eq. (7) anchor-relative step advantage;
+- Eq. (8) weighted combination and `omega=0`;
+- `mean` versus `mean_std`, including the sample-std convention;
+- singleton and zero-variance episode/anchor groups;
+- the same anchor repeated within and across trajectories without deduplication;
+- identical anchors in different `group_index` values staying separate;
+- ragged trajectory lengths;
+- missing/unstable anchor validation;
+- sibling reconstruction and CLEAN/FORK compaction invariance;
+- REALIGN eligibility or explicit fail-closed behavior;
+- truncated and partial-turn rejection semantics;
+- response-span projection and variable token-length invariance;
+- CP=1 versus CP>1 projection parity;
+- no second generic advantage whitening;
+- permutation invariance of trajectory and sample order.
+
 
 ## 8. M8.4 — reference HiPER/HAE
 

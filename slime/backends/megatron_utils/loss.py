@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
+from slime.utils.advantages.dcgrpo import unpack_dcgrpo_turn_credits
 from slime.utils.advantages.mt_ppo import collect_logical_turns, compute_turn_gae, project_turn_values
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
@@ -821,12 +822,54 @@ def _compute_multi_turn_ppo_advantages(
     return advantages, returns
 
 
+def _compute_dcgrpo_advantages(
+    rollout_data: RolloutBatch,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Project globally precomputed DC-GRPO turn credit onto train-owned tokens."""
+
+    metadata = rollout_data.get("metadata")
+    rollout_ids = rollout_data.get("rollout_ids")
+    packed_credits = rollout_data.get("turn_credits")
+    if metadata is None or rollout_ids is None or packed_credits is None:
+        raise ValueError("dcgrpo requires metadata, rollout_ids, and precomputed turn_credits")
+
+    total_lengths = rollout_data["total_lengths"]
+    response_lengths = rollout_data["response_lengths"]
+    loss_masks = rollout_data["loss_masks"]
+    turns = collect_logical_turns(metadata, rollout_ids, response_lengths, loss_masks)
+    turn_credits = unpack_dcgrpo_turn_credits(turns, packed_credits)
+    references = [
+        torch.zeros(response_length, device=loss_mask.device, dtype=torch.float32)
+        for response_length, loss_mask in zip(response_lengths, loss_masks, strict=True)
+    ]
+    tensor_credits = {
+        (turn.rollout_id, turn.turn_idx): references[turn.sample_index].new_tensor(
+            turn_credits[(turn.rollout_id, turn.turn_idx)]
+        )
+        for turn in turns
+    }
+    full_advantages, _ = project_turn_values(
+        response_lengths,
+        turns,
+        tensor_credits,
+        sparse=False,
+        reference_tensors=references,
+    )
+    advantages = [
+        slice_log_prob_with_cp(advantage, total_length, response_length)
+        for advantage, total_length, response_length in zip(
+            full_advantages, total_lengths, response_lengths, strict=True
+        )
+    ]
+    return advantages, [advantage.clone() for advantage in advantages]
+
+
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo",
+    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo", "dcgrpo",
     "reinforce_plus_plus", and "reinforce_plus_plus_baseline". When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel-with-context-parallel group using masked statistics.
@@ -875,7 +918,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         ]
     rollout_data["kl"] = kl
 
-    used_builtin_multi_turn_ppo = False
+    used_preprojected_turn_advantages = False
     if args.custom_advantage_function_path is not None:
         custom_adv_fn = load_function(args.custom_advantage_function_path)
         custom_adv_fn(args, rollout_data)
@@ -903,7 +946,11 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     elif args.advantage_estimator == "multi_turn_ppo":
         advantages, returns = _compute_multi_turn_ppo_advantages(args, rollout_data, kl)
-        used_builtin_multi_turn_ppo = True
+        used_preprojected_turn_advantages = True
+
+    elif args.advantage_estimator == "dcgrpo":
+        advantages, returns = _compute_dcgrpo_advantages(rollout_data)
+        used_preprojected_turn_advantages = True
 
     elif args.advantage_estimator == "reinforce_plus_plus":
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
@@ -940,7 +987,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         )
 
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
-    if args.normalize_advantages and not used_builtin_multi_turn_ppo:
+    if args.normalize_advantages and not used_preprojected_turn_advantages:
         all_advs = torch.cat(advantages)
         cp_size = mpu.get_context_parallel_world_size()
         if cp_size == 1:
