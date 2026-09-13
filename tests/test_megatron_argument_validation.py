@@ -257,6 +257,7 @@ def make_slime_validate_args(**overrides):
         update_weight_local_checkpoint_dir=None,
         update_weight_mode="full",
         rollout_temperature=1.0,
+        rollout_dp_affinity=False,
     )
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -414,6 +415,31 @@ def test_rollout_dp_affinity_argument_is_opt_in(monkeypatch):
 
     assert defaults.rollout_dp_affinity is False
     assert configured.rollout_dp_affinity is True
+
+
+@pytest.mark.unit
+def test_multi_turn_ppo_argument_enables_single_head_critic(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    parser = argparse.ArgumentParser()
+    module.get_slime_extra_args_provider()(parser)
+
+    parsed = parser.parse_args(
+        ["--rollout-batch-size", "1", "--advantage-estimator", "multi_turn_ppo", "--rollout-dp-affinity"]
+    )
+    assert parsed.advantage_estimator == "multi_turn_ppo"
+
+    args = make_slime_validate_args(advantage_estimator="multi_turn_ppo", rollout_dp_affinity=True)
+    module.slime_validate_args(args)
+    assert args.use_critic is True
+
+
+@pytest.mark.unit
+def test_multi_turn_ppo_requires_rollout_dp_affinity(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(advantage_estimator="multi_turn_ppo", rollout_dp_affinity=False)
+
+    with pytest.raises(ValueError, match="requires --rollout-dp-affinity"):
+        module.slime_validate_args(args)
 
 
 if __name__ == "__main__":

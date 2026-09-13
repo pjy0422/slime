@@ -1,4 +1,5 @@
 from argparse import Namespace
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
+from slime.utils.advantages.mt_ppo import collect_logical_turns, compute_turn_gae, project_turn_values
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
 from slime.utils.ppo_utils import (
@@ -701,12 +703,130 @@ def apply_opd_kl_to_advantages(
     rollout_data["opd_reverse_kl"] = reverse_kls
 
 
+def _compute_multi_turn_ppo_advantages(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    kl: list[torch.Tensor],
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Build turn-level GAE, token advantages, and sparse critic targets."""
+
+    values = rollout_data.get("values")
+    if values is None:
+        raise ValueError("multi_turn_ppo requires critic values")
+    metadata = rollout_data.get("metadata")
+    rollout_ids = rollout_data.get("rollout_ids")
+    if metadata is None or rollout_ids is None:
+        raise ValueError("multi_turn_ppo requires metadata and rollout_ids")
+
+    total_lengths = rollout_data["total_lengths"]
+    response_lengths = rollout_data["response_lengths"]
+    loss_masks = rollout_data["loss_masks"]
+    turns = collect_logical_turns(metadata, rollout_ids, response_lengths, loss_masks)
+
+    # Values and KL arrive in CP-local zigzag order. Logical metadata always
+    # uses full response coordinates, so restore both before indexing turns.
+    full_values = [
+        all_gather_with_cp(value, total_length, response_length)
+        for value, total_length, response_length in zip(values, total_lengths, response_lengths, strict=True)
+    ]
+    full_kl = [
+        all_gather_with_cp(per_token_kl, total_length, response_length)
+        for per_token_kl, total_length, response_length in zip(kl, total_lengths, response_lengths, strict=True)
+    ]
+
+    turns_by_rollout = defaultdict(list)
+    for turn in turns:
+        turns_by_rollout[turn.rollout_id].append(turn)
+
+    raw_advantages: dict[tuple[int, int], torch.Tensor] = {}
+    turn_returns: dict[tuple[int, int], torch.Tensor] = {}
+    for rollout_id, rollout_turns in turns_by_rollout.items():
+        rollout_turns.sort(key=lambda turn: turn.turn_idx)
+        turn_values = torch.stack(
+            [full_values[turn.sample_index][turn.value_position] for turn in rollout_turns]
+        ).float()
+        turn_rewards = torch.stack(
+            [
+                turn_values.new_tensor(turn.reward)
+                - args.kl_coef
+                * (
+                    full_kl[turn.sample_index][turn.response_start : turn.response_end]
+                    * loss_masks[turn.sample_index][turn.response_start : turn.response_end]
+                ).sum()
+                for turn in rollout_turns
+            ]
+        )
+        turn_dones = torch.tensor([turn.done for turn in rollout_turns], device=turn_values.device, dtype=torch.bool)
+        rollout_advantages, rollout_returns = compute_turn_gae(
+            turn_rewards,
+            turn_values,
+            turn_dones,
+            args.gamma,
+            args.lambd,
+        )
+        for turn, advantage, turn_return in zip(rollout_turns, rollout_advantages, rollout_returns, strict=True):
+            key = (rollout_id, turn.turn_idx)
+            raw_advantages[key] = advantage
+            turn_returns[key] = turn_return
+
+    projected_advantages = raw_advantages
+    if args.normalize_advantages:
+        ordered_keys = [(turn.rollout_id, turn.turn_idx) for turn in turns]
+        ordered_advantages = torch.stack([raw_advantages[key] for key in ordered_keys])
+        # Every CP rank reconstructs the same logical turns. Reducing over the
+        # DP-only group avoids counting each turn once per CP rank.
+        normalized = distributed_masked_whiten(
+            ordered_advantages,
+            torch.ones_like(ordered_advantages),
+            process_group=mpu.get_data_parallel_group(with_context_parallel=False),
+            shift_mean=True,
+        )
+        projected_advantages = dict(zip(ordered_keys, normalized, strict=True))
+
+    full_advantages, _ = project_turn_values(
+        response_lengths,
+        turns,
+        projected_advantages,
+        sparse=False,
+        reference_tensors=full_values,
+    )
+    full_returns, value_masks = project_turn_values(
+        response_lengths,
+        turns,
+        turn_returns,
+        sparse=True,
+        reference_tensors=full_values,
+    )
+
+    rollout_turn_counts = {rollout_id: len(rollout_turns) for rollout_id, rollout_turns in turns_by_rollout.items()}
+    rollout_data["value_masks"] = value_masks
+    rollout_data["value_mask_sums"] = torch.tensor(
+        [rollout_turn_counts[int(rollout_id)] for rollout_id in rollout_ids],
+        dtype=torch.float32,
+        device=full_values[0].device,
+    )
+
+    advantages = [
+        slice_log_prob_with_cp(advantage, total_length, response_length)
+        for advantage, total_length, response_length in zip(
+            full_advantages, total_lengths, response_lengths, strict=True
+        )
+    ]
+    returns = [
+        slice_log_prob_with_cp(turn_return, total_length, response_length)
+        for turn_return, total_length, response_length in zip(
+            full_returns, total_lengths, response_lengths, strict=True
+        )
+    ]
+    return advantages, returns
+
+
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo",
+    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo",
     "reinforce_plus_plus", and "reinforce_plus_plus_baseline". When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel-with-context-parallel group using masked statistics.
@@ -755,6 +875,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         ]
     rollout_data["kl"] = kl
 
+    used_builtin_multi_turn_ppo = False
     if args.custom_advantage_function_path is not None:
         custom_adv_fn = load_function(args.custom_advantage_function_path)
         custom_adv_fn(args, rollout_data)
@@ -779,6 +900,10 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         advantages, returns = get_advantages_and_returns_batch(
             total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
         )
+
+    elif args.advantage_estimator == "multi_turn_ppo":
+        advantages, returns = _compute_multi_turn_ppo_advantages(args, rollout_data, kl)
+        used_builtin_multi_turn_ppo = True
 
     elif args.advantage_estimator == "reinforce_plus_plus":
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
@@ -815,7 +940,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         )
 
     # TODO: OpenRLHF always does advantages normalization but veRL doesn't seem to do it.
-    if args.normalize_advantages:
+    if args.normalize_advantages and not used_builtin_multi_turn_ppo:
         all_advs = torch.cat(advantages)
         cp_size = mpu.get_context_parallel_world_size()
         if cp_size == 1:
@@ -1313,13 +1438,19 @@ def loss_function(
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
+    use_sparse_value_targets = args.loss_type == "value_loss" and args.advantage_estimator == "multi_turn_ppo"
+    reduction_masks = batch["value_masks"] if use_sparse_value_targets else batch["loss_masks"]
+    reduction_denoms = batch["value_mask_sums"] if use_sparse_value_targets else batch["rollout_mask_sums"]
+    if use_sparse_value_targets and (reduction_masks is None or reduction_denoms is None):
+        raise ValueError("multi_turn_ppo value loss requires sparse value masks and rollout turn counts")
+
+    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in reduction_masks])
 
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],
         batch["response_lengths"],
-        batch["loss_masks"],
-        batch["rollout_mask_sums"],
+        reduction_masks,
+        reduction_denoms,
         args.calculate_per_token_loss,
     )
 

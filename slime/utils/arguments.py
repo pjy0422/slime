@@ -968,6 +968,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus",
                     "reinforce_plus_plus_baseline",
                     "ppo",
+                    "multi_turn_ppo",
                 ],
                 default="grpo",
                 help=(
@@ -1920,7 +1921,9 @@ def slime_validate_args(args):
     if args.rollout_external and not args.debug_train_only:
         apply_external_engine_info_to_args(args, logger=logger)
 
-    args.use_critic = args.advantage_estimator == "ppo"
+    args.use_critic = args.advantage_estimator in {"ppo", "multi_turn_ppo"}
+    if args.advantage_estimator == "multi_turn_ppo" and not getattr(args, "rollout_dp_affinity", False):
+        raise ValueError("--advantage-estimator multi_turn_ppo requires --rollout-dp-affinity")
     # Critic always uses the same GPU count as actor.
     args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
     args.critic_num_nodes = args.actor_num_nodes

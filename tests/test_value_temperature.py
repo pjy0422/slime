@@ -10,8 +10,16 @@ NUM_GPUS = 0
 
 
 def test_get_values_does_not_apply_rollout_temperature(monkeypatch):
+    import slime.backends.megatron_utils as megatron_utils
+
+    missing = object()
     previous_loss = sys.modules.pop("slime.backends.megatron_utils.loss", None)
     previous_cp_utils = sys.modules.pop("slime.backends.megatron_utils.cp_utils", None)
+    previous_loss_attr = getattr(megatron_utils, "loss", missing)
+    previous_cp_utils_attr = getattr(megatron_utils, "cp_utils", missing)
+    for name in ("loss", "cp_utils"):
+        if hasattr(megatron_utils, name):
+            delattr(megatron_utils, name)
 
     mpu_stub = types.SimpleNamespace(
         get_context_parallel_world_size=lambda: 1,
@@ -48,6 +56,12 @@ def test_get_values_does_not_apply_rollout_temperature(monkeypatch):
             sys.modules.pop("slime.backends.megatron_utils.cp_utils", None)
         else:
             sys.modules["slime.backends.megatron_utils.cp_utils"] = previous_cp_utils
+        for name, previous in (("loss", previous_loss_attr), ("cp_utils", previous_cp_utils_attr)):
+            if previous is missing:
+                if hasattr(megatron_utils, name):
+                    delattr(megatron_utils, name)
+            else:
+                setattr(megatron_utils, name, previous)
 
 
 if __name__ == "__main__":
