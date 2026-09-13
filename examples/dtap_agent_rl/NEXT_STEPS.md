@@ -357,6 +357,6 @@ owned generated-token spans.
 - [x] PR F5: M8.3 GiGPO.
 - [x] PR F6: M8.4a two-head critic infrastructure.
 - [x] PR F7: M8.4b reference HiPER/HAE.
-- [ ] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
+- [x] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
 - [ ] PR F9: M8.6 production rollout, optimizer/checkpoint smoke, CI, and docs.
 - [ ] PR G: M9 evaluation harness and ablation report.
