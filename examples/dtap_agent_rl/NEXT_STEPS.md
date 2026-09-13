@@ -354,7 +354,7 @@ owned generated-token spans.
 - [x] PR F2: M8.0b rollout affinity and metadata DP passthrough.
 - [x] PR F3: M8.1 multi-turn vanilla PPO.
 - [x] PR F4: M8.2 DC-GRPO DW/SW.
-- [ ] PR F5: M8.3 GiGPO.
+- [x] PR F5: M8.3 GiGPO.
 - [ ] PR F6: M8.4a two-head critic infrastructure.
 - [ ] PR F7: M8.4b reference HiPER/HAE.
 - [ ] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
