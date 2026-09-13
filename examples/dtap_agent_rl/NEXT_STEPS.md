@@ -273,19 +273,19 @@ owned generated-token spans.
 - [x] Add a two-head high/low critic and reference HiPER/HAE implementation,
   including segment-level high recurrence, within-segment low recurrence, and
   separate high/low value masks and losses.
-- [ ] Keep **reference HiPER/HAE** separate from **DTAP-HiPER**. Reference mode
+- [x] Keep **reference HiPER/HAE** separate from **DTAP-HiPER**. Reference mode
   validates the algorithm with the standard switch/subgoal/action contract;
   DTAP mode reuses the validated HAE core but adds DTAP-specific hierarchical
   planning semantics.
-- [ ] In DTAP-HiPER, prompt and parse all four decisions every logical turn:
+- [x] In DTAP-HiPER, prompt and parse all four decisions every logical turn:
   `switch`, `high_subgoal`, `low_subgoal`, and executable `action`. `SWITCH`
   creates a new high-level option/segment; `KEEP` preserves the active
   high-level subgoal; the low-level subgoal is a per-turn objective distinct
   from the concrete action.
-- [ ] Keep DTAP semantic spans separate (`switch`, `high_subgoal`,
+- [x] Keep DTAP semantic spans separate (`switch`, `high_subgoal`,
   `low_subgoal`, `action`) so high/low credit and debugging can be reconstructed
   without overloading `loss_mask`.
-- [ ] Make DTAP high-level option identity survive auto-compaction through
+- [x] Make DTAP high-level option identity survive auto-compaction through
   structured trajectory metadata rather than by searching compacted summary
   text.
 - [ ] Connect the M6/M7 runtime to the production slime rollout worker and
@@ -308,11 +308,11 @@ owned generated-token spans.
 
 ### M8 exit criteria
 
-- [ ] Multi-turn PPO, DC-GRPO DW/SW, GiGPO, and reference HiPER/HAE pass their
+- [x] Multi-turn PPO, DC-GRPO DW/SW, GiGPO, and reference HiPER/HAE pass their
   deterministic math and trajectory fixtures.
-- [ ] Reference HiPER and DTAP-HiPER are explicit separate modes that share the
+- [x] Reference HiPER and DTAP-HiPER are explicit separate modes that share the
   HAE math core but not the prompt contract.
-- [ ] DTAP-HiPER explicitly prompts/parses `switch`, `high_subgoal`,
+- [x] DTAP-HiPER explicitly prompts/parses `switch`, `high_subgoal`,
   `low_subgoal`, and `action`, and `KEEP`/`SWITCH` semantics remain correct
   across compaction.
 - [ ] Reward-zero and infrastructure-invalid samples are observably different.

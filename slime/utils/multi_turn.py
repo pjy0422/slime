@@ -9,6 +9,7 @@ from typing import Any
 from slime.utils.types import Sample
 
 MULTI_TURN_METADATA_VERSION = 1
+HIERARCHY_RECORD_VERSION = 1
 
 _MULTI_TURN_KEYS = {"version", "context_revision", "turns", "dropped_turns"}
 _TURN_KEYS = {
@@ -23,9 +24,37 @@ _TURN_KEYS = {
     "value_positions",
     "format_valid",
 }
+_OPTIONAL_TURN_KEYS = {"hierarchy"}
+_HIERARCHY_KEYS = {
+    "version",
+    "policy_mode",
+    "option_id",
+    "previous_option_id",
+    "high_subgoal",
+    "low_subgoal",
+    "feedback_ref",
+}
 _ROLE_SPAN_KEYS = {"switch", "subgoal", "high_subgoal", "low_subgoal", "action"}
 _VALUE_POSITION_KEYS = {"high", "low"}
 _DROPPED_TURN_KEYS = {"turn_idx", "reason", "generated_tokens"}
+
+
+def normalize_hierarchy_record(value: Any) -> dict[str, Any] | None:
+    """Validate the optional versioned DTAP hierarchy subrecord."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != _HIERARCHY_KEYS:
+        raise ValueError("multi-turn hierarchy must contain the canonical fields")
+    if value["version"] != HIERARCHY_RECORD_VERSION or value["policy_mode"] != "dtap":
+        raise ValueError("multi-turn hierarchy has an unsupported schema")
+    for field in ("option_id", "high_subgoal", "low_subgoal"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise ValueError(f"multi-turn hierarchy {field} must be a non-empty string")
+    for field in ("previous_option_id", "feedback_ref"):
+        if value[field] is not None and (not isinstance(value[field], str) or not value[field]):
+            raise ValueError(f"multi-turn hierarchy {field} must be a non-empty string or null")
+    return dict(value)
 
 
 def _require_nonnegative_int(value: Any, *, field: str) -> int:
@@ -54,7 +83,7 @@ def _validate_turn(
     if not isinstance(turn, Mapping):
         raise ValueError(f"multi-turn sample {sample_position} contains a non-mapping turn")
     missing = _TURN_KEYS - set(turn)
-    unknown = set(turn) - _TURN_KEYS
+    unknown = set(turn) - _TURN_KEYS - _OPTIONAL_TURN_KEYS
     if missing or unknown:
         raise ValueError(
             f"multi-turn sample {sample_position} has invalid turn fields: "
@@ -85,6 +114,8 @@ def _validate_turn(
     for field in ("anchor_key", "switch"):
         if turn[field] is not None and not isinstance(turn[field], str):
             raise ValueError(f"multi-turn {turn_idx} {field} must be a string or null")
+
+    normalize_hierarchy_record(turn.get("hierarchy"))
 
     role_spans = turn["role_spans"]
     if not isinstance(role_spans, Mapping) or set(role_spans) != _ROLE_SPAN_KEYS:
@@ -189,7 +220,9 @@ def build_training_metadata_fields(samples: Sequence[Sample]) -> dict[str, list[
 
 
 __all__ = [
+    "HIERARCHY_RECORD_VERSION",
     "MULTI_TURN_METADATA_VERSION",
     "build_training_metadata_fields",
+    "normalize_hierarchy_record",
     "validate_multi_turn_training_samples",
 ]

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 import torch
 
-from slime.utils.multi_turn import MULTI_TURN_METADATA_VERSION
+from slime.utils.multi_turn import MULTI_TURN_METADATA_VERSION, normalize_hierarchy_record
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class LogicalTurn:
     high_value_position: int | None = None
     low_value_position: int | None = None
     format_valid: bool = True
+    hierarchy: Mapping[str, object] | None = None
 
 
 def collect_logical_turns(
@@ -83,6 +84,7 @@ def collect_logical_turns(
             truncated = raw_turn.get("truncated")
             switch = raw_turn.get("switch")
             format_valid = raw_turn.get("format_valid", True)
+            hierarchy = raw_turn.get("hierarchy")
             if isinstance(turn_idx, bool) or not isinstance(turn_idx, int) or turn_idx < 0:
                 raise ValueError("multi-turn turn_idx must be a nonnegative integer")
             if (
@@ -109,6 +111,7 @@ def collect_logical_turns(
                 raise ValueError(f"multi-turn turn {turn_idx} switch must be a string or null")
             if not isinstance(format_valid, bool):
                 raise ValueError(f"multi-turn turn {turn_idx} format_valid must be boolean")
+            hierarchy = normalize_hierarchy_record(hierarchy)
 
             raw_role_spans = raw_turn.get("role_spans", {})
             if not isinstance(raw_role_spans, Mapping):
@@ -168,6 +171,7 @@ def collect_logical_turns(
                     high_value_position=value_positions["high"],
                     low_value_position=value_positions["low"],
                     format_valid=format_valid,
+                    hierarchy=hierarchy,
                 )
             )
 
