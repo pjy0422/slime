@@ -2,19 +2,35 @@
 
 from .dcgrpo import compute_dcgrpo_turn_credits, precompute_dcgrpo_train_data
 from .gigpo import compute_gigpo_turn_credits, discounted_turn_returns, precompute_gigpo_train_data
+from .hae import HAEOutput, HAESegment, build_hae_segments, compute_reference_hae, population_normalize
 from .mt_ppo import compute_turn_gae
-from .multi_turn import LogicalTurn, collect_logical_turns, pack_turn_credits, project_turn_values, unpack_turn_credits
+from .multi_turn import (
+    LogicalTurn,
+    collect_logical_turns,
+    pack_turn_credits,
+    project_head_values,
+    project_role_values,
+    project_turn_values,
+    unpack_turn_credits,
+)
 
 __all__ = [
     "LogicalTurn",
+    "HAEOutput",
+    "HAESegment",
+    "build_hae_segments",
     "collect_logical_turns",
     "compute_dcgrpo_turn_credits",
     "compute_gigpo_turn_credits",
+    "compute_reference_hae",
     "compute_turn_gae",
     "discounted_turn_returns",
     "pack_turn_credits",
+    "population_normalize",
     "precompute_dcgrpo_train_data",
     "precompute_gigpo_train_data",
+    "project_head_values",
+    "project_role_values",
     "project_turn_values",
     "unpack_turn_credits",
 ]

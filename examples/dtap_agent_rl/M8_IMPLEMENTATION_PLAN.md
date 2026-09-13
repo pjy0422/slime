@@ -666,6 +666,12 @@ Reference baseline and parity boundary:
   not bit-for-bit launch-configuration parity or an exact implementation of
   every paper equation.
 
+The checked-in numerical fixture records upstream commit
+`ec5982a71635242de983a34407def05ac0d2e349` and its Apache-2.0 license. The
+implementation lives in `slime/utils/advantages/hae.py`; the standalone
+reference prompt/parser lives in `slime/agent/hae.py`. CI never clones or
+executes the external repository.
+
 Task-specific upstream shaping such as keep, consistency, invalid-action, and
 truncation-bootstrap options is also outside this reference-core scope. Add it
 later as explicit task configuration rather than silently folding it into HAE.

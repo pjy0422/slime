@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 
@@ -27,6 +27,11 @@ class LogicalTurn:
     done: bool
     anchor_key: str | None = None
     truncated: bool = False
+    switch: str | None = None
+    role_spans: Mapping[str, tuple[tuple[int, int], ...]] = field(default_factory=dict)
+    high_value_position: int | None = None
+    low_value_position: int | None = None
+    format_valid: bool = True
 
 
 def collect_logical_turns(
@@ -76,6 +81,8 @@ def collect_logical_turns(
             done = raw_turn.get("done")
             anchor_key = raw_turn.get("anchor_key")
             truncated = raw_turn.get("truncated")
+            switch = raw_turn.get("switch")
+            format_valid = raw_turn.get("format_valid", True)
             if isinstance(turn_idx, bool) or not isinstance(turn_idx, int) or turn_idx < 0:
                 raise ValueError("multi-turn turn_idx must be a nonnegative integer")
             if (
@@ -98,6 +105,46 @@ def collect_logical_turns(
                 raise ValueError(f"multi-turn turn {turn_idx} anchor_key must be a string or null")
             if not isinstance(truncated, bool):
                 raise ValueError(f"multi-turn turn {turn_idx} truncated must be boolean")
+            if switch is not None and not isinstance(switch, str):
+                raise ValueError(f"multi-turn turn {turn_idx} switch must be a string or null")
+            if not isinstance(format_valid, bool):
+                raise ValueError(f"multi-turn turn {turn_idx} format_valid must be boolean")
+
+            raw_role_spans = raw_turn.get("role_spans", {})
+            if not isinstance(raw_role_spans, Mapping):
+                raise ValueError(f"multi-turn turn {turn_idx} role_spans must be a mapping")
+            role_spans: dict[str, tuple[tuple[int, int], ...]] = {}
+            for role, spans in raw_role_spans.items():
+                if not isinstance(role, str) or not isinstance(spans, Sequence) or isinstance(spans, (str, bytes)):
+                    raise ValueError(f"multi-turn turn {turn_idx} has invalid role spans")
+                normalized_spans = []
+                for role_span in spans:
+                    if (
+                        not isinstance(role_span, Sequence)
+                        or isinstance(role_span, (str, bytes))
+                        or len(role_span) != 2
+                        or any(isinstance(position, bool) or not isinstance(position, int) for position in role_span)
+                    ):
+                        raise ValueError(f"multi-turn turn {turn_idx} role {role} has an invalid span")
+                    span_start, span_end = role_span
+                    if span_start < response_start or span_start >= span_end or span_end > response_end:
+                        raise ValueError(f"multi-turn turn {turn_idx} role {role} lies outside its owned response")
+                    normalized_spans.append((span_start, span_end))
+                role_spans[role] = tuple(normalized_spans)
+
+            raw_value_positions = raw_turn.get("value_positions", {})
+            if not isinstance(raw_value_positions, Mapping):
+                raise ValueError(f"multi-turn turn {turn_idx} value_positions must be a mapping")
+            value_positions: dict[str, int | None] = {}
+            for head in ("high", "low"):
+                position = raw_value_positions.get(head)
+                if position is not None and (
+                    isinstance(position, bool)
+                    or not isinstance(position, int)
+                    or not response_start <= position < response_end
+                ):
+                    raise ValueError(f"multi-turn turn {turn_idx} {head} value position is invalid")
+                value_positions[head] = position
 
             key = (int(rollout_id), turn_idx)
             if key in seen:
@@ -116,6 +163,11 @@ def collect_logical_turns(
                     done=done,
                     anchor_key=anchor_key,
                     truncated=truncated,
+                    switch=switch,
+                    role_spans=role_spans,
+                    high_value_position=value_positions["high"],
+                    low_value_position=value_positions["low"],
+                    format_valid=format_valid,
                 )
             )
 
@@ -212,10 +264,75 @@ def project_turn_values(
     return projected, masks
 
 
+def project_role_values(
+    response_lengths: Sequence[int],
+    turns: Sequence[LogicalTurn],
+    values: Mapping[tuple[int, int], torch.Tensor],
+    *,
+    role: str,
+    reference_tensors: Sequence[torch.Tensor],
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Project logical scalars onto every owned span for one semantic role."""
+
+    if len(response_lengths) != len(reference_tensors):
+        raise ValueError("response lengths and reference tensors must align")
+    projected = [
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
+    ]
+    masks = [
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
+    ]
+    for turn in turns:
+        key = (turn.rollout_id, turn.turn_idx)
+        if key not in values:
+            raise ValueError(f"missing logical-turn value for {key}")
+        spans = turn.role_spans.get(role, ())
+        if not spans:
+            raise ValueError(f"logical turn {key} has no {role} span")
+        for span_start, span_end in spans:
+            projected[turn.sample_index][span_start:span_end] = values[key]
+            masks[turn.sample_index][span_start:span_end] = 1
+    return projected, masks
+
+
+def project_head_values(
+    response_lengths: Sequence[int],
+    turns: Sequence[LogicalTurn],
+    values: Mapping[tuple[int, int], torch.Tensor],
+    *,
+    head: str,
+    reference_tensors: Sequence[torch.Tensor],
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Project logical critic targets to sparse low/high value positions."""
+
+    if head not in {"low", "high"}:
+        raise ValueError(f"unknown critic head: {head!r}")
+    if len(response_lengths) != len(reference_tensors):
+        raise ValueError("response lengths and reference tensors must align")
+    projected = [
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
+    ]
+    masks = [
+        reference.new_zeros(length) for reference, length in zip(reference_tensors, response_lengths, strict=True)
+    ]
+    for turn in turns:
+        key = (turn.rollout_id, turn.turn_idx)
+        if key not in values:
+            raise ValueError(f"missing logical-turn value for {key}")
+        position = turn.low_value_position if head == "low" else turn.high_value_position
+        if position is None:
+            raise ValueError(f"logical turn {key} has no {head} value position")
+        projected[turn.sample_index][position] = values[key]
+        masks[turn.sample_index][position] = 1
+    return projected, masks
+
+
 __all__ = [
     "LogicalTurn",
     "collect_logical_turns",
     "pack_turn_credits",
+    "project_head_values",
+    "project_role_values",
     "project_turn_values",
     "unpack_turn_credits",
 ]

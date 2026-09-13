@@ -261,6 +261,8 @@ def make_slime_validate_args(**overrides):
         rollout_temperature=1.0,
         rollout_dp_affinity=False,
         gamma=1.0,
+        lambd=1.0,
+        hae_high_lambd=1.0,
         dcgrpo_mode="dw",
         dcgrpo_alpha=1.0,
         gigpo_step_advantage_weight=1.0,
@@ -334,6 +336,39 @@ def test_existing_critic_estimators_reject_two_head_configuration(monkeypatch, e
     )
 
     with pytest.raises(ValueError, match="requires --critic-value-heads=1"):
+        module.slime_validate_args(args)
+
+
+@pytest.mark.unit
+def test_hae_enables_two_head_critic_with_rollout_affinity(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(
+        advantage_estimator="hae",
+        critic_value_heads=2,
+        rollout_dp_affinity=True,
+    )
+
+    module.slime_validate_args(args)
+
+    assert args.use_critic is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"critic_value_heads": 1, "rollout_dp_affinity": True}, "requires --critic-value-heads=2"),
+        ({"critic_value_heads": 2, "rollout_dp_affinity": False}, "requires --rollout-dp-affinity"),
+        ({"critic_value_heads": 2, "rollout_dp_affinity": True, "gamma": -0.1}, "--gamma"),
+        ({"critic_value_heads": 2, "rollout_dp_affinity": True, "lambd": 1.1}, "--lambd"),
+        ({"critic_value_heads": 2, "rollout_dp_affinity": True, "hae_high_lambd": float("nan")}, "--hae-high-lambd"),
+    ],
+)
+def test_hae_rejects_incompatible_or_invalid_configuration(monkeypatch, overrides, message):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(advantage_estimator="hae", **overrides)
+
+    with pytest.raises(ValueError, match=message):
         module.slime_validate_args(args)
 
 
@@ -470,6 +505,28 @@ def test_two_head_critic_arguments_default_to_legacy_single_head(monkeypatch):
     assert defaults.critic_high_value_loss_coef == 1.0
     assert configured.critic_value_heads == 2
     assert configured.critic_high_value_loss_coef == 0.25
+
+
+@pytest.mark.unit
+def test_hae_arguments_are_parseable_with_reference_defaults(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    parser = argparse.ArgumentParser()
+    module.get_slime_extra_args_provider()(parser)
+
+    parsed = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "1",
+            "--advantage-estimator",
+            "hae",
+            "--critic-value-heads",
+            "2",
+            "--rollout-dp-affinity",
+        ]
+    )
+
+    assert parsed.advantage_estimator == "hae"
+    assert parsed.hae_high_lambd == 1.0
 
 
 @pytest.mark.unit

@@ -8,8 +8,15 @@ import torch.distributed as dist
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
+from slime.utils.advantages.hae import compute_reference_hae
 from slime.utils.advantages.mt_ppo import compute_turn_gae
-from slime.utils.advantages.multi_turn import collect_logical_turns, project_turn_values, unpack_turn_credits
+from slime.utils.advantages.multi_turn import (
+    collect_logical_turns,
+    project_head_values,
+    project_role_values,
+    project_turn_values,
+    unpack_turn_credits,
+)
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
 from slime.utils.ppo_utils import (
@@ -828,6 +835,189 @@ def _compute_multi_turn_ppo_advantages(
     return advantages, returns
 
 
+def _distributed_population_normalize(values: torch.Tensor, *, process_group=None) -> torch.Tensor:
+    """Normalize logical credits with upstream HAE's population variance."""
+
+    if values.ndim != 1 or values.numel() == 0:
+        raise ValueError("HAE normalization requires non-empty one-dimensional values")
+    stats = torch.stack(
+        (
+            values.double().sum(),
+            values.double().square().sum(),
+            values.new_tensor(values.numel(), dtype=torch.float64),
+        )
+    )
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(stats, group=process_group)
+    mean = stats[0] / stats[2]
+    variance = (stats[1] / stats[2] - mean.square()).clamp_min(0.0)
+    return (values - mean.to(values.dtype)) / (variance.sqrt().to(values.dtype) + 1e-8)
+
+
+def _compute_hae_advantages(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    kl: list[torch.Tensor],
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    """Compute reference two-head HAE and project its actor/critic signals."""
+
+    values = rollout_data.get("values")
+    metadata = rollout_data.get("metadata")
+    rollout_ids = rollout_data.get("rollout_ids")
+    if values is None:
+        raise ValueError("hae requires critic values")
+    if metadata is None or rollout_ids is None:
+        raise ValueError("hae requires metadata and rollout_ids")
+
+    total_lengths = rollout_data["total_lengths"]
+    response_lengths = rollout_data["response_lengths"]
+    loss_masks = rollout_data["loss_masks"]
+    turns = collect_logical_turns(metadata, rollout_ids, response_lengths, loss_masks)
+    full_values = [
+        all_gather_with_cp(value, total_length, response_length)
+        for value, total_length, response_length in zip(values, total_lengths, response_lengths, strict=True)
+    ]
+    full_kl = [
+        all_gather_with_cp(per_token_kl, total_length, response_length)
+        for per_token_kl, total_length, response_length in zip(kl, total_lengths, response_lengths, strict=True)
+    ]
+    for value in full_values:
+        if value.ndim != 2 or value.size(-1) != 2:
+            raise ValueError("hae requires response-aligned critic values with shape [tokens, 2]")
+    for per_token_kl in full_kl:
+        if per_token_kl.ndim != 1:
+            raise ValueError("hae requires one KL value per response token")
+
+    turns_by_rollout: dict[int, list] = defaultdict(list)
+    for turn in turns:
+        turns_by_rollout[turn.rollout_id].append(turn)
+
+    raw_low_advantages: dict[tuple[int, int], torch.Tensor] = {}
+    raw_high_advantages: dict[tuple[int, int], torch.Tensor] = {}
+    low_returns: dict[tuple[int, int], torch.Tensor] = {}
+    high_returns: dict[tuple[int, int], torch.Tensor] = {}
+    boundary_turns = []
+    for rollout_id, rollout_turns in turns_by_rollout.items():
+        rollout_turns.sort(key=lambda turn: turn.turn_idx)
+        if [turn.turn_idx for turn in rollout_turns] != list(range(len(rollout_turns))):
+            raise ValueError(f"hae rollout {rollout_id} must contain a complete turn sequence starting at zero")
+        for turn in rollout_turns:
+            key = (rollout_id, turn.turn_idx)
+            if not turn.format_valid:
+                raise ValueError(f"hae logical turn {key} has invalid reference format")
+            if turn.truncated:
+                raise ValueError(f"hae logical turn {key} is truncated; truncation bootstrap is not enabled")
+            if turn.switch not in {"KEEP", "SWITCH"}:
+                raise ValueError(f"hae logical turn {key} requires switch KEEP or SWITCH")
+            if not turn.role_spans.get("action") or not turn.role_spans.get("subgoal"):
+                raise ValueError(f"hae logical turn {key} requires action and subgoal spans")
+            if turn.low_value_position is None:
+                raise ValueError(f"hae logical turn {key} requires a low value position")
+
+        switches = [turn.turn_idx > 0 and turn.switch == "SWITCH" for turn in rollout_turns]
+        expected_boundaries = [index == 0 or switches[index] for index in range(len(switches))]
+        for turn, is_boundary in zip(rollout_turns, expected_boundaries, strict=True):
+            key = (rollout_id, turn.turn_idx)
+            if is_boundary and turn.high_value_position is None:
+                raise ValueError(f"hae boundary turn {key} requires a high value position")
+            if not is_boundary and turn.high_value_position is not None:
+                raise ValueError(f"hae non-boundary turn {key} must not define a high value position")
+
+        low_values = torch.stack(
+            [full_values[turn.sample_index][turn.low_value_position, 0] for turn in rollout_turns]
+        ).float()
+        high_values = low_values.new_zeros(len(rollout_turns))
+        for position, (turn, is_boundary) in enumerate(zip(rollout_turns, expected_boundaries, strict=True)):
+            if is_boundary:
+                high_values[position] = full_values[turn.sample_index][turn.high_value_position, 1]
+        turn_rewards = torch.stack(
+            [
+                low_values.new_tensor(turn.reward)
+                - args.kl_coef
+                * (
+                    full_kl[turn.sample_index][turn.response_start : turn.response_end]
+                    * loss_masks[turn.sample_index][turn.response_start : turn.response_end]
+                ).sum()
+                for turn in rollout_turns
+            ]
+        )
+        turn_dones = torch.tensor([turn.done for turn in rollout_turns], device=low_values.device, dtype=torch.bool)
+        result = compute_reference_hae(
+            turn_rewards,
+            low_values,
+            high_values,
+            turn_dones,
+            switches,
+            gamma=args.gamma,
+            low_lambd=args.lambd,
+            high_lambd=args.hae_high_lambd,
+        )
+        for position, turn in enumerate(rollout_turns):
+            key = (rollout_id, turn.turn_idx)
+            raw_low_advantages[key] = result.low_advantages[position]
+            low_returns[key] = result.low_returns[position]
+            if result.boundary_mask[position]:
+                raw_high_advantages[key] = result.high_advantages[position]
+                high_returns[key] = result.high_returns[position]
+                boundary_turns.append(turn)
+
+    projected_low = raw_low_advantages
+    projected_high = raw_high_advantages
+    if args.normalize_advantages:
+        process_group = mpu.get_data_parallel_group(with_context_parallel=False)
+        low_keys = [(turn.rollout_id, turn.turn_idx) for turn in turns]
+        low_normalized = _distributed_population_normalize(
+            torch.stack([raw_low_advantages[key] for key in low_keys]), process_group=process_group
+        )
+        projected_low = dict(zip(low_keys, low_normalized, strict=True))
+        high_keys = [(turn.rollout_id, turn.turn_idx) for turn in boundary_turns]
+        high_normalized = _distributed_population_normalize(
+            torch.stack([raw_high_advantages[key] for key in high_keys]), process_group=process_group
+        )
+        projected_high = dict(zip(high_keys, high_normalized, strict=True))
+
+    full_low_advantages, _ = project_role_values(
+        response_lengths, turns, projected_low, role="action", reference_tensors=full_values
+    )
+    full_high_advantages, _ = project_role_values(
+        response_lengths, boundary_turns, projected_high, role="subgoal", reference_tensors=full_values
+    )
+    full_advantages = [low + high for low, high in zip(full_low_advantages, full_high_advantages, strict=True)]
+    full_low_returns, low_value_masks = project_head_values(
+        response_lengths, turns, low_returns, head="low", reference_tensors=full_values
+    )
+    full_high_returns, high_value_masks = project_head_values(
+        response_lengths, boundary_turns, high_returns, head="high", reference_tensors=full_values
+    )
+
+    low_counts = {rollout_id: len(rollout_turns) for rollout_id, rollout_turns in turns_by_rollout.items()}
+    high_counts = defaultdict(int)
+    for turn in boundary_turns:
+        high_counts[turn.rollout_id] += 1
+    rollout_data["low_value_masks"] = low_value_masks
+    rollout_data["high_value_masks"] = high_value_masks
+    rollout_data["low_value_mask_sums"] = torch.tensor(
+        [low_counts[int(rollout_id)] for rollout_id in rollout_ids], dtype=torch.float32, device=full_values[0].device
+    )
+    rollout_data["high_value_mask_sums"] = torch.tensor(
+        [high_counts[int(rollout_id)] for rollout_id in rollout_ids], dtype=torch.float32, device=full_values[0].device
+    )
+
+    def cp_slice(tensors):
+        return [
+            slice_log_prob_with_cp(tensor, total_length, response_length)
+            for tensor, total_length, response_length in zip(tensors, total_lengths, response_lengths, strict=True)
+        ]
+
+    advantages = cp_slice(full_advantages)
+    rollout_data["low_returns"] = cp_slice(full_low_returns)
+    rollout_data["high_returns"] = cp_slice(full_high_returns)
+    # The shared return field is not consumed by the two-head critic. Keep it
+    # response-aligned for generic transport/debugging without inventing a
+    # third scalar target.
+    return advantages, [advantage.clone() for advantage in advantages]
+
+
 def _compute_precomputed_turn_advantages(
     rollout_data: RolloutBatch,
     *,
@@ -877,7 +1067,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo", "dcgrpo", "gigpo",
+    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo", "hae", "dcgrpo", "gigpo",
     "reinforce_plus_plus", and "reinforce_plus_plus_baseline". When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel-with-context-parallel group using masked statistics.
@@ -914,7 +1104,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     if args.kl_coef == 0 or not log_probs:
         # when kl_coef is 0, we won't compute ref_log_prob
         xs = log_probs or rollout_log_probs or values
-        kl = [torch.zeros_like(x, dtype=torch.float32, device=x.device) for x in xs]
+        kl = [torch.zeros(x.shape[0], dtype=torch.float32, device=x.device) for x in xs]
     else:
         kl = [
             compute_approx_kl(
@@ -954,6 +1144,10 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     elif args.advantage_estimator == "multi_turn_ppo":
         advantages, returns = _compute_multi_turn_ppo_advantages(args, rollout_data, kl)
+        used_preprojected_turn_advantages = True
+
+    elif args.advantage_estimator == "hae":
+        advantages, returns = _compute_hae_advantages(args, rollout_data, kl)
         used_preprojected_turn_advantages = True
 
     elif args.advantage_estimator in {"dcgrpo", "gigpo"}:
