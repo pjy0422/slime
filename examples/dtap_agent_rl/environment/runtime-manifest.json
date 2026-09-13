@@ -1,0 +1,68 @@
+{
+  "bootstrap": {
+    "external_tool_versions": {
+      "claude": "2.1.220 (Claude Code)",
+      "node": "v24.18.0",
+      "openclaw": "OpenClaw 2026.9.1 (ad6fe23)"
+    },
+    "required_commands": [
+      "git",
+      "docker",
+      "nvidia-smi",
+      "claude",
+      "node",
+      "openclaw"
+    ],
+    "uv_version": "0.11.22"
+  },
+  "editable_projects": [
+    "decodingtrust-agent-sdk",
+    "dtap-traj",
+    "slime"
+  ],
+  "lock": {
+    "file": "requirements-linux-x86_64-py312.lock.txt",
+    "package_count": 568,
+    "sha256": "6f349e07a68ae10cfd0077a80b7acd7f7cdd99ed6ff76280114291dc7785ffea"
+  },
+  "platform": {
+    "cuda_available": true,
+    "gpu_capabilities": [
+      [
+        8,
+        0
+      ]
+    ],
+    "implementation": "CPython",
+    "machine": "x86_64",
+    "python_version": "3.12.13",
+    "system": "Linux",
+    "torch_cuda": "13.0",
+    "torch_version": "2.11.0+cu130"
+  },
+  "repositories": {
+    "dtap": {
+      "commit": "e0323a521ba4ef88f8e14c1eccf68d0a3d19a458",
+      "overlay_digest": "f56c48c4ff5dcf202698afcad6ca2ce2b5fb8abcbe52ad0171a8aa311ad324b0",
+      "overlay_script": "examples/dtap_agent_rl/dtap_integration/apply.sh",
+      "overlay_untracked_files": [
+        "dt_arena/envs/hospital/hospital_compat.py",
+        "dt_arena/envs/paypal/init.sql",
+        "dt_arena/src/env_verification.py",
+        "dt_arena/src/feedback_observation.py",
+        "tests/test_env_verification.py",
+        "tests/test_feedback_boundary_matrix.py",
+        "tests/test_feedback_observation.py",
+        "tests/test_openclaw_mcp_events.py"
+      ],
+      "remote": "https://github.com/pjy0422/DecodingTrust-Agent",
+      "worktree_digest": "28099fa34b112dd1ac26497768bf65523a6ad91694811d1dbe08ceac16507aa5"
+    },
+    "slime": {
+      "install": "current_checkout",
+      "remote": "https://github.com/pjy0422/slime"
+    }
+  },
+  "schema_version": 1,
+  "secret_policy": "environment-only; no credential values are exported"
+}

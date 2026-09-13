@@ -1,0 +1,21 @@
+# kind patch-file
+base m4-runtime-integration.patch
+base m5-environment-verification.patch
+base m6-placement-receipts.patch
+base m6-domain-placement.patch
+base m6-openclaw-deepseek.patch
+base p0-p2-linux-stabilization.patch
+base p3-judge-reliability.patch
+base p4-h2-live-stability.patch
+base p5-windows-macos-placement.patch
+base m7-feedback-observability.patch
+base m7-feedback-v2.patch
+base m7-exact-locators.patch
+base m7-domain-feedback.patch
+base m7-feedback-boundary-matrix.patch
+base m7-token-observability.patch
+incremental m7-explicit-tool-capabilities.patch
+incremental m7-structured-judge-status.patch
+incremental m7-exact-tool-presentation-identity.patch
+incremental p6-exact-adapter-dispatch.patch
+incremental p7-holdout-e2e-stability.patch
