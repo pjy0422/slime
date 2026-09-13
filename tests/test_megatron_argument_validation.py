@@ -261,6 +261,8 @@ def make_slime_validate_args(**overrides):
         gamma=1.0,
         dcgrpo_mode="dw",
         dcgrpo_alpha=1.0,
+        gigpo_step_advantage_weight=1.0,
+        gigpo_normalization="mean_std",
     )
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -477,6 +479,43 @@ def test_dcgrpo_arguments_default_to_dw_alpha_one_and_gamma_one(monkeypatch):
 def test_dcgrpo_rejects_invalid_gamma_and_alpha(monkeypatch, overrides, message):
     module = load_slime_arguments_module(monkeypatch)
     args = make_slime_validate_args(advantage_estimator="dcgrpo", **overrides)
+
+    with pytest.raises(ValueError, match=message):
+        module.slime_validate_args(args)
+
+
+@pytest.mark.unit
+def test_gigpo_arguments_default_to_critic_free_mean_std_and_unit_weights(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    parser = argparse.ArgumentParser()
+    module.get_slime_extra_args_provider()(parser)
+
+    parsed = parser.parse_args(["--rollout-batch-size", "1", "--advantage-estimator", "gigpo"])
+
+    assert parsed.advantage_estimator == "gigpo"
+    assert parsed.gigpo_step_advantage_weight == 1.0
+    assert parsed.gigpo_normalization == "mean_std"
+    assert parsed.gamma == 1.0
+
+    args = make_slime_validate_args(advantage_estimator="gigpo")
+    module.slime_validate_args(args)
+    assert args.use_critic is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"gamma": -0.1}, "--gamma"),
+        ({"gamma": float("nan")}, "--gamma"),
+        ({"gigpo_normalization": "invalid"}, "--gigpo-normalization"),
+        ({"gigpo_step_advantage_weight": -0.1}, "--gigpo-step-advantage-weight"),
+        ({"gigpo_step_advantage_weight": float("inf")}, "--gigpo-step-advantage-weight"),
+    ],
+)
+def test_gigpo_rejects_invalid_configuration(monkeypatch, overrides, message):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(advantage_estimator="gigpo", **overrides)
 
     with pytest.raises(ValueError, match=message):
         module.slime_validate_args(args)

@@ -20,6 +20,7 @@ from slime.observability.rollout_metrics import log_eval_rollout_data, log_rollo
 from slime.rollout.base_types import call_rollout_fn
 from slime.rollout.sample_hooks import set_current_rollout_id
 from slime.utils.advantages.dcgrpo import precompute_dcgrpo_train_data
+from slime.utils.advantages.gigpo import precompute_gigpo_train_data
 from slime.utils.data import get_source
 from slime.utils.dp_schedule import build_dp_schedule, partition_train_data
 from slime.utils.health_monitor import RolloutHealthMonitor
@@ -364,6 +365,15 @@ class RolloutManager:
                 mode=self.args.dcgrpo_mode,
                 gamma=self.args.gamma,
                 alpha=self.args.dcgrpo_alpha,
+            )
+        elif self.args.advantage_estimator == "gigpo":
+            # GiGPO's episode and anchor comparison groups may span DP ranks.
+            # Compute the scalar turn credits while the collection is whole.
+            train_data["turn_credits"] = precompute_gigpo_train_data(
+                train_data,
+                gamma=self.args.gamma,
+                step_advantage_weight=self.args.gigpo_step_advantage_weight,
+                normalization=self.args.gigpo_normalization,
             )
 
         # Per-rollout aggregate, precomputed at the step level (where we can

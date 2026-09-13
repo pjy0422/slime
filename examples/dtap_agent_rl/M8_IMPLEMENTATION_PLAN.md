@@ -284,7 +284,7 @@ Add:
 ```text
 --advantage-estimator gigpo
 --gigpo-step-advantage-weight <float>  # omega, default: 1.0
---gigpo-normalization {mean,mean_std}
+--gigpo-normalization {mean,mean_std}  # default: mean_std
 --gamma <float>                        # reused, default: 1.0
 ```
 

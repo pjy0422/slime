@@ -9,8 +9,8 @@ import torch.nn.functional as F
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
-from slime.utils.advantages.dcgrpo import unpack_dcgrpo_turn_credits
-from slime.utils.advantages.mt_ppo import collect_logical_turns, compute_turn_gae, project_turn_values
+from slime.utils.advantages.mt_ppo import compute_turn_gae
+from slime.utils.advantages.multi_turn import collect_logical_turns, project_turn_values, unpack_turn_credits
 from slime.utils.distributed_utils import distributed_masked_whiten
 from slime.utils.misc import load_function
 from slime.utils.ppo_utils import (
@@ -822,22 +822,24 @@ def _compute_multi_turn_ppo_advantages(
     return advantages, returns
 
 
-def _compute_dcgrpo_advantages(
+def _compute_precomputed_turn_advantages(
     rollout_data: RolloutBatch,
+    *,
+    estimator_name: str,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-    """Project globally precomputed DC-GRPO turn credit onto train-owned tokens."""
+    """Project globally precomputed turn credit onto train-owned tokens."""
 
     metadata = rollout_data.get("metadata")
     rollout_ids = rollout_data.get("rollout_ids")
     packed_credits = rollout_data.get("turn_credits")
     if metadata is None or rollout_ids is None or packed_credits is None:
-        raise ValueError("dcgrpo requires metadata, rollout_ids, and precomputed turn_credits")
+        raise ValueError(f"{estimator_name} requires metadata, rollout_ids, and precomputed turn_credits")
 
     total_lengths = rollout_data["total_lengths"]
     response_lengths = rollout_data["response_lengths"]
     loss_masks = rollout_data["loss_masks"]
     turns = collect_logical_turns(metadata, rollout_ids, response_lengths, loss_masks)
-    turn_credits = unpack_dcgrpo_turn_credits(turns, packed_credits)
+    turn_credits = unpack_turn_credits(turns, packed_credits)
     references = [
         torch.zeros(response_length, device=loss_mask.device, dtype=torch.float32)
         for response_length, loss_mask in zip(response_lengths, loss_masks, strict=True)
@@ -869,7 +871,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
 
     This function extracts rewards, log-probs, values, and masks from
     `rollout_data`, computes KL divergences, then applies the chosen advantage
-    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo", "dcgrpo",
+    estimator. Supported methods: "grpo", "gspo", "cispo", "ppo", "multi_turn_ppo", "dcgrpo", "gigpo",
     "reinforce_plus_plus", and "reinforce_plus_plus_baseline". When
     `args.normalize_advantages` is True, advantages are whitened across the
     data-parallel-with-context-parallel group using masked statistics.
@@ -948,8 +950,11 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         advantages, returns = _compute_multi_turn_ppo_advantages(args, rollout_data, kl)
         used_preprojected_turn_advantages = True
 
-    elif args.advantage_estimator == "dcgrpo":
-        advantages, returns = _compute_dcgrpo_advantages(rollout_data)
+    elif args.advantage_estimator in {"dcgrpo", "gigpo"}:
+        advantages, returns = _compute_precomputed_turn_advantages(
+            rollout_data,
+            estimator_name=args.advantage_estimator,
+        )
         used_preprojected_turn_advantages = True
 
     elif args.advantage_estimator == "reinforce_plus_plus":

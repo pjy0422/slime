@@ -971,6 +971,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "ppo",
                     "multi_turn_ppo",
                     "dcgrpo",
+                    "gigpo",
                 ],
                 default="grpo",
                 help=(
@@ -1036,6 +1037,18 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=1.0,
                 help="Nonnegative future-credit weight for DC-GRPO SW",
+            )
+            parser.add_argument(
+                "--gigpo-step-advantage-weight",
+                type=float,
+                default=1.0,
+                help="Nonnegative GiGPO anchor-relative step-credit weight",
+            )
+            parser.add_argument(
+                "--gigpo-normalization",
+                choices=["mean", "mean_std"],
+                default="mean_std",
+                help="GiGPO group centering with optional sample-standard-deviation scaling",
             )
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
@@ -1945,6 +1958,13 @@ def slime_validate_args(args):
             raise ValueError("--gamma must lie in [0, 1] for DC-GRPO")
         if not math.isfinite(args.dcgrpo_alpha) or args.dcgrpo_alpha < 0.0:
             raise ValueError("--dcgrpo-alpha must be finite and nonnegative")
+    if args.advantage_estimator == "gigpo":
+        if not math.isfinite(args.gamma) or not 0.0 <= args.gamma <= 1.0:
+            raise ValueError("--gamma must lie in [0, 1] for GiGPO")
+        if args.gigpo_normalization not in {"mean", "mean_std"}:
+            raise ValueError("--gigpo-normalization must be one of: mean, mean_std")
+        if not math.isfinite(args.gigpo_step_advantage_weight) or args.gigpo_step_advantage_weight < 0.0:
+            raise ValueError("--gigpo-step-advantage-weight must be finite and nonnegative")
     # Critic always uses the same GPU count as actor.
     args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
     args.critic_num_nodes = args.actor_num_nodes
