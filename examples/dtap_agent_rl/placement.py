@@ -295,3 +295,20 @@ class PlacementCoordinator:
     @property
     def verified_actions(self) -> int:
         return sum(result.valid for result in self._receipts.values())
+
+    @property
+    def encountered_unsupported(self) -> bool:
+        return any(result.status == "unsupported" for result in self._receipts.values())
+
+    def training_summary(self) -> dict[str, Any]:
+        """Return bounded receipt facts without action ids, payloads, or locators."""
+
+        statuses: dict[str, int] = {}
+        for result in self._receipts.values():
+            statuses[result.status] = statuses.get(result.status, 0) + 1
+        return {
+            "applied_actions": self.applied_actions,
+            "validated_actions": self.validated_actions,
+            "verified_actions": self.verified_actions,
+            "statuses": statuses,
+        }

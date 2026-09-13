@@ -1,0 +1,42 @@
+{
+  "schema": "dtap-training-runtime",
+  "version": 1,
+  "platform": "linux-x86_64",
+  "runtime_setup_digest": "sha256:39c0f7754846e48bcd75315ec6ec9b4abbb6b03887929e4e5f51b8059d85cf9d",
+  "image": {
+    "repository": "docker.io/slimerl/slime",
+    "tag": "latest-cu129",
+    "manifest_digest": "sha256:39be6cbb00f9b6770e664ace0c7b9f5ecff2977a1a205e7926a720f906fbc62c",
+    "reference": "docker.io/slimerl/slime@sha256:39be6cbb00f9b6770e664ace0c7b9f5ecff2977a1a205e7926a720f906fbc62c"
+  },
+  "runtime": {
+    "python": "3.12",
+    "torch": "2.11.0+cu129",
+    "cuda": "12.9",
+    "sglang": "0.5.15.post1",
+    "flash_attn": "2.8.3",
+    "megatron_commit": "1dcf0dafa884ad52ffb243625717a3471643e087",
+    "sglang_commit": "0b3bb0cbe31873994c9f989fddfe2f87ca839fdd",
+    "transformer_engine": "2.16.1"
+  },
+  "verification": {
+    "dependency_probe": "required",
+    "gpu_execution": "deferred-until-capacity",
+    "throughput_and_vram": "unverified",
+    "expected_pip_check_conflicts": [
+      "cupy-cuda12x 14.1.1 has requirement cuda-pathfinder==1.*,>=1.3.4, but you have cuda-pathfinder 1.2.2.",
+      "cupy-cuda12x 14.1.1 has requirement numpy<2.6,>=2.0, but you have numpy 1.26.4.",
+      "moviepy 2.2.1 has requirement pillow<12.0,>=9.2.0, but you have pillow 12.3.0.",
+      "nixl 1.3.1 requires nixl-cu13, which is not installed.",
+      "sgl-deep-gemm 0.0.0 has requirement apache-tvm-ffi==0.1.11, but you have apache-tvm-ffi 0.1.9.",
+      "sglang 0.5.15.post1 has requirement apache-tvm-ffi==0.1.11, but you have apache-tvm-ffi 0.1.9.",
+      "sglang 0.5.15.post1 has requirement openai==2.6.1, but you have openai 3.5.0.",
+      "sglang 0.5.15.post1 has requirement sgl-deep-gemm==0.1.4, but you have sgl-deep-gemm 0.0.0.",
+      "sglang 0.5.15.post1 has requirement tilelang==0.1.11, but you have tilelang 0.1.9.",
+      "sglang 0.5.15.post1 requires flash-attn-4, which is not installed.",
+      "tifffile 2026.6.1 has requirement numpy>=2.1, but you have numpy 1.26.4.",
+      "transformer_engine_cu12 2.16.1 is not supported on this platform"
+    ]
+  },
+  "secret_policy": "environment-only; no credential values are stored"
+}

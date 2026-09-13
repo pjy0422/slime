@@ -50,8 +50,10 @@ The UI opens at `http://127.0.0.1:8765` by default and supports:
 
 ## Performance preflight and tuning registry
 
-Open the **Performance** workspace to inspect planned, running, successful, and
-failed runtime trials separately from policy trajectories. It supports profile
+Use the **Trajectories** and **Performance** tabs in the same Explorer screen;
+`?view=performance` is a shareable link that opens the latter directly. The
+Performance workspace inspects planned, running, successful, and failed runtime
+trials separately from policy trajectories. It supports profile
 filters, 2–8 candidate config comparison, subsystem time breakdown, objective
 and peak-memory inspection, same-cohort Pareto candidates, and the hypothesis,
 observation, and proposed next experiment.

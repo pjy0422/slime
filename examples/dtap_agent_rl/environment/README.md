@@ -50,8 +50,47 @@ environment variables at runtime. Large external assets remain governed by
 separately.
 
 This snapshot reproduces the current DTAP/API development venv. It does not
-replace slime's `build_conda.sh` native training stack; F9 optimizer work still
-needs that CUDA 12.9, SGLang, and Megatron environment on the target server.
+replace slime's native training stack. Keep the two environments isolated:
+the DTAP venv currently carries a CUDA 13 PyTorch build, while the validated
+training stack uses CUDA 12.9 native extensions.
+
+## Preparing the native training runtime without a free GPU
+
+The immutable image in `training-runtime.json` contains the CUDA 12.9 build of
+PyTorch, SGLang, Megatron-LM, Transformer Engine, FlashAttention, Apex, and the
+slime kernel dependencies. Pull and validate it without exposing a GPU:
+
+```bash
+cd /path/to/slime
+python -m examples.dtap_agent_rl.scripts.training_runtime
+```
+
+Allow roughly 45 GB of local Docker image storage for the pinned runtime.
+
+The probe disables networking inside the container, sets
+`CUDA_VISIBLE_DEVICES` to empty, imports the installed training modules
+(including FlashAttention 2), checks the PyTorch CUDA build and pinned Megatron
+commit, and exits without allocating a GPU. Re-running is idempotent because
+the image is addressed by manifest digest. Use `--skip-pull` after the image is
+local or `--dry-run` to inspect the commands.
+
+The pinned image intentionally overrides several upstream package metadata
+requirements. In particular, SGLang declares FlashAttention 4 while the CUDA
+12.9 training path removes it and installs FlashAttention 2, and Megatron's
+NumPy 1.x pin conflicts with optional packages that declare NumPy 2.x. The
+reviewed `pip check` output is committed in the manifest. The probe accepts
+exactly that set and fails on either a new conflict or a missing expected
+override; these entries are compatibility debt, not a claim that `pip check`
+is clean.
+
+This establishes dependency readiness only. CUDA execution, NCCL collectives,
+VRAM headroom, kernel architecture compatibility, SGLang serving, Megatron
+optimizer steps, and throughput measurements remain explicitly deferred until
+GPU capacity is available. At that point use this same immutable image and
+record the measured setup in the Performance workspace rather than rebuilding
+the DTAP venv. The probe prints the canonical `runtime_setup_digest`; copy that
+value into the tuning trial and M8 training records so both viewer workspaces
+refer to the same installed stack.
 
 ## Refreshing the snapshot
 

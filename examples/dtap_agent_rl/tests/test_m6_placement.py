@@ -153,6 +153,34 @@ async def test_invalid_placement_returns_only_targeted_repair_fields(task_dir):
 
 
 @pytest.mark.asyncio
+async def test_training_summary_counts_unsupported_without_locator_or_receipt_id(task_dir):
+    placement = coordinator(
+        task_dir,
+        PlacementRunResult(
+            True,
+            False,
+            False,
+            "unsupported",
+            "os-filesystem:/tmp/target",
+            "UNSUPPORTED_PLACEMENT",
+        ),
+    )
+    receipt = await placement.apply(STEP)
+    placement.validate(receipt["action_id"])
+
+    summary = placement.training_summary()
+    assert placement.encountered_unsupported is True
+    assert summary == {
+        "applied_actions": 1,
+        "validated_actions": 1,
+        "verified_actions": 0,
+        "statuses": {"unsupported": 1},
+    }
+    assert "target" not in json.dumps(summary)
+    assert receipt["action_id"] not in json.dumps(summary)
+
+
+@pytest.mark.asyncio
 async def test_receipts_are_episode_scoped_and_non_environment_steps_are_not_applied(task_dir):
     result = PlacementRunResult(True, True, True, "verified", "os-filesystem:/tmp/target")
     first, second = coordinator(task_dir, result), coordinator(task_dir, result)

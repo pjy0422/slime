@@ -295,22 +295,32 @@ owned generated-token spans.
   notes without implementing an automatic sweeper.
 - [x] Cover the tuning artifact/schema/index/API/UI boundary with synthetic CPU
   fixtures. These fixtures validate bookkeeping only, not hardware speed.
+- [x] Pin an immutable Linux CUDA 12.9 training image and add a GPU-hidden
+  dependency probe for PyTorch, SGLang, Megatron-LM, FlashAttention 2, and
+  Transformer Engine; keep it isolated from the CUDA 13 DTAP/API development
+  venv.
+- [x] Expose Trajectories and Performance as shareable top-level tabs in one
+  Explorer screen, including direct `?view=performance` navigation.
 - [ ] When GPU capacity is available, record real SGLang, Megatron, and
   integrated preflight trials; verify CUDA/NCCL/VRAM/profiler metrics and select
   the first production `runtime_setup_digest`. Do not treat CPU fixtures as a
   performance recommendation.
-- [ ] Connect the M6/M7 runtime to the production slime rollout worker and
-  version the rollout/training record, including task identity, logical turns,
-  feedback mode, failure classification, reward, hierarchy mode,
+- [x] Connect the M6/M7 custom generation boundary to a versioned rollout/training
+  record carrying task/rollout identity, logical turns, feedback and hierarchy
+  modes, trusted submission/placement summaries, reward/failure classification,
   `tuning_trial_id`, and `runtime_setup_digest`.
-- [ ] Exclude infrastructure-invalid and unsupported-placement episodes from
+- [ ] Complete production worker construction and enrich the training record
+  with stable policy/MCP/victim artifact references where the launcher provides
+  them. The record must continue to exclude prompt/response plaintext.
+- [x] Exclude infrastructure-invalid and unsupported-placement episodes from
   reward learning while retaining genuine attack misses as valid reward-zero
   samples.
-- [ ] Store accepted training records atomically, make collection resumable, and
-  verify credential/receipt/port/workspace/artifact isolation under parallel
-  rollout workers.
-- [ ] Add deterministic seeds and capture all non-secret runtime metadata needed
-  for reproduction.
+- [x] Store eligible and excluded terminal records atomically and make collection
+  resumable by stable run/task/rollout identity.
+- [ ] Verify credential/receipt/port/workspace/artifact isolation under parallel
+  production rollout workers.
+- [x] Add deterministic seeds and capture bounded non-secret sampling/runtime
+  metadata needed for reproduction.
 - [ ] Add deterministic algorithm fixtures, compaction/DP/CP regressions,
   HiPER reference parity tests, and separate DTAP hierarchical prompt/parser
   tests.
@@ -327,7 +337,7 @@ owned generated-token spans.
 - [x] DTAP-HiPER explicitly prompts/parses `switch`, `high_subgoal`,
   `low_subgoal`, and `action`, and `KEEP`/`SWITCH` semantics remain correct
   across compaction.
-- [ ] Reward-zero and infrastructure-invalid samples are observably different.
+- [x] Reward-zero and infrastructure-invalid samples are observably different.
 - [ ] A real-GPU preflight trial records the selected M8.6 runtime setup; this
   remains pending while the current development environment has no usable GPU.
 - [ ] `rollout -> validated submission -> victim -> judge -> reward -> logical
@@ -372,7 +382,7 @@ owned generated-token spans.
 - [x] PR F6: M8.4a two-head critic infrastructure.
 - [x] PR F7: M8.4b reference HiPER/HAE.
 - [x] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
-- [ ] PR F9a: pre-M8.6 Performance Preflight + Tuning Registry (CPU contract and
+- [x] PR F9a: pre-M8.6 Performance Preflight + Tuning Registry (CPU contract and
   viewer complete; real-GPU calibration deferred).
 - [ ] PR F9b: M8.6 production rollout, optimizer/checkpoint smoke, real-GPU
   preflight linkage, CI, and docs.

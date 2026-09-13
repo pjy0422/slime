@@ -14,6 +14,7 @@ from .episode import load_task_snapshot
 from .m4 import run_m4_episode
 from .sandbox_policy import SandboxPolicyVerifier
 from .security_policy import M4SecurityPolicy
+from .training_record import TrainingRecordContext, TrainingRecordStore, build_record, restore_samples, task_reference
 
 
 @dataclass
@@ -35,6 +36,12 @@ class M4GenerateRuntime:
     audit_sink: Any = None
     placement_runner: Any = None
     max_placement_actions: int | None = None
+    training_record_store: TrainingRecordStore | None = None
+    training_run_id: str | None = None
+    resume_training_records: bool = True
+    rollout_seed: int | None = None
+    tuning_trial_id: str | None = None
+    runtime_setup_digest: str | None = None
 
 
 _RUNTIME: M4GenerateRuntime | None = None
@@ -49,6 +56,8 @@ def configure_runtime(runtime: M4GenerateRuntime) -> None:
     runner_policy = getattr(runtime.runner, "security_policy", None)
     if runner_policy is not None and runner_policy != runtime.security_policy:
         raise ValueError("M4 runner and generate security policies differ")
+    if runtime.training_record_store is not None and not runtime.training_run_id:
+        raise ValueError("training_run_id is required when training records are enabled")
     _RUNTIME = runtime
 
 
@@ -81,6 +90,38 @@ def _abort_sample(base_sample: Any, reason: str) -> list[Any]:
     return [base_sample]
 
 
+def _record_context(
+    runtime: M4GenerateRuntime,
+    metadata: Mapping[str, Any],
+    *,
+    public_episode_id: str,
+) -> TrainingRecordContext:
+    return TrainingRecordContext(
+        training_run_id=str(runtime.training_run_id),
+        task_ref=task_reference(metadata),
+        public_episode_id=public_episode_id,
+        seed=runtime.rollout_seed,
+        tuning_trial_id=runtime.tuning_trial_id,
+        runtime_setup_digest=runtime.runtime_setup_digest,
+        feedback_mode=str(metadata["feedback_mode"]) if metadata.get("feedback_mode") is not None else None,
+        hierarchy_mode=str(metadata["hae_policy_mode"]) if metadata.get("hae_policy_mode") is not None else None,
+    )
+
+
+def _reproduction(runtime: M4GenerateRuntime, sampling_params: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = {
+        key: sampling_params[key]
+        for key in ("temperature", "top_p", "top_k", "max_new_tokens", "sampling_seed")
+        if key in sampling_params and isinstance(sampling_params[key], (int, float, bool, type(None)))
+    }
+    return {
+        "rollout_seed": runtime.rollout_seed,
+        "sampling": allowed,
+        "tuning_trial_id": runtime.tuning_trial_id,
+        "runtime_setup_digest": runtime.runtime_setup_digest,
+    }
+
+
 async def generate(
     args: Any,
     base_sample: Any,
@@ -100,6 +141,18 @@ async def generate(
     session_opened = False
     finish_attempted = False
     try:
+        record_store = runtime.training_record_store
+        record_id = None
+        if record_store is not None:
+            provisional_context = _record_context(runtime, input_metadata, public_episode_id="pending")
+            record_id = record_store.record_id(provisional_context, base_sample)
+            if runtime.resume_training_records:
+                prior = record_store.load(record_id)
+                if prior is not None:
+                    restored = restore_samples(prior)
+                    if restored:
+                        return restored
+                    return _abort_sample(base_sample, f"resumed_{prior['outcome']['eligibility_reason']}")
         await _maybe_await(
             runtime.adapter.open_session(
                 session_id,
@@ -148,10 +201,39 @@ async def generate(
             extra_metadata=dict(base_sample.metadata),
         )
         if not samples:
-            return _abort_sample(base_sample, "session_unavailable")
+            samples = _abort_sample(base_sample, "session_unavailable")
+            if record_store is not None and record_id is not None:
+                context = _record_context(runtime, input_metadata, public_episode_id=result.public_episode_id)
+                record_store.write(
+                    build_record(
+                        record_id=record_id,
+                        context=context,
+                        status="infra_error",
+                        failure_class="session_unavailable",
+                        samples=samples,
+                        reproduction=_reproduction(runtime, sampling_params),
+                    )
+                )
+            return samples
         if result.runtime.remove_sample:
             for sample in samples:
                 _abort_sample(sample, "evaluation_unavailable")
+        if record_store is not None and record_id is not None:
+            failure_class = getattr(result, "failure_class", None)
+            if failure_class is None and result.runtime.remove_sample:
+                failure_class = result.runtime.infrastructure_stage
+            context = _record_context(runtime, input_metadata, public_episode_id=result.public_episode_id)
+            record_store.write(
+                build_record(
+                    record_id=record_id,
+                    context=context,
+                    status=result.runtime.status.value,
+                    failure_class=failure_class,
+                    samples=samples,
+                    reproduction=_reproduction(runtime, sampling_params),
+                    episode=getattr(result, "record_summary", None),
+                )
+            )
         return list(samples)
     except Exception:
         if session_opened and not finish_attempted:
@@ -167,10 +249,41 @@ async def generate(
                 if samples:
                     for sample in samples:
                         _abort_sample(sample, "evaluation_unavailable")
+                    if record_store is not None and record_id is not None:
+                        try:
+                            context = _record_context(runtime, input_metadata, public_episode_id="unavailable")
+                            record_store.write(
+                                build_record(
+                                    record_id=record_id,
+                                    context=context,
+                                    status="infra_error",
+                                    failure_class="evaluation_unavailable",
+                                    samples=samples,
+                                    reproduction=_reproduction(runtime, sampling_params),
+                                )
+                            )
+                        except Exception:
+                            pass
                     return list(samples)
             except Exception:
                 pass
-        return _abort_sample(base_sample, "evaluation_unavailable")
+        samples = _abort_sample(base_sample, "evaluation_unavailable")
+        if record_store is not None and record_id is not None:
+            try:
+                context = _record_context(runtime, input_metadata, public_episode_id="unavailable")
+                record_store.write(
+                    build_record(
+                        record_id=record_id,
+                        context=context,
+                        status="infra_error",
+                        failure_class="evaluation_unavailable",
+                        samples=samples,
+                        reproduction=_reproduction(runtime, sampling_params),
+                    )
+                )
+            except Exception:
+                pass
+        return samples
     finally:
         drop = getattr(runtime.adapter, "drop_session", None)
         if session_opened and drop is not None:

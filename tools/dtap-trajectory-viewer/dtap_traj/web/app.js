@@ -1,5 +1,10 @@
+const MODES = new Set(['trajectories','performance']);
+function modeFromLocation(){
+  const requested=new URLSearchParams(window.location.search).get('view');
+  return MODES.has(requested)?requested:'trajectories';
+}
 const state = {
-  mode: 'trajectories',
+  mode: modeFromLocation(),
   facets: null, episodes: [], total: 0, selected: null, tab: 'policy',
   attempt: null,
   page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', attack_evaluated:'', q:''},
@@ -34,10 +39,11 @@ async function loadEpisodes(){
     state.selected = state.episodes[0] || null;
     state.attempt = null;
   }
-  render(); if (state.selected) loadDetail();
+  render(); if (state.mode==='trajectories'&&state.selected) loadDetail();
 }
 async function loadDetail(){
   const ep = state.selected; if (!ep) return;
+  if(!$('#viewer'))return;
   const suffix=state.attempt===null?'':`?attempt=${state.attempt}`;
   const join=state.attempt===null?'?':'&';
   const key = `${ep.episode_id}@${state.attempt??'latest'}`;
@@ -145,6 +151,18 @@ function setTheme(value){
     button.setAttribute('aria-label',`Switch to ${light?'dark':'light'} theme`);
     button.setAttribute('aria-pressed',String(light));
   }
+}
+function setMode(value,{replace=false}={}){
+  if(!MODES.has(value))return;
+  state.mode=value;
+  const url=new URL(window.location.href);
+  if(value==='trajectories')url.searchParams.delete('view');else url.searchParams.set('view',value);
+  window.history[replace?'replaceState':'pushState']({view:value},'',url);
+  render();
+  if(value==='performance'&&!state.tuning.facets){
+    Promise.all([loadTuningFacets(),loadTuningTrials()]).catch(showFailure);
+  }else if(value==='performance'&&state.tuning.selected){loadTuningDetail();}
+  else if(value==='trajectories'&&state.selected){loadDetail();}
 }
 function episodeRow(ep){
   const active=state.selected?.episode_id===ep.episode_id;
@@ -321,11 +339,7 @@ function renderTuningDetail(){
 }
 function bind(){
   document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>{
-    state.mode=button.dataset.mode;render();
-    if(state.mode==='performance'&&!state.tuning.facets){
-      Promise.all([loadTuningFacets(),loadTuningTrials()]).catch(showFailure);
-    }else if(state.mode==='performance'&&state.tuning.selected){loadTuningDetail();}
-    else if(state.mode==='trajectories'&&state.selected){loadDetail();}
+    setMode(button.dataset.mode);
   }));
   if(state.mode==='performance'){
     document.querySelectorAll('[data-tuning-filter]').forEach(select=>select.addEventListener('change',event=>{
@@ -374,8 +388,16 @@ function render(){
   const searchValue=performance?state.tuning.filters.q:state.filters.q;
   const stats=performance?`<span><b>${tf.total??0}</b> trials</span><span><b>${tf.successful??0}</b> measured</span>`:`<span><b>${f.total??0}</b> episodes</span><span><b>${f.domains?.length??0}</b> domains</span><span><b>${f.attack_successes??0}</b> attacks</span>`;
   const workspace=performance?`${tuningSidebar()}${tuningListPane()}${tuningDetailShell()}`:`${sidebar()}${listPane()}${detailShell()}`;
-  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>experiment observability</small></div></div><div class="mode-switch"><button data-mode="trajectories" class="${performance?'':'active'}">Trajectories</button><button data-mode="performance" class="${performance?'active':''}">Performance</button></div><div class="search"><input id="globalSearch" placeholder="${performance?'Search trial, hardware, model, hypothesis…':'Search task, episode, model, risk category…'}" value="${esc(searchValue)}"></div><div class="statline">${stats}</div><button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to ${light?'dark':'light'} theme" aria-pressed="${light}">${light?'☾ Dark':'☀ Light'}</button></header><div class="workspace ${performance?'performance-workspace':''}">${workspace}</div></div>`;
+  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>experiment observability</small></div></div><nav class="mode-switch" role="tablist" aria-label="Explorer workspace"><button type="button" role="tab" aria-selected="${!performance}" data-mode="trajectories" class="${performance?'':'active'}">Trajectories</button><button type="button" role="tab" aria-selected="${performance}" data-mode="performance" class="${performance?'active':''}">Performance</button></nav><div class="search"><input id="globalSearch" placeholder="${performance?'Search trial, hardware, model, hypothesis…':'Search task, episode, model, risk category…'}" value="${esc(searchValue)}"></div><div class="statline">${stats}</div><button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to ${light?'dark':'light'} theme" aria-pressed="${light}">${light?'☾ Dark':'☀ Light'}</button></header><div class="workspace ${performance?'performance-workspace':''}">${workspace}</div></div>`;
   bind(); if(performance)renderTuningDetail();else renderDetail();
 }
 function showFailure(err){console.error(err);$('#app').innerHTML=`<div class="empty"><div><strong>Explorer failed to load</strong>${esc(err.message)}</div></div>`;}
-(async()=>{ await loadFacets(); await loadEpisodes(); })().catch(showFailure);
+window.addEventListener('popstate',()=>{
+  const next=modeFromLocation();
+  if(next!==state.mode)setMode(next,{replace:true});
+});
+(async()=>{
+  await loadFacets();
+  await loadEpisodes();
+  if(state.mode==='performance')await Promise.all([loadTuningFacets(),loadTuningTrials()]);
+})().catch(showFailure);
