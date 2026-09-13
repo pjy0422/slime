@@ -657,6 +657,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_dtap_portable_venv.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_dcgrpo.py"
             },
             {

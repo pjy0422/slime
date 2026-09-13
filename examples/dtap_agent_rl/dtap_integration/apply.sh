@@ -17,30 +17,17 @@ fi
 # which makes per-file reverse checks insufficient for a second invocation.
 # Record the digest only after the complete ordered series succeeds. Keeping the
 # marker under this worktree's git metadata avoids modifying DTAP source files.
-base_patches=(
-  "$script_dir/patches/m4-runtime-integration.patch"
-  "$script_dir/patches/m5-environment-verification.patch"
-  "$script_dir/patches/m6-placement-receipts.patch"
-  "$script_dir/patches/m6-domain-placement.patch"
-  "$script_dir/patches/m6-openclaw-deepseek.patch"
-  "$script_dir/patches/p0-p2-linux-stabilization.patch"
-  "$script_dir/patches/p3-judge-reliability.patch"
-  "$script_dir/patches/p4-h2-live-stability.patch"
-  "$script_dir/patches/p5-windows-macos-placement.patch"
-  "$script_dir/patches/m7-feedback-observability.patch"
-  "$script_dir/patches/m7-feedback-v2.patch"
-  "$script_dir/patches/m7-exact-locators.patch"
-  "$script_dir/patches/m7-domain-feedback.patch"
-  "$script_dir/patches/m7-feedback-boundary-matrix.patch"
-  "$script_dir/patches/m7-token-observability.patch"
-)
-incremental_patches=(
-  "$script_dir/patches/m7-explicit-tool-capabilities.patch"
-  "$script_dir/patches/m7-structured-judge-status.patch"
-  "$script_dir/patches/m7-exact-tool-presentation-identity.patch"
-  "$script_dir/patches/p6-exact-adapter-dispatch.patch"
-  "$script_dir/patches/p7-holdout-e2e-stability.patch"
-)
+base_patches=()
+incremental_patches=()
+while read -r kind patch_name; do
+  [[ -z "$kind" || "$kind" == \#* ]] && continue
+  patch_path="$script_dir/patches/$patch_name"
+  case "$kind" in
+    base) base_patches+=("$patch_path") ;;
+    incremental) incremental_patches+=("$patch_path") ;;
+    *) echo "invalid patch kind in patch-series.txt: $kind" >&2; exit 1 ;;
+  esac
+done < "$script_dir/patch-series.txt"
 patches=("${base_patches[@]}" "${incremental_patches[@]}")
 # Hash contents, not absolute filenames: the checkout may be reached through a
 # symlink and must still produce the same idempotency marker.

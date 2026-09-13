@@ -3,6 +3,9 @@
 This directory is intended to be copied into the **slime repository** at
 `examples/dtap_agent_rl/`. DTAP remains an external pinned dependency.
 
+For migration to another Linux GPU server, use the reproducible virtualenv
+snapshot and bootstrap documented in [environment/README.md](environment/README.md).
+
 ## M0
 
 M0 creates trusted `TaskSnapshot` state, an allowlisted `PolicyTaskSpec`, and a
