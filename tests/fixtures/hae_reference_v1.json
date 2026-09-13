@@ -1,0 +1,27 @@
+{
+  "provenance": {
+    "repository": "https://github.com/JonP07/HiPER-agent",
+    "commit": "ec5982a71635242de983a34407def05ac0d2e349",
+    "source": "hiper_hae/core_hae.py",
+    "license": "Apache-2.0",
+    "scope": "two-head low/high HAE recurrence; termination head and task shaping excluded"
+  },
+  "inputs": {
+    "rewards": [1.0, 2.0, 3.0, 4.0],
+    "low_values": [0.5, 0.6, 0.7, 0.8],
+    "high_values": [1.0, 0.0, 1.5, 0.0],
+    "dones": [false, false, false, true],
+    "switches": [false, false, true, false],
+    "gamma": 0.9,
+    "low_lambd": 0.8,
+    "high_lambd": 0.7
+  },
+  "expected": {
+    "segments": [[0, 1, 2], [2, 3, null]],
+    "boundary_mask": [true, false, true, false],
+    "low_advantages": [3.02, 2.75, 5.324, 3.2],
+    "low_returns": [3.52, 3.35, 6.024, 4.0],
+    "high_advantages": [5.9067, 0.0, 5.1, 0.0],
+    "high_returns": [6.9067, 0.0, 6.6, 0.0]
+  }
+}

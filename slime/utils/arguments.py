@@ -983,6 +983,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus_baseline",
                     "ppo",
                     "multi_turn_ppo",
+                    "hae",
                     "dcgrpo",
                     "gigpo",
                 ],
@@ -1039,6 +1040,12 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
             parser.add_argument("--gamma", type=float, default=1.0, help="Discount factor for return estimation")
             parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
+            parser.add_argument(
+                "--hae-high-lambd",
+                type=float,
+                default=1.0,
+                help="High-level segment GAE lambda for reference HAE",
+            )
             parser.add_argument(
                 "--dcgrpo-mode",
                 choices=["dw", "sw"],
@@ -1961,7 +1968,7 @@ def slime_validate_args(args):
     if args.rollout_external and not args.debug_train_only:
         apply_external_engine_info_to_args(args, logger=logger)
 
-    args.use_critic = args.advantage_estimator in {"ppo", "multi_turn_ppo"}
+    args.use_critic = args.advantage_estimator in {"ppo", "multi_turn_ppo", "hae"}
     if args.critic_value_heads not in {1, 2}:
         raise ValueError("--critic-value-heads must be one of: 1, 2")
     if not math.isfinite(args.critic_high_value_loss_coef) or args.critic_high_value_loss_coef < 0.0:
@@ -1970,6 +1977,18 @@ def slime_validate_args(args):
         raise ValueError(f"--advantage-estimator {args.advantage_estimator} requires --critic-value-heads=1")
     if args.advantage_estimator == "multi_turn_ppo" and not getattr(args, "rollout_dp_affinity", False):
         raise ValueError("--advantage-estimator multi_turn_ppo requires --rollout-dp-affinity")
+    if args.advantage_estimator == "hae":
+        if args.critic_value_heads != 2:
+            raise ValueError("--advantage-estimator hae requires --critic-value-heads=2")
+        if not getattr(args, "rollout_dp_affinity", False):
+            raise ValueError("--advantage-estimator hae requires --rollout-dp-affinity")
+        for option, value in (
+            ("--gamma", args.gamma),
+            ("--lambd", args.lambd),
+            ("--hae-high-lambd", args.hae_high_lambd),
+        ):
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{option} must lie in [0, 1] for HAE")
     if args.advantage_estimator == "dcgrpo":
         if args.dcgrpo_mode not in {"dw", "sw"}:
             raise ValueError("--dcgrpo-mode must be one of: dw, sw")
