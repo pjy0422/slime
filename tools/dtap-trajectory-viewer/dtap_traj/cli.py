@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .bundle import load_judge_results
 from .parser import build_timeline, find_policy_trace, find_victim_mcp_events, find_victim_trace
+from .tuning import PHASES, STATUSES, TuningArtifactError, create_tuning_trial, index_tuning_root, update_tuning_trial
 
 
 def _first(root: Path, names: tuple[str, ...]) -> Path | None:
@@ -149,16 +150,24 @@ def _explorer_main(argv: list[str]) -> int:
     from .db import TrajectoryDB
     from .indexer import index_root
 
-    result = index_root(root, TrajectoryDB(db_path))
+    db = TrajectoryDB(db_path)
+    result = index_root(root, db)
+    tuning = index_tuning_root(root, db)
     if command == "index":
-        print(f"✓ indexed {result['scanned']} episodes ({result['updated']} updated) → {db_path}")
+        print(
+            f"✓ indexed {result['scanned']} episodes ({result['updated']} updated), {tuning['scanned']} tuning trials ({tuning['updated']} updated) → {db_path}"
+        )
+        if tuning["errors"]:
+            for error in tuning["errors"]:
+                print(f"! skipped {error['path']}: {error['error']}", file=sys.stderr)
+            return 2
         return 0
     import uvicorn
 
     from .server import create_app
 
     url = f"http://{args.host}:{args.port}"
-    print(f"✓ DTAP Explorer: {url} ({result['scanned']} episodes indexed)")
+    print(f"✓ DTAP Explorer: {url} ({result['scanned']} episodes, {tuning['scanned']} tuning trials indexed)")
     if args.open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     uvicorn.run(
@@ -170,10 +179,69 @@ def _explorer_main(argv: list[str]) -> int:
     return 0
 
 
+def _tuning_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="dtap-traj tune")
+    subparsers = parser.add_subparsers(dest="operation", required=True)
+
+    create = subparsers.add_parser("create", help="create a planned manual tuning trial")
+    create.add_argument("root", help="experiment artifact root")
+    create.add_argument("--phase", choices=PHASES, required=True)
+    create.add_argument("--hardware", required=True, help="hardware profile JSON")
+    create.add_argument("--model", required=True, help="model profile JSON")
+    create.add_argument("--workload", required=True, help="workload profile JSON")
+    create.add_argument("--software", required=True, help="software profile JSON")
+    create.add_argument("--config", required=True, help="candidate runtime config JSON")
+    create.add_argument("--trial-id")
+    create.add_argument("--hypothesis")
+    create.add_argument("--parent", action="append", default=[], help="parent trial ID; repeatable")
+    create.add_argument("--tag", action="append", default=[], help="search tag; repeatable")
+
+    update = subparsers.add_parser("update", help="record progress or finish a manual trial")
+    update.add_argument("trial_dir")
+    update.add_argument("--status", choices=STATUSES, required=True)
+    update.add_argument("--metrics", help="measured metrics JSON")
+    update.add_argument("--failure-class")
+    update.add_argument("--observation")
+    update.add_argument("--next-step")
+
+    args = parser.parse_args(argv)
+    try:
+        if args.operation == "create":
+            trial_dir = create_tuning_trial(
+                args.root,
+                phase=args.phase,
+                hardware=args.hardware,
+                model=args.model,
+                workload=args.workload,
+                software=args.software,
+                config=args.config,
+                trial_id=args.trial_id,
+                hypothesis=args.hypothesis,
+                parent_trial_ids=args.parent,
+                tags=args.tag,
+            )
+            print(f"✓ created planned tuning trial → {trial_dir}")
+        else:
+            update_tuning_trial(
+                args.trial_dir,
+                status=args.status,
+                metrics=args.metrics,
+                failure_class=args.failure_class,
+                observation=args.observation,
+                next_step=args.next_step,
+            )
+            print(f"✓ updated tuning trial → {Path(args.trial_dir).expanduser().resolve()}")
+    except (FileExistsError, OSError, TuningArtifactError) as exc:
+        parser.error(str(exc))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] in {"serve", "index"}:
         return _explorer_main(raw)
+    if raw and raw[0] == "tune":
+        return _tuning_main(raw[1:])
 
     parser = argparse.ArgumentParser(
         prog="dtap-traj",

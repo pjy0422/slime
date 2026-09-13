@@ -1,8 +1,15 @@
 const state = {
+  mode: 'trajectories',
   facets: null, episodes: [], total: 0, selected: null, tab: 'policy',
   attempt: null,
   page: 0, limit: 100, filters: {run_name:'', domain:'', threat_model:'', status:'', attack_success:'', attack_evaluated:'', q:''},
   cache: new Map(), loading: false, asr: null,
+  tuning: {
+    facets: null, trials: [], total: 0, selected: null, detail: new Map(),
+    compare: new Set(), comparison: null, recommendation: null,
+    page: 0, limit: 100, loading: false,
+    filters: {phase:'', status:'', hardware_fingerprint:'', model_fingerprint:'', workload_fingerprint:'', software_fingerprint:'', q:''},
+  },
 };
 const $ = (s, root=document) => root.querySelector(s);
 const esc = (v='') => String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -18,6 +25,7 @@ function qsFilters() {
   return p.toString();
 }
 async function loadFacets(){ state.facets = await api('/api/facets'); }
+async function loadTuningFacets(){ state.tuning.facets = await api('/api/tuning/facets'); if(state.mode==='performance')render(); }
 async function loadEpisodes(){
   state.loading = true; render();
   const data = await api(`/api/episodes?${qsFilters()}`);
@@ -41,6 +49,39 @@ async function loadDetail(){
     api(`/api/episodes/${encodeURIComponent(ep.episode_id)}/judges${suffix}`),
   ]);
   state.cache.set(key,{...traj, config: config.comparison, judges: judges.judges}); renderDetail();
+}
+function tuningQuery(includePaging=true){
+  const tuning=state.tuning;
+  const params=new URLSearchParams();
+  if(includePaging){params.set('limit',tuning.limit);params.set('offset',tuning.page*tuning.limit);}
+  Object.entries(tuning.filters).forEach(([key,value])=>{if(value!=='')params.set(key,value);});
+  return params.toString();
+}
+async function loadTuningTrials(){
+  const tuning=state.tuning; tuning.loading=true; render();
+  const [data,recommendation]=await Promise.all([
+    api(`/api/tuning/trials?${tuningQuery()}`),
+    api(`/api/tuning/recommendations?${tuningQuery(false)}`),
+  ]);
+  tuning.trials=data.items; tuning.total=data.total; tuning.recommendation=recommendation; tuning.loading=false;
+  if(!tuning.selected||!tuning.trials.some(item=>item.trial_id===tuning.selected.trial_id)){
+    tuning.selected=tuning.trials[0]||null;
+  }
+  render(); if(tuning.selected)loadTuningDetail();
+}
+async function loadTuningDetail(){
+  const tuning=state.tuning; const trial=tuning.selected; if(!trial)return;
+  if(!tuning.detail.has(trial.trial_id)){
+    $('#tuningViewer').innerHTML='<div class="loading">Loading performance trial…</div>';
+    tuning.detail.set(trial.trial_id,await api(`/api/tuning/trials/${encodeURIComponent(trial.trial_id)}`));
+  }
+  renderTuningDetail();
+}
+async function loadComparison(){
+  const ids=[...state.tuning.compare];
+  if(ids.length<2){state.tuning.comparison=null;renderTuningDetail();return;}
+  const params=new URLSearchParams();ids.forEach(id=>params.append('trial_id',id));
+  state.tuning.comparison=await api(`/api/tuning/compare?${params}`);renderTuningDetail();
 }
 function options(items, selected, all='All') {
   return `<option value="">${all}</option>${(items||[]).map(x=>`<option value="${esc(x.value)}" ${String(x.value)===String(selected)?'selected':''}>${esc(x.value)} · ${x.count}</option>`).join('')}`;
@@ -199,7 +240,113 @@ function renderDetail(){
   viewer.innerHTML=attemptBar(data)+body;
   $('#attemptSelect')?.addEventListener('change',e=>{state.attempt=Number(e.target.value);loadDetail();});
 }
+function tuningOptions(items,selected,all='All'){
+  return `<option value="">${all}</option>${(items||[]).map(item=>`<option value="${esc(item.value)}" ${String(item.value)===String(selected)?'selected':''}>${esc(item.label||item.value)} · ${item.count}</option>`).join('')}`;
+}
+function tuningSidebar(){
+  const tuning=state.tuning;const facets=tuning.facets||{};const filters=tuning.filters;
+  const recommendation=tuning.recommendation||{};
+  const best=recommendation.recommended;
+  const pareto=(recommendation.pareto||[]).slice(0,3);
+  return `<aside class="sidebar tuning-sidebar">
+    <div class="eyebrow">Best known in cohort</div>
+    <div class="recommendation ${best?'ready':''}">${best?`<b>${esc(best.trial_id)}</b><span>${esc(best.objective_name)} · ${formatNumber(best.objective_value)}</span>${pareto.length?`<small>Pareto · ${pareto.map(item=>esc(item.trial_id)).join(' · ')}</small>`:''}`:`<span>${esc(recommendation.reason||'Select a comparable measured cohort.')}</span>`}</div>
+    <div class="eyebrow">Performance trials</div>
+    <div class="filter"><label>Phase</label><select data-tuning-filter="phase">${tuningOptions(facets.phases,filters.phase)}</select></div>
+    <div class="filter"><label>Status</label><select data-tuning-filter="status">${tuningOptions(facets.statuses,filters.status)}</select></div>
+    <div class="filter"><label>Hardware</label><select data-tuning-filter="hardware_fingerprint">${tuningOptions(facets.hardware,filters.hardware_fingerprint)}</select></div>
+    <div class="filter"><label>Model</label><select data-tuning-filter="model_fingerprint">${tuningOptions(facets.models,filters.model_fingerprint)}</select></div>
+    <div class="filter"><label>Workload</label><select data-tuning-filter="workload_fingerprint">${tuningOptions(facets.workloads,filters.workload_fingerprint)}</select></div>
+    <button class="reset" id="resetTuningFilters">Reset filters</button>
+  </aside>`;
+}
+function formatNumber(value,digits=2){
+  return value===null||value===undefined?'—':Number(value).toLocaleString(undefined,{maximumFractionDigits:digits});
+}
+function tuningStatusClass(status){return status==='success'?'ok':['planned','running'].includes(status)?'neutral':'bad';}
+function tuningRow(trial){
+  const tuning=state.tuning;const active=tuning.selected?.trial_id===trial.trial_id;
+  const checked=tuning.compare.has(trial.trial_id);const compareDisabled=!checked&&tuning.compare.size>=8;
+  return `<div class="episode tuning-row ${active?'active':''}" data-trial="${esc(trial.trial_id)}">
+    <div class="ep-top"><span class="domain">${esc(trial.phase)}</span><span class="threat ${tuningStatusClass(trial.status)}">${esc(trial.status)}</span><label class="compare-check"><input type="checkbox" data-compare="${esc(trial.trial_id)}" ${checked?'checked':''} ${compareDisabled?'disabled':''}/> compare</label></div>
+    <div class="ep-id" title="${esc(trial.trial_id)}">${esc(trial.trial_id)}</div>
+    <div class="ep-run">${esc(trial.hardware_label)} · ${esc(trial.model_label)}</div>
+    <div class="ep-meta"><span>${esc(trial.objective_name||'unmeasured')} <b>${formatNumber(trial.objective_value)}</b></span><span>VRAM ${formatNumber(trial.peak_vram_gb)} GB</span></div>
+  </div>`;
+}
+function tuningListPane(){
+  const tuning=state.tuning;const start=tuning.total?tuning.page*tuning.limit+1:0;const end=Math.min((tuning.page+1)*tuning.limit,tuning.total);
+  return `<section class="listpane"><div class="listhead"><div class="listhead-row"><h2>Tuning trials</h2><span>${start}–${end} / ${tuning.total}</span></div><button id="compareTrials" class="compare-button" ${tuning.compare.size<2?'disabled':''}>Compare ${tuning.compare.size}</button></div>
+    <div class="episodes">${tuning.loading?'<div class="loading">Index query…</div>':tuning.trials.map(tuningRow).join('')||'<div class="empty">No tuning trials indexed</div>'}</div>
+    <div class="pager"><button id="tuningPrev" ${tuning.page===0?'disabled':''}>← Previous</button><button id="tuningNext" ${end>=tuning.total?'disabled':''}>Next →</button></div></section>`;
+}
+function tuningDetailShell(){
+  const trial=state.tuning.selected;
+  if(!trial)return `<main class="detail"><div class="empty"><div><strong>No tuning trial selected</strong>Create or index a manual preflight trial.</div></div></main>`;
+  return `<main class="detail"><div class="detailhead"><div class="detail-title"><h1>${esc(trial.trial_id)}</h1><span class="badge">${esc(trial.phase)}</span><span class="badge ${tuningStatusClass(trial.status)}">${esc(trial.status)}</span></div><div class="episode-ref">${esc(trial.hardware_label)} · ${esc(trial.model_label)} · ${esc(trial.workload_label)}</div><div class="metrics">${performanceMetrics(trial)}</div></div><div class="tabs"><button class="active">Performance / Tuning</button></div><div class="viewer" id="tuningViewer"></div></main>`;
+}
+function performanceMetrics(trial){
+  const wait=trial.wait_ratio===null||trial.wait_ratio===undefined?null:trial.wait_ratio*100;
+  const infra=trial.infra_failure_rate===null||trial.infra_failure_rate===undefined?null:trial.infra_failure_rate*100;
+  const metrics=[
+    ['objective',trial.objective_value,trial.objective_name||'not selected'],
+    ['rollout tok/s',trial.rollout_tok_s],['train tok/s',trial.train_tok_s],
+    ['step time',trial.step_time_s,'s'],['peak VRAM',trial.peak_vram_gb,'GB'],
+    ['wait',wait,'%'],['infra failure',infra,'%'],
+  ];
+  return metrics.map(([label,value,suffix=''])=>`<span class="metric">${esc(label)} <b>${formatNumber(value)}${value===null||value===undefined?'':` ${esc(suffix)}`}</b></span>`).join('');
+}
+function experimentBrief(detail){
+  const manifest=detail.manifest||{};const result=detail.result||{};
+  return `<section class="tuning-card"><h3>Experiment brief</h3><dl class="brief"><dt>Hypothesis</dt><dd>${esc(manifest.hypothesis||'Not recorded')}</dd><dt>Observation</dt><dd>${esc(result.observation||'Pending')}</dd><dt>Failure class</dt><dd>${esc(result.failure_class||'None')}</dd><dt>Proposed next step</dt><dd>${esc(result.next_step||'Not recorded')}</dd><dt>Parents</dt><dd>${esc((manifest.parent_trial_ids||[]).join(', ')||'None')}</dd></dl></section>`;
+}
+function breakdown(detail){
+  const durations=detail.metrics?.durations_s||{};const entries=Object.entries(durations).filter(([,value])=>Number.isFinite(Number(value))&&Number(value)>=0);
+  if(!entries.length)return `<section class="tuning-card"><h3>Time breakdown</h3><div class="empty compact">No duration breakdown recorded.</div></section>`;
+  const max=Math.max(...entries.map(([,value])=>Number(value)),1);
+  return `<section class="tuning-card"><h3>Time breakdown</h3><div class="breakdown">${entries.map(([name,value])=>`<div><span>${esc(name)}</span><i style="width:${Math.max(2,Number(value)/max*100)}%"></i><b>${formatNumber(value)}s</b></div>`).join('')}</div></section>`;
+}
+function jsonCard(title,value){return `<section class="tuning-card"><h3>${esc(title)}</h3><pre>${esc(JSON.stringify(value||{},null,2))}</pre></section>`;}
+function comparisonHtml(comparison){
+  if(!comparison)return '';
+  const trials=comparison.trials||[];const keys=comparison.varying_config_keys||[];
+  const rows=keys.map(key=>`<tr><th>${esc(key)}</th>${trials.map(trial=>`<td>${esc(JSON.stringify(trial.config[key]))}</td>`).join('')}</tr>`).join('');
+  return `<section class="tuning-card comparison"><h3>Selected config comparison</h3><div class="table-scroll"><table><thead><tr><th>Varying setting</th>${trials.map(trial=>`<th>${esc(trial.trial_id)}</th>`).join('')}</tr></thead><tbody>${rows||'<tr><td colspan="9">Selected configs are identical.</td></tr>'}</tbody></table></div></section>`;
+}
+function renderTuningDetail(){
+  const viewer=$('#tuningViewer');const trial=state.tuning.selected;if(!viewer||!trial)return;
+  const detail=state.tuning.detail.get(trial.trial_id);
+  if(!detail){viewer.innerHTML='<div class="loading">Loading performance trial…</div>';return;}
+  viewer.innerHTML=`${comparisonHtml(state.tuning.comparison)}<div class="tuning-grid">${experimentBrief(detail)}${breakdown(detail)}${jsonCard('Runtime config',detail.config)}${jsonCard('Measured metrics',detail.metrics)}${jsonCard('Profiles',detail.profiles)}${jsonCard('Artifact inventory',detail.artifacts)}${jsonCard('Fingerprints',{hardware:trial.hardware_fingerprint,model:trial.model_fingerprint,workload:trial.workload_fingerprint,software:trial.software_fingerprint,config:trial.config_digest})}</div>`;
+}
 function bind(){
+  document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>{
+    state.mode=button.dataset.mode;render();
+    if(state.mode==='performance'&&!state.tuning.facets){
+      Promise.all([loadTuningFacets(),loadTuningTrials()]).catch(showFailure);
+    }else if(state.mode==='performance'&&state.tuning.selected){loadTuningDetail();}
+    else if(state.mode==='trajectories'&&state.selected){loadDetail();}
+  }));
+  if(state.mode==='performance'){
+    document.querySelectorAll('[data-tuning-filter]').forEach(select=>select.addEventListener('change',event=>{
+      state.tuning.filters[event.target.dataset.tuningFilter]=event.target.value;state.tuning.page=0;loadTuningTrials();
+    }));
+    document.querySelectorAll('[data-trial]').forEach(element=>element.addEventListener('click',event=>{
+      if(event.target.matches('[data-compare]'))return;
+      state.tuning.selected=state.tuning.trials.find(item=>item.trial_id===element.dataset.trial);render();loadTuningDetail();
+    }));
+    document.querySelectorAll('[data-compare]').forEach(input=>input.addEventListener('change',event=>{
+      const selected=state.tuning.compare;if(event.target.checked)selected.add(event.target.dataset.compare);else selected.delete(event.target.dataset.compare);
+      state.tuning.comparison=null;render();if(state.tuning.selected)loadTuningDetail();
+    }));
+    $('#compareTrials')?.addEventListener('click',loadComparison);
+    $('#tuningPrev')?.addEventListener('click',()=>{if(state.tuning.page>0){state.tuning.page--;loadTuningTrials();}});
+    $('#tuningNext')?.addEventListener('click',()=>{if((state.tuning.page+1)*state.tuning.limit<state.tuning.total){state.tuning.page++;loadTuningTrials();}});
+    $('#resetTuningFilters')?.addEventListener('click',()=>{state.tuning.filters={phase:'',status:'',hardware_fingerprint:'',model_fingerprint:'',workload_fingerprint:'',software_fingerprint:'',q:''};state.tuning.page=0;loadTuningTrials();});
+    $('#globalSearch')?.addEventListener('input',debounce(event=>{state.tuning.filters.q=event.target.value.trim();state.tuning.page=0;loadTuningTrials();},250));
+    $('#themeToggle')?.addEventListener('click',()=>setTheme(theme()==='light'?'dark':'light'));
+    return;
+  }
   $('[data-filter="run_name"]')?.addEventListener('change',filterChange);
   $('[data-filter="domain"]')?.addEventListener('change',filterChange);
   $('[data-filter="threat_model"]')?.addEventListener('change',filterChange);
@@ -223,7 +370,12 @@ function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>f
 function render(){
   const f=state.facets||{};
   const light=theme()==='light';
-  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>trajectory observability</small></div></div><div class="search"><input id="globalSearch" placeholder="Search task, episode, model, risk category…" value="${esc(state.filters.q)}"></div><div class="statline"><span><b>${f.total??0}</b> episodes</span><span><b>${f.domains?.length??0}</b> domains</span><span><b>${f.attack_successes??0}</b> attacks</span></div><button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to ${light?'dark':'light'} theme" aria-pressed="${light}">${light?'☾ Dark':'☀ Light'}</button></header><div class="workspace">${sidebar()}${listPane()}${detailShell()}</div></div>`;
-  bind(); renderDetail();
+  const performance=state.mode==='performance';const tf=state.tuning.facets||{};
+  const searchValue=performance?state.tuning.filters.q:state.filters.q;
+  const stats=performance?`<span><b>${tf.total??0}</b> trials</span><span><b>${tf.successful??0}</b> measured</span>`:`<span><b>${f.total??0}</b> episodes</span><span><b>${f.domains?.length??0}</b> domains</span><span><b>${f.attack_successes??0}</b> attacks</span>`;
+  const workspace=performance?`${tuningSidebar()}${tuningListPane()}${tuningDetailShell()}`:`${sidebar()}${listPane()}${detailShell()}`;
+  $('#app').innerHTML=`<div class="shell"><header class="topbar"><div class="brand"><div class="logo"></div><div><strong>DTAP Explorer</strong><small>experiment observability</small></div></div><div class="mode-switch"><button data-mode="trajectories" class="${performance?'':'active'}">Trajectories</button><button data-mode="performance" class="${performance?'active':''}">Performance</button></div><div class="search"><input id="globalSearch" placeholder="${performance?'Search trial, hardware, model, hypothesis…':'Search task, episode, model, risk category…'}" value="${esc(searchValue)}"></div><div class="statline">${stats}</div><button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to ${light?'dark':'light'} theme" aria-pressed="${light}">${light?'☾ Dark':'☀ Light'}</button></header><div class="workspace ${performance?'performance-workspace':''}">${workspace}</div></div>`;
+  bind(); if(performance)renderTuningDetail();else renderDetail();
 }
-(async()=>{ await loadFacets(); await loadEpisodes(); })().catch(err=>{ console.error(err); $('#app').innerHTML=`<div class="empty"><div><strong>Explorer failed to load</strong>${esc(err.message)}</div></div>`; });
+function showFailure(err){console.error(err);$('#app').innerHTML=`<div class="empty"><div><strong>Explorer failed to load</strong>${esc(err.message)}</div></div>`;}
+(async()=>{ await loadFacets(); await loadEpisodes(); })().catch(showFailure);
