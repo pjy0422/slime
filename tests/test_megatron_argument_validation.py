@@ -258,6 +258,9 @@ def make_slime_validate_args(**overrides):
         update_weight_mode="full",
         rollout_temperature=1.0,
         rollout_dp_affinity=False,
+        gamma=1.0,
+        dcgrpo_mode="dw",
+        dcgrpo_alpha=1.0,
     )
     values.update(overrides)
     return types.SimpleNamespace(**values)
@@ -439,6 +442,43 @@ def test_multi_turn_ppo_requires_rollout_dp_affinity(monkeypatch):
     args = make_slime_validate_args(advantage_estimator="multi_turn_ppo", rollout_dp_affinity=False)
 
     with pytest.raises(ValueError, match="requires --rollout-dp-affinity"):
+        module.slime_validate_args(args)
+
+
+@pytest.mark.unit
+def test_dcgrpo_arguments_default_to_dw_alpha_one_and_gamma_one(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    parser = argparse.ArgumentParser()
+    module.get_slime_extra_args_provider()(parser)
+
+    parsed = parser.parse_args(["--rollout-batch-size", "1", "--advantage-estimator", "dcgrpo"])
+
+    assert parsed.advantage_estimator == "dcgrpo"
+    assert parsed.dcgrpo_mode == "dw"
+    assert parsed.dcgrpo_alpha == 1.0
+    assert parsed.gamma == 1.0
+
+    args = make_slime_validate_args(advantage_estimator="dcgrpo")
+    module.slime_validate_args(args)
+    assert args.use_critic is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"dcgrpo_mode": "invalid"}, "--dcgrpo-mode"),
+        ({"gamma": -0.1}, "--gamma"),
+        ({"gamma": float("nan")}, "--gamma"),
+        ({"dcgrpo_alpha": -0.1}, "--dcgrpo-alpha"),
+        ({"dcgrpo_alpha": float("inf")}, "--dcgrpo-alpha"),
+    ],
+)
+def test_dcgrpo_rejects_invalid_gamma_and_alpha(monkeypatch, overrides, message):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(advantage_estimator="dcgrpo", **overrides)
+
+    with pytest.raises(ValueError, match=message):
         module.slime_validate_args(args)
 
 

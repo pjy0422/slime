@@ -645,6 +645,14 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_dcgrpo.py"
+            },
+            {
+              "num_gpus": 0,
+              "test_file": "test_dcgrpo_cp.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_logprob_response_spans.py"
             },
             {

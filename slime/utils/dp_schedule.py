@@ -73,6 +73,7 @@ DP_LOCAL_DATA_KEYS = (
     "prompt",
     "teacher_log_probs",
     "metadata",
+    "turn_credits",
 )
 DP_GLOBAL_DATA_KEYS = ("raw_reward", "total_lengths")
 

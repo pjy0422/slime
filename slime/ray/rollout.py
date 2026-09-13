@@ -19,6 +19,7 @@ from slime.observability.rollout_data_utils import (
 from slime.observability.rollout_metrics import log_eval_rollout_data, log_rollout_data
 from slime.rollout.base_types import call_rollout_fn
 from slime.rollout.sample_hooks import set_current_rollout_id
+from slime.utils.advantages.dcgrpo import precompute_dcgrpo_train_data
 from slime.utils.data import get_source
 from slime.utils.dp_schedule import build_dp_schedule, partition_train_data
 from slime.utils.health_monitor import RolloutHealthMonitor
@@ -354,6 +355,16 @@ class RolloutManager:
             loss_masks.append(sample.loss_mask)
         train_data["loss_masks"] = loss_masks
         train_data.update(build_training_metadata_fields(samples))
+        if self.args.advantage_estimator == "dcgrpo":
+            # DC-GRPO comparison statistics must see the complete rollout
+            # collection. Persist sample-aligned credits now, before DP
+            # partitioning; the trainer only projects them onto token spans.
+            train_data["turn_credits"] = precompute_dcgrpo_train_data(
+                train_data,
+                mode=self.args.dcgrpo_mode,
+                gamma=self.args.gamma,
+                alpha=self.args.dcgrpo_alpha,
+            )
 
         # Per-rollout aggregate, precomputed at the step level (where we can
         # see every sample of every rollout) and broadcast per-sample so the

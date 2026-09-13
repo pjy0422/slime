@@ -2,6 +2,7 @@ import argparse
 import copy
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -969,6 +970,7 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                     "reinforce_plus_plus_baseline",
                     "ppo",
                     "multi_turn_ppo",
+                    "dcgrpo",
                 ],
                 default="grpo",
                 help=(
@@ -1021,8 +1023,20 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="Interval (in rollout steps) to update ref model from actor. If None, ref model is not updated.",
             )
             parser.add_argument("--entropy-coef", type=float, default=0.0, help="Entropy loss coef")
-            parser.add_argument("--gamma", type=float, default=1.0, help="PPO GAE gamma")
+            parser.add_argument("--gamma", type=float, default=1.0, help="Discount factor for return estimation")
             parser.add_argument("--lambd", type=float, default=1.0, help="PPO GAE lambd")
+            parser.add_argument(
+                "--dcgrpo-mode",
+                choices=["dw", "sw"],
+                default="dw",
+                help="DC-GRPO credit weighting: dynamic return-to-go (dw) or static decomposed (sw)",
+            )
+            parser.add_argument(
+                "--dcgrpo-alpha",
+                type=float,
+                default=1.0,
+                help="Nonnegative future-credit weight for DC-GRPO SW",
+            )
             parser.add_argument("--normalize-advantages", action="store_true", default=False)
             parser.add_argument(
                 "--disable-grpo-std-normalization",
@@ -1924,6 +1938,13 @@ def slime_validate_args(args):
     args.use_critic = args.advantage_estimator in {"ppo", "multi_turn_ppo"}
     if args.advantage_estimator == "multi_turn_ppo" and not getattr(args, "rollout_dp_affinity", False):
         raise ValueError("--advantage-estimator multi_turn_ppo requires --rollout-dp-affinity")
+    if args.advantage_estimator == "dcgrpo":
+        if args.dcgrpo_mode not in {"dw", "sw"}:
+            raise ValueError("--dcgrpo-mode must be one of: dw, sw")
+        if not math.isfinite(args.gamma) or not 0.0 <= args.gamma <= 1.0:
+            raise ValueError("--gamma must lie in [0, 1] for DC-GRPO")
+        if not math.isfinite(args.dcgrpo_alpha) or args.dcgrpo_alpha < 0.0:
+            raise ValueError("--dcgrpo-alpha must be finite and nonnegative")
     # Critic always uses the same GPU count as actor.
     args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
     args.critic_num_nodes = args.actor_num_nodes
