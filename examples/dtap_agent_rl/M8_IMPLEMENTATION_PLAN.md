@@ -655,6 +655,21 @@ Required tests:
 
 This track exists to make the algorithm independently testable before DTAP prompt semantics are introduced.
 
+Reference baseline and parity boundary:
+
+- HAE recurrence, segmentation, value placement, and actor masks are derived
+  from `JonP07/HiPER-agent`;
+- M8 ports that repository's two-head low/high HAE path only;
+- the optional third termination-value head used by the repository's reference
+  ALFWorld/WebShop launch configurations is intentionally excluded;
+- therefore, `reference HiPER` means repository-derived core HAE semantics,
+  not bit-for-bit launch-configuration parity or an exact implementation of
+  every paper equation.
+
+Task-specific upstream shaping such as keep, consistency, invalid-action, and
+truncation-bootstrap options is also outside this reference-core scope. Add it
+later as explicit task configuration rather than silently folding it into HAE.
+
 ### 8.1 Reference prompt contract
 
 Use the Plan-Execute form:
@@ -673,6 +688,12 @@ Semantics:
 - the executable action is the low-level decision for the turn.
 
 Parse roles only inside the turn's owned response span.
+
+Match upstream `include_tags_mask=True`: a selected actor role span includes
+its opening tag, content, and closing tag. In particular, low-level action and
+boundary high-level subgoal masks are not content-only masks. The switch span
+remains separately recorded even though the two-head reference path assigns it
+no actor advantage.
 
 ### 8.2 Two-head critic
 
@@ -714,7 +735,19 @@ High HAE:
 - use SMDP discount `gamma ** duration`;
 - compute high-level GAE over segments with `--hae-high-lambd`.
 
-Normalize low and high scalar advantages separately before token projection.
+Normalize active low and high scalar advantages separately before token
+projection using the upstream population-standard-deviation convention:
+
+```python
+normalized = (advantage - advantage.mean()) / (
+    advantage.std(unbiased=False) + 1e-8
+)
+```
+
+Compute each head's statistics only over its active logical positions: low
+turns for the low head and segment boundaries for the high head. Do not mix the
+two heads or weight the statistics by projected token counts. Singleton and
+zero-variance groups consequently normalize to zero.
 
 Reference actor projection:
 
@@ -728,13 +761,28 @@ The requested M8 scope uses two value heads only. A third termination critic is 
 
 Use separate sparse masks and targets for low and high heads. Reduce each head by its own number of active value positions, then combine:
 
+Construct critic targets from the unnormalized HAE advantages and the rollout
+values used to compute them, matching the upstream implementation:
+
+```text
+low_return[t]  = low_advantage[t]  + old_low_value[t]
+high_return[k] = high_advantage[k] + old_high_value[k]
+```
+
+Only the sparse low-turn and high-boundary value positions consume these
+targets. Advantage normalization for the actor does not alter the critic
+returns.
+
 ```text
 value_loss = low_value_loss + high_value_coef * high_value_loss
 ```
 
 Do not use actor token count as the critic denominator.
 
-Tests must independently cover segment construction, segment-end bootstrap, high SMDP recurrence, normalization, sparse two-head loss, single-head compatibility, and a checked-in reference fixture.
+Tests must independently cover segment construction, segment-end bootstrap,
+high SMDP recurrence, population-std normalization with `1e-8`,
+`return = unnormalized_advantage + old_value`, tag-inclusive actor masks, sparse
+two-head loss, single-head compatibility, and a checked-in reference fixture.
 
 ## 9. M8.5 — DTAP-HiPER hierarchy
 
