@@ -5,7 +5,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from megatron.core import mpu
 from torch.utils.checkpoint import checkpoint
 
@@ -245,7 +244,7 @@ def _allgather_cp_redistribute(
             if value is None or e <= s:
                 # This rank has no response logprobs for this sample
                 full_resp = torch.zeros(
-                    response_length,
+                    (response_length, *ref_value.shape[1:]),
                     dtype=ref_dtype,
                     device=ref_device,
                     requires_grad=ref_value.requires_grad,
@@ -253,7 +252,9 @@ def _allgather_cp_redistribute(
             else:
                 resp_start = s - logit_global_start
                 resp_end = e - logit_global_start
-                full_resp = F.pad(value, (resp_start, response_length - resp_end))
+                left = value.new_zeros((resp_start, *value.shape[1:]))
+                right = value.new_zeros((response_length - resp_end, *value.shape[1:]))
+                full_resp = torch.cat((left, value, right), dim=0)
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)
@@ -619,11 +620,13 @@ def get_values(
 ) -> dict[str, list[torch.Tensor]]:
     """Extract per-token value predictions over response tokens.
 
-    For each sample, extracts response-aligned chunks from the value head
-    output and squeezes the final dimension from `[R, 1]` to `[R]`.
+    For each sample, extracts response-aligned chunks from the value head.
+    The legacy one-head output is squeezed from `[R, 1]` to `[R]`; a
+    two-head critic preserves `[R, 2]` so low/high values remain distinct.
 
     Args:
-        logits: Value head output with shape `[1, T, 1]`.
+        logits: Value head output with shape `[1, T, H]`, where ``H`` equals
+            ``args.critic_value_heads``.
         args: Configuration passed to `get_responses`; temperature scaling is
             disabled for value outputs.
         unconcat_tokens: List of token tensors per sample.
@@ -633,8 +636,8 @@ def get_values(
         non_loss_data: Unused; kept for signature compatibility.
 
     Returns:
-        Dict with key "values" mapping to a list of `[R]` value tensors
-        per sample.
+        Dict with key "values" mapping to a list of `[R]` tensors for one
+        head or `[R, 2]` tensors for two heads.
     """
     value_list = []
     for logits_chunk, _ in get_responses(
@@ -645,8 +648,11 @@ def get_values(
         response_lengths=response_lengths,
         apply_temperature=False,
     ):
-        assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
-        value_list.append(logits_chunk.squeeze(-1))
+        value_heads = getattr(args, "critic_value_heads", 1)
+        assert (
+            logits_chunk.size(-1) == value_heads
+        ), f"critic output has {logits_chunk.size(-1)} heads, expected {value_heads}: {logits_chunk.shape}"
+        value_list.append(logits_chunk.squeeze(-1) if value_heads == 1 else logits_chunk)
 
     res = {
         "values": value_list,
@@ -1353,7 +1359,10 @@ def value_loss_function(
     args: Namespace,
     batch: RolloutBatch,
     logits: torch.Tensor,
-    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+    sum_of_sample_mean: (
+        Callable[[torch.Tensor], torch.Tensor]
+        | tuple[Callable[[torch.Tensor], torch.Tensor], Callable[[torch.Tensor], torch.Tensor]]
+    ),
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute clipped value loss and metrics.
 
@@ -1365,15 +1374,14 @@ def value_loss_function(
         args: Configuration containing `value_clip` threshold.
         batch: Mini-batch with "values" (old predictions), "returns",
             "unconcat_tokens", "total_lengths", and "response_lengths".
-        logits: Value head output with shape `[1, T, 1]`.
-        sum_of_sample_mean: Reduction function that averages per-sample values.
+        logits: Value head output with shape `[1, T, H]`.
+        sum_of_sample_mean: One reduction function for a one-head critic, or
+            separate low/high reduction functions for a two-head critic.
 
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and
         `metrics` contains detached scalars "value_loss" and "value_clipfrac".
     """
-    old_values = torch.cat(batch["values"], dim=0)
-
     _, values = get_values(
         logits,
         args=args,
@@ -1381,27 +1389,78 @@ def value_loss_function(
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
     )
-    values = torch.cat([value.flatten() for value in values["values"]], dim=0)
+    value_heads = getattr(args, "critic_value_heads", 1)
+    if value_heads == 1:
+        old_values = torch.cat(batch["values"], dim=0)
+        current_values = torch.cat([value.flatten() for value in values["values"]], dim=0)
+        returns = torch.cat(batch["returns"], dim=0)
 
-    returns = torch.cat(batch["returns"], dim=0)
+        values_clipfrac = torch.abs(current_values - old_values) > args.value_clip
+        values_clipped = old_values + (current_values - old_values).clamp(-args.value_clip, args.value_clip)
+        surr1 = (values_clipped - returns) ** 2
+        surr2 = (current_values - returns) ** 2
+        elementwise_loss = torch.max(surr1, surr2)
 
-    values_clipfrac = torch.abs(values - old_values) > args.value_clip
-    values_clipped = old_values + (values - old_values).clamp(-args.value_clip, args.value_clip)
-    surr1 = (values_clipped - returns) ** 2
-    surr2 = (values - returns) ** 2
-    loss = torch.max(surr1, surr2)
+        assert callable(sum_of_sample_mean)
+        loss = sum_of_sample_mean(elementwise_loss)
+        values_clipfrac = sum_of_sample_mean(values_clipfrac.float())
+        reported_loss = {
+            "value_loss": loss.clone().detach(),
+            "value_clipfrac": values_clipfrac.clone().detach(),
+        }
+    else:
+        if value_heads != 2:
+            raise ValueError(f"unsupported critic value head count: {value_heads}")
+        if not isinstance(sum_of_sample_mean, tuple) or len(sum_of_sample_mean) != 2:
+            raise ValueError("two-head value loss requires separate low/high reducers")
 
-    loss = sum_of_sample_mean(loss)
-    values_clipfrac = sum_of_sample_mean(values_clipfrac.float())
+        current_values = torch.cat(values["values"], dim=0)
+        old_values = torch.cat(batch["values"], dim=0)
+        if current_values.ndim != 2 or current_values.size(-1) != 2:
+            raise ValueError(f"two-head current values must have shape [R, 2], got {tuple(current_values.shape)}")
+        if old_values.shape != current_values.shape:
+            raise ValueError(
+                "two-head old/current value shape mismatch: "
+                f"old={tuple(old_values.shape)} current={tuple(current_values.shape)}"
+            )
+
+        low_returns = torch.cat(batch["low_returns"], dim=0)
+        high_returns = torch.cat(batch["high_returns"], dim=0)
+        if low_returns.shape != current_values[:, 0].shape or high_returns.shape != current_values[:, 1].shape:
+            raise ValueError(
+                "two-head returns must each match the response axis: "
+                f"low={tuple(low_returns.shape)} high={tuple(high_returns.shape)} "
+                f"values={tuple(current_values.shape)}"
+            )
+
+        head_losses = []
+        head_clipfracs = []
+        for head, (returns, reducer) in enumerate(zip((low_returns, high_returns), sum_of_sample_mean, strict=True)):
+            current_head = current_values[:, head]
+            old_head = old_values[:, head]
+            clipped_head = old_head + (current_head - old_head).clamp(-args.value_clip, args.value_clip)
+            elementwise_loss = torch.maximum((clipped_head - returns) ** 2, (current_head - returns) ** 2)
+            head_losses.append(reducer(elementwise_loss))
+            head_clipfracs.append(reducer((torch.abs(current_head - old_head) > args.value_clip).float()))
+
+        low_loss, high_loss = head_losses
+        low_clipfrac, high_clipfrac = head_clipfracs
+        high_coef = args.critic_high_value_loss_coef
+        loss = low_loss + high_coef * high_loss
+        clipfrac_denom = 1.0 + high_coef
+        values_clipfrac = (low_clipfrac + high_coef * high_clipfrac) / clipfrac_denom
+        reported_loss = {
+            "value_loss": loss.clone().detach(),
+            "value_clipfrac": values_clipfrac.clone().detach(),
+            "low_value_loss": low_loss.clone().detach(),
+            "high_value_loss": high_loss.clone().detach(),
+            "low_value_clipfrac": low_clipfrac.clone().detach(),
+            "high_value_clipfrac": high_clipfrac.clone().detach(),
+        }
 
     # make sure the gradient could backprop correctly.
-    if values.numel() == 0:
-        loss += 0 * values.sum()
-
-    reported_loss = {
-        "value_loss": loss.clone().detach(),
-        "value_clipfrac": values_clipfrac.clone().detach(),
-    }
+    if current_values.numel() == 0:
+        loss += 0 * current_values.sum()
 
     return loss, reported_loss
 
@@ -1486,25 +1545,55 @@ def loss_function(
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
         - `normalizer` is `num_tokens` (scalar tensor) if
-          `args.calculate_per_token_loss` is True, else `1` (int).
+          `args.calculate_per_token_loss` is True, except that two-head value
+          loss always returns `1` because each head has its own sparse
+          denominator. Otherwise it is `1`.
         - `logging_dict` has keys "keys" (list of str metric names) and
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
-    use_sparse_value_targets = args.loss_type == "value_loss" and args.advantage_estimator == "multi_turn_ppo"
-    reduction_masks = batch["value_masks"] if use_sparse_value_targets else batch["loss_masks"]
-    reduction_denoms = batch["value_mask_sums"] if use_sparse_value_targets else batch["rollout_mask_sums"]
-    if use_sparse_value_targets and (reduction_masks is None or reduction_denoms is None):
-        raise ValueError("multi_turn_ppo value loss requires sparse value masks and rollout turn counts")
+    value_heads = getattr(args, "critic_value_heads", 1)
+    use_two_head_value_targets = args.loss_type == "value_loss" and value_heads == 2
+    # A two-head critic is always reduced as two independently normalized sparse
+    # objectives. Actor-side per-token loss remains enabled when requested, but
+    # applying one shared token denominator here would mix low/high credit scales.
+    calculate_per_token_loss = args.calculate_per_token_loss and not use_two_head_value_targets
+    if use_two_head_value_targets:
+        reduction_specs = (
+            (batch.get("low_value_masks"), batch.get("low_value_mask_sums"), "low"),
+            (batch.get("high_value_masks"), batch.get("high_value_mask_sums"), "high"),
+        )
+        for masks, denoms, head_name in reduction_specs:
+            if masks is None or denoms is None:
+                raise ValueError(f"two-head value loss requires {head_name} value masks and active-position counts")
+        num_tokens = sum(
+            torch.clamp_min(mask.sum(), 1) for masks, _denoms, _head_name in reduction_specs for mask in masks
+        )
+        sum_of_sample_mean = tuple(
+            get_sum_of_sample_mean(
+                batch["total_lengths"],
+                batch["response_lengths"],
+                masks,
+                denoms,
+                calculate_per_token_loss,
+            )
+            for masks, denoms, _head_name in reduction_specs
+        )
+    else:
+        use_sparse_value_targets = args.loss_type == "value_loss" and args.advantage_estimator == "multi_turn_ppo"
+        reduction_masks = batch["value_masks"] if use_sparse_value_targets else batch["loss_masks"]
+        reduction_denoms = batch["value_mask_sums"] if use_sparse_value_targets else batch["rollout_mask_sums"]
+        if use_sparse_value_targets and (reduction_masks is None or reduction_denoms is None):
+            raise ValueError("multi_turn_ppo value loss requires sparse value masks and rollout turn counts")
 
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in reduction_masks])
+        num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in reduction_masks])
 
-    sum_of_sample_mean = get_sum_of_sample_mean(
-        batch["total_lengths"],
-        batch["response_lengths"],
-        reduction_masks,
-        reduction_denoms,
-        args.calculate_per_token_loss,
-    )
+        sum_of_sample_mean = get_sum_of_sample_mean(
+            batch["total_lengths"],
+            batch["response_lengths"],
+            reduction_masks,
+            reduction_denoms,
+            calculate_per_token_loss,
+        )
 
     match args.loss_type:
         case "policy_loss":
@@ -1532,7 +1621,7 @@ def loss_function(
         loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
-    if not args.calculate_per_token_loss:
+    if not calculate_per_token_loss:
         loss = (
             loss
             * num_microbatches
@@ -1544,7 +1633,7 @@ def loss_function(
 
     return (
         loss,
-        (num_tokens if args.calculate_per_token_loss else torch.tensor(1, device=logits.device)),
+        (num_tokens if calculate_per_token_loss else torch.tensor(1, device=logits.device)),
         {
             "keys": list(log.keys()),
             # values[0] is the consumer's reporting denominator after
@@ -1556,7 +1645,7 @@ def loss_function(
             # per-mb fractions.
             "values": torch.tensor(
                 [
-                    num_tokens if args.calculate_per_token_loss else 0,
+                    num_tokens if calculate_per_token_loss else 0,
                 ]
                 + list(log.values()),
                 device=logits.device,

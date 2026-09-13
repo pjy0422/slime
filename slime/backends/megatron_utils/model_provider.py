@@ -109,7 +109,7 @@ def _get_model_provider_func(
             # Apply critic output layer if needed
             if post_process and role == "critic":
                 model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                    input_size=model.config.hidden_size, output_size=args.critic_value_heads, config=model.config
                 )
             return model
 
@@ -148,7 +148,7 @@ def _get_model_provider_func(
                     model = result(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
                     if post_process and role == "critic":
                         model.output_layer = LinearForLastLayer(
-                            input_size=config.hidden_size, output_size=1, config=config
+                            input_size=config.hidden_size, output_size=args.critic_value_heads, config=config
                         )
                     return model
                 transformer_layer_spec = result
@@ -232,7 +232,11 @@ def _get_model_provider_func(
             model = GPTModel(**kwargs)
 
         if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+            model.output_layer = LinearForLastLayer(
+                input_size=config.hidden_size,
+                output_size=args.critic_value_heads,
+                config=config,
+            )
 
         return model
 

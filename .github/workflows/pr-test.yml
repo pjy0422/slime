@@ -673,6 +673,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_two_head_critic.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_ppo_kl_metric.py"
             },
             {

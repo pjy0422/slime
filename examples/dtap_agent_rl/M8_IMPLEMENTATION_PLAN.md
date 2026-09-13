@@ -761,6 +761,12 @@ The requested M8 scope uses two value heads only. A third termination critic is 
 
 Use separate sparse masks and targets for low and high heads. Reduce each head by its own number of active value positions, then combine:
 
+The F6/F7 transport contract uses `low_returns` and `high_returns` for
+response-aligned targets, with matching `low_value_masks`,
+`high_value_masks`, `low_value_mask_sums`, and `high_value_mask_sums` fields.
+The legacy one-head `returns`, `value_masks`, and `value_mask_sums` fields stay
+unchanged.
+
 Construct critic targets from the unnormalized HAE advantages and the rollout
 values used to compute them, matching the upstream implementation:
 

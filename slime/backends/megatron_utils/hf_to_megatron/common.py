@@ -155,8 +155,18 @@ def load_model_hf_weights(
     reader = SafetensorReader(path)
     with torch.no_grad():
         for name, parameter in named_params_and_buffers(args, model):
-            tensor = get_hf_tensor(name, reader, config)
-            if name.endswith("output_layer.weight") and parameter.shape[0] == 1 and tensor.shape[0] != 1:
+            critic_value_heads = getattr(args, "critic_value_heads", 1)
+            is_critic_output = (
+                name.endswith(("output_layer.weight", "output_layer.bias"))
+                and parameter.shape[0] == critic_value_heads
+            )
+            try:
+                tensor = get_hf_tensor(name, reader, config)
+            except KeyError:
+                if is_critic_output:
+                    continue
+                raise
+            if is_critic_output and tensor.shape != parameter.shape:
                 continue
             tensor = shard_mcore_tensor(name, _pad_vocab(args, name, tensor), parameter)
             if tensor.shape != parameter.shape:

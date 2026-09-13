@@ -928,6 +928,19 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument("--value-clip", type=float, default=0.2, help="the clip for value loss")
             parser.add_argument(
+                "--critic-value-heads",
+                type=int,
+                choices=[1, 2],
+                default=1,
+                help="Number of critic value heads. Two-head HAE training is enabled in M8.4b.",
+            )
+            parser.add_argument(
+                "--critic-high-value-loss-coef",
+                type=float,
+                default=1.0,
+                help="Weight applied to the high-level value loss for a two-head critic.",
+            )
+            parser.add_argument(
                 "--kl-coef",
                 type=float,
                 default=0.00,
@@ -1949,6 +1962,12 @@ def slime_validate_args(args):
         apply_external_engine_info_to_args(args, logger=logger)
 
     args.use_critic = args.advantage_estimator in {"ppo", "multi_turn_ppo"}
+    if args.critic_value_heads not in {1, 2}:
+        raise ValueError("--critic-value-heads must be one of: 1, 2")
+    if not math.isfinite(args.critic_high_value_loss_coef) or args.critic_high_value_loss_coef < 0.0:
+        raise ValueError("--critic-high-value-loss-coef must be finite and nonnegative")
+    if args.advantage_estimator in {"ppo", "multi_turn_ppo"} and args.critic_value_heads != 1:
+        raise ValueError(f"--advantage-estimator {args.advantage_estimator} requires --critic-value-heads=1")
     if args.advantage_estimator == "multi_turn_ppo" and not getattr(args, "rollout_dp_affinity", False):
         raise ValueError("--advantage-estimator multi_turn_ppo requires --rollout-dp-affinity")
     if args.advantage_estimator == "dcgrpo":
