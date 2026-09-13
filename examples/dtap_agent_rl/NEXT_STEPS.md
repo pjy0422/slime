@@ -268,7 +268,7 @@ owned generated-token spans.
 - [x] Implement multi-turn vanilla PPO with turn-level GAE and sparse per-turn
   critic targets.
 - [x] Implement DC-GRPO DW and SW with group credit computed before DP split.
-- [ ] Implement GiGPO with stable environment-state `anchor_key` grouping;
+- [x] Implement GiGPO with stable environment-state `anchor_key` grouping;
   compaction prompt text must not be used as the anchor identity.
 - [ ] Add a two-head high/low critic and reference HiPER/HAE implementation,
   including segment-level high recurrence, within-segment low recurrence, and

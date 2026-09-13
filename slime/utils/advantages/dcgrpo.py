@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 
 import torch
 
-from slime.utils.advantages.mt_ppo import LogicalTurn, collect_logical_turns
+from slime.utils.advantages.multi_turn import LogicalTurn, collect_logical_turns, pack_turn_credits
 
 
 def _normalized(values: Sequence[float]) -> list[float]:
@@ -135,43 +135,10 @@ def precompute_dcgrpo_train_data(
     )
     credits = compute_dcgrpo_turn_credits(turns, mode=mode, gamma=gamma, alpha=alpha)
 
-    turns_by_sample: dict[int, list[LogicalTurn]] = defaultdict(list)
-    for turn in turns:
-        turns_by_sample[turn.sample_index].append(turn)
-    packed: list[list[float]] = []
-    for sample_index in range(len(response_lengths)):
-        sample_turns = turns_by_sample[sample_index]
-        packed.append([credits[(turn.rollout_id, turn.turn_idx)] for turn in sample_turns])
-    return packed
-
-
-def unpack_dcgrpo_turn_credits(
-    turns: Sequence[LogicalTurn],
-    packed_credits: Sequence[Sequence[float]],
-) -> dict[tuple[int, int], float]:
-    """Validate and key sample-aligned credits after DP partitioning."""
-
-    turns_by_sample: dict[int, list[LogicalTurn]] = defaultdict(list)
-    for turn in turns:
-        turns_by_sample[turn.sample_index].append(turn)
-    if len(packed_credits) != len(turns_by_sample):
-        raise ValueError("DC-GRPO turn credits must contain one entry per sample")
-
-    credits: dict[tuple[int, int], float] = {}
-    for sample_index in range(len(packed_credits)):
-        sample_turns = turns_by_sample[sample_index]
-        sample_credits = packed_credits[sample_index]
-        if len(sample_credits) != len(sample_turns):
-            raise ValueError(f"DC-GRPO sample {sample_index} turn credits do not match its logical turns")
-        for turn, credit in zip(sample_turns, sample_credits, strict=True):
-            if isinstance(credit, bool) or not isinstance(credit, (int, float)) or not math.isfinite(float(credit)):
-                raise ValueError("DC-GRPO turn credit must be finite and numeric")
-            credits[(turn.rollout_id, turn.turn_idx)] = float(credit)
-    return credits
+    return pack_turn_credits(turns, credits, len(response_lengths))
 
 
 __all__ = [
     "compute_dcgrpo_turn_credits",
     "precompute_dcgrpo_train_data",
-    "unpack_dcgrpo_turn_credits",
 ]

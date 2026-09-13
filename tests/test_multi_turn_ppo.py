@@ -10,7 +10,8 @@ from argparse import Namespace
 import pytest
 import torch
 
-from slime.utils.advantages.mt_ppo import collect_logical_turns, compute_turn_gae, project_turn_values
+from slime.utils.advantages.mt_ppo import compute_turn_gae
+from slime.utils.advantages.multi_turn import collect_logical_turns, project_turn_values
 
 NUM_GPUS = 0
 

@@ -12,7 +12,7 @@ import pytest
 import torch
 
 from slime.utils.advantages.dcgrpo import compute_dcgrpo_turn_credits, precompute_dcgrpo_train_data
-from slime.utils.advantages.mt_ppo import LogicalTurn
+from slime.utils.advantages.multi_turn import LogicalTurn
 from slime.utils.dp_schedule import partition_train_data
 
 NUM_GPUS = 0
