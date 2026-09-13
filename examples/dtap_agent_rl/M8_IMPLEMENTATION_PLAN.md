@@ -1027,6 +1027,17 @@ NCCL behavior, profiler artifacts, and the recommended production topology
 remain explicitly unverified until GPU capacity is available. Synthetic CPU
 fixtures prove data flow only and must never be shown as a real recommendation.
 
+Before capacity becomes available, pull the immutable CUDA 12.9 training image
+declared in `environment/training-runtime.json` and run the GPU-hidden dependency
+probe. This checks the installed PyTorch, SGLang, Megatron-LM, FlashAttention
+2, and Transformer Engine boundary without starting a server or allocating an
+accelerator. Do not install this native stack into the separate CUDA 13 DTAP
+development venv.
+
+Trajectories and Performance are top-level tabs of the same Explorer application,
+not separate services. The selected workspace is linkable through the `view`
+query parameter so an experiment review can point directly at the tuning view.
+
 ## 10. M8.6 — runtime integration and optimizer dry-run
 
 Connect M6/M7 DTAP execution to the production slime rollout worker.

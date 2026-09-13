@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +14,7 @@ from .audit import AuditEvent, InMemoryAuditSink
 from .authority import EpisodeAuthority, EpisodeAuthorityRegistry, EpisodeCredentials, registered_authority
 from .candidate_config import cleanup_episode_root
 from .episode import TaskSnapshot
-from .episode_runtime import EpisodeRuntimeState
+from .episode_runtime import EpisodeRuntimeState, EpisodeStatus
 from .harness import M4ClaudeCodeHarness, M6ClaudeCodeHarness
 from .placement import PlacementCoordinator
 from .policy_contract import PolicyContract, PolicyLeakageGuard
@@ -59,6 +59,8 @@ class M4EpisodeResult:
     harness_return_code: int
     runtime: EpisodeRuntimeState
     public_episode_id: str
+    failure_class: str | None = None
+    record_summary: dict[str, Any] = field(default_factory=dict)
 
 
 async def run_m4_episode(
@@ -222,4 +224,22 @@ async def run_m4_episode(
                     {"h": runtime.submissions_used, "q": runtime.submit_calls},
                 )
             )
-    return M4EpisodeResult(return_code, runtime, credentials.public_episode_id)
+    unsupported = bool(
+        placement_controller is not None
+        and placement_controller.encountered_unsupported
+        and runtime.status is not EpisodeStatus.SUCCEEDED
+    )
+    failure_class = (
+        "unsupported_placement" if unsupported else runtime.infrastructure_stage if runtime.remove_sample else None
+    )
+    placement_summary = placement_controller.training_summary() if placement_controller is not None else None
+    return M4EpisodeResult(
+        return_code,
+        runtime,
+        credentials.public_episode_id,
+        failure_class=failure_class,
+        record_summary={
+            "submission": controller.training_summary(),
+            "placement": placement_summary,
+        },
+    )

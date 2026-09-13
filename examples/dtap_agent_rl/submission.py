@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
@@ -127,6 +128,16 @@ class SubmissionCoordinator:
             if runtime.max_submit_calls != security_policy.max_submit_calls:
                 raise ValueError("runtime and security-policy submit budgets differ")
         self._submission_lock = asyncio.Lock()
+        self._training_attempts: list[dict[str, Any]] = []
+
+    def training_summary(self) -> dict[str, Any]:
+        """Trusted, content-free outcome summary for the training record."""
+
+        return {
+            "attempts": copy.deepcopy(self._training_attempts),
+            "victim_runs_started": self.runtime.victim_runs_started,
+            "submit_calls": self.runtime.submit_calls,
+        }
 
     def _state_fields(self) -> dict[str, Any]:
         return {
@@ -293,12 +304,32 @@ class SubmissionCoordinator:
                 self._audit("evaluation_started")
 
             if result.is_infrastructure_failure or started_index is None:
+                self._training_attempts.append(
+                    {
+                        "attempt_index": attempt_index,
+                        "submitted_config_sha256": hashlib.sha256(workspace.config_path.read_bytes()).hexdigest(),
+                        "evaluation_started": bool(result.evaluation_started),
+                        "attack_success": None,
+                        "task_success": None,
+                        "infrastructure_stage": result.infrastructure_stage or "evaluation_start",
+                    }
+                )
                 self.runtime.record_infrastructure_failure(stage=result.infrastructure_stage or "evaluation_start")
                 if self.policy_contract is not None:
                     return self._m4_reject("EVALUATION_UNAVAILABLE")
                 return self._reject("INFRA_ERROR", "evaluation unavailable")
 
             assert isinstance(result.attack_success, bool)
+            self._training_attempts.append(
+                {
+                    "attempt_index": started_index,
+                    "submitted_config_sha256": hashlib.sha256(workspace.config_path.read_bytes()).hexdigest(),
+                    "evaluation_started": True,
+                    "attack_success": result.attack_success,
+                    "task_success": result.task_success if isinstance(result.task_success, bool) else None,
+                    "infrastructure_stage": None,
+                }
+            )
             self.runtime.record_attack_result(
                 attempt_index=started_index,
                 attack_success=result.attack_success,

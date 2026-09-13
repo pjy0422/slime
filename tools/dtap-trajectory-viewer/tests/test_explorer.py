@@ -383,6 +383,18 @@ def test_explorer_assets_include_persistent_light_theme():
     assert ':root[data-theme="light"]' in css
 
 
+def test_explorer_exposes_shareable_top_level_trajectory_and_performance_tabs():
+    web = Path(__file__).resolve().parents[1] / "dtap_traj" / "web"
+    javascript = (web / "app.js").read_text()
+
+    assert 'role="tablist"' in javascript
+    assert 'role="tab"' in javascript
+    assert "searchParams.set('view',value)" in javascript
+    assert "modeFromLocation()" in javascript
+    assert 'data-mode="trajectories"' in javascript
+    assert 'data-mode="performance"' in javascript
+
+
 def test_attack_filter_distinguishes_failed_from_not_evaluated(tmp_path):
     root = matrix(tmp_path)
     missing = root / "browser" / "direct" / "result.json"

@@ -227,6 +227,31 @@ non-root execution, no capabilities/Docker/host mounts, isolated home/workdir an
 `/proc`, default-deny network with exactly the adapter and policy-MCP endpoints, and
 process-group cleanup. Missing attestation aborts before episode registration.
 
+For M8 collection, give each worker a shared filesystem record root and one
+stable run identity:
+
+```python
+from examples.dtap_agent_rl.training_record import TrainingRecordStore
+
+runtime = M4GenerateRuntime(
+    ...,
+    training_record_store=TrainingRecordStore("/artifacts/training-records"),
+    training_run_id="dtap-train-001",
+    rollout_seed=17,
+    tuning_trial_id="preflight-a100-tp2",
+    runtime_setup_digest="sha256:<canonical-runtime-setup>",
+)
+configure_runtime(runtime)
+```
+
+Eligible and excluded records are separate immutable JSON artifacts. Genuine
+attack misses remain eligible reward-zero samples; infrastructure/security
+failures and unsupported placement are observable but carry no trainable sample
+payload. Writes are collision-safe and atomic, and a repeated stable identity
+restores the completed token-level sample without running the victim again.
+Training records intentionally omit plaintext prompts/responses, credentials,
+absolute task paths, placement locators, and opaque action IDs.
+
 The small DTAP-side compatibility changes required by this harness are versioned
 with slime under `dtap_integration/`. Apply them to the external checkout before
 running a real DTAP gate:

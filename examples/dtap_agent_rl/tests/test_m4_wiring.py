@@ -117,6 +117,11 @@ async def test_m4_wiring_uses_split_atomic_authority_and_full_cleanup(tmp_path):
     assert result.runtime.submit_calls == 1
     assert result.runtime.submissions_used == 1
     assert result.runtime.final_reward == 1.0
+    assert result.failure_class is None
+    assert result.record_summary["placement"] is None
+    assert result.record_summary["submission"]["victim_runs_started"] == 1
+    assert len(result.record_summary["submission"]["attempts"][0]["submitted_config_sha256"]) == 64
+    assert result.record_summary["submission"]["attempts"][0]["attack_success"] is True
     assert len(registry) == 0
     assert len(runner.calls) == 1
     assert not runner.calls[0].attempt_dir.exists()
