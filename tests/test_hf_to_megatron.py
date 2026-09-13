@@ -20,6 +20,7 @@ if not _has_megatron:
     sys.modules["slime.backends.megatron_utils"] = _megatron_utils
 
 from slime.backends.megatron_utils.hf_to_megatron import _LOADERS
+from slime.backends.megatron_utils.hf_to_megatron import common as hf_common
 from slime.backends.megatron_utils.hf_to_megatron.common import SafetensorReader
 from slime.backends.megatron_utils.hf_to_megatron.deepseek import deepseek_hf_tensor
 from slime.backends.megatron_utils.hf_to_megatron.glm import glm4_hf_tensor, glm4_moe_hf_tensor
@@ -197,6 +198,36 @@ def test_qwen2_moe_parameter_updates_use_the_moe_exporter():
     ]
     assert torch.equal(converted[0][1], parameter[:6])
     assert torch.equal(converted[1][1], parameter[6:])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value_heads", [1, 2])
+def test_hf_load_keeps_initialized_critic_head_on_shape_mismatch(monkeypatch, tmp_path, value_heads):
+    weight = torch.nn.Parameter(torch.full((value_heads, 4), 7.0))
+    bias = torch.nn.Parameter(torch.full((value_heads,), 3.0))
+    update_weight_common = types.ModuleType("slime.backends.megatron_utils.update_weight.common")
+    update_weight_common.named_params_and_buffers = lambda _args, _model: [
+        ("output_layer.weight", weight),
+        ("output_layer.bias", bias),
+    ]
+    monkeypatch.setitem(sys.modules, "slime.backends.megatron_utils.update_weight.common", update_weight_common)
+    monkeypatch.setattr(hf_common, "SafetensorReader", lambda _path: object())
+
+    def get_hf_tensor(name, *_args):
+        if name.endswith("bias"):
+            raise KeyError(name)
+        return torch.zeros(32, 4)
+
+    hf_common.load_model_hf_weights(
+        types.SimpleNamespace(critic_value_heads=value_heads),
+        model=object(),
+        path=tmp_path,
+        config=object(),
+        get_hf_tensor=get_hf_tensor,
+    )
+
+    torch.testing.assert_close(weight, torch.full((value_heads, 4), 7.0))
+    torch.testing.assert_close(bias, torch.full((value_heads,), 3.0))
 
 
 @pytest.mark.unit

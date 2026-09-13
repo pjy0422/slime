@@ -200,6 +200,8 @@ def make_slime_validate_args(**overrides):
         save=None,
         kl_loss_coef=0,
         advantage_estimator="grpo",
+        critic_value_heads=1,
+        critic_high_value_loss_coef=1.0,
         normalize_advantages=False,
         use_rollout_logprobs=False,
         use_tis=False,
@@ -312,6 +314,30 @@ def test_slime_validate_args_rejects_non_positive_rollout_temperature(monkeypatc
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("coefficient", [-1.0, float("inf"), float("nan")])
+def test_slime_validate_args_rejects_invalid_high_value_loss_coefficient(monkeypatch, coefficient):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(critic_high_value_loss_coef=coefficient)
+
+    with pytest.raises(ValueError, match="--critic-high-value-loss-coef"):
+        module.slime_validate_args(args)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("estimator", ["ppo", "multi_turn_ppo"])
+def test_existing_critic_estimators_reject_two_head_configuration(monkeypatch, estimator):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(
+        advantage_estimator=estimator,
+        critic_value_heads=2,
+        rollout_dp_affinity=True,
+    )
+
+    with pytest.raises(ValueError, match="requires --critic-value-heads=1"):
+        module.slime_validate_args(args)
+
+
+@pytest.mark.unit
 def test_slime_validate_args_preserves_zero_rollout_gpus_under_colocate(monkeypatch):
     module = load_slime_arguments_module(monkeypatch)
     args = make_slime_validate_args(colocate=True, rollout_num_gpus=0)
@@ -420,6 +446,30 @@ def test_rollout_dp_affinity_argument_is_opt_in(monkeypatch):
 
     assert defaults.rollout_dp_affinity is False
     assert configured.rollout_dp_affinity is True
+
+
+@pytest.mark.unit
+def test_two_head_critic_arguments_default_to_legacy_single_head(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    parser = argparse.ArgumentParser()
+    module.get_slime_extra_args_provider()(parser)
+
+    defaults = parser.parse_args(["--rollout-batch-size", "1"])
+    configured = parser.parse_args(
+        [
+            "--rollout-batch-size",
+            "1",
+            "--critic-value-heads",
+            "2",
+            "--critic-high-value-loss-coef",
+            "0.25",
+        ]
+    )
+
+    assert defaults.critic_value_heads == 1
+    assert defaults.critic_high_value_loss_coef == 1.0
+    assert configured.critic_value_heads == 2
+    assert configured.critic_high_value_loss_coef == 0.25
 
 
 @pytest.mark.unit

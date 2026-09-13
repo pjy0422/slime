@@ -123,5 +123,27 @@ def test_freeze_indexer_rejects_unrecognized_attention(monkeypatch):
         model_provider.freeze_model_params(model, args)
 
 
+@pytest.mark.unit
+def test_custom_critic_provider_builds_requested_two_head_output(monkeypatch):
+    model_provider = _load_model_provider(monkeypatch)
+
+    class CustomModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = types.SimpleNamespace(hidden_size=4, sequence_parallel=False, init_method_std=0.01)
+            self.output_layer = torch.nn.Linear(4, 9)
+
+    args = types.SimpleNamespace(
+        custom_model_provider_path=lambda **_kwargs: CustomModel(),
+        critic_value_heads=2,
+    )
+    provider = model_provider._get_model_provider_func(args, role="critic")
+
+    model = provider(post_process=True)
+
+    assert model.output_layer.in_features == 4
+    assert model.output_layer.out_features == 2
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))
