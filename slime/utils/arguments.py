@@ -1047,6 +1047,17 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 help="High-level segment GAE lambda for reference HAE",
             )
             parser.add_argument(
+                "--hae-policy-mode",
+                choices=["reference", "dtap"],
+                default="reference",
+                help="HAE prompt/span contract; DTAP mode uses explicit high/low subgoals",
+            )
+            parser.add_argument(
+                "--hae-dtap-switch-credit",
+                action="store_true",
+                help="DTAP adaptation: assign boundary high credit to switch tokens as well as high_subgoal",
+            )
+            parser.add_argument(
                 "--dcgrpo-mode",
                 choices=["dw", "sw"],
                 default="dw",
@@ -1989,6 +2000,12 @@ def slime_validate_args(args):
         ):
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{option} must lie in [0, 1] for HAE")
+        if args.hae_policy_mode not in {"reference", "dtap"}:
+            raise ValueError("--hae-policy-mode must be one of: reference, dtap")
+        if args.hae_dtap_switch_credit and args.hae_policy_mode != "dtap":
+            raise ValueError("--hae-dtap-switch-credit requires --hae-policy-mode=dtap")
+    elif args.hae_policy_mode != "reference" or args.hae_dtap_switch_credit:
+        raise ValueError("non-default HAE policy options require --advantage-estimator=hae")
     if args.advantage_estimator == "dcgrpo":
         if args.dcgrpo_mode not in {"dw", "sw"}:
             raise ValueError("--dcgrpo-mode must be one of: dw, sw")

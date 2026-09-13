@@ -872,6 +872,9 @@ def _compute_hae_advantages(
     total_lengths = rollout_data["total_lengths"]
     response_lengths = rollout_data["response_lengths"]
     loss_masks = rollout_data["loss_masks"]
+    policy_mode = getattr(args, "hae_policy_mode", "reference")
+    if policy_mode not in {"reference", "dtap"}:
+        raise ValueError(f"unknown HAE policy mode: {policy_mode!r}")
     turns = collect_logical_turns(metadata, rollout_ids, response_lengths, loss_masks)
     full_values = [
         all_gather_with_cp(value, total_length, response_length)
@@ -901,6 +904,9 @@ def _compute_hae_advantages(
         rollout_turns.sort(key=lambda turn: turn.turn_idx)
         if [turn.turn_idx for turn in rollout_turns] != list(range(len(rollout_turns))):
             raise ValueError(f"hae rollout {rollout_id} must contain a complete turn sequence starting at zero")
+        active_option_id = None
+        active_high_subgoal = None
+        seen_option_ids = set()
         for turn in rollout_turns:
             key = (rollout_id, turn.turn_idx)
             if not turn.format_valid:
@@ -909,8 +915,40 @@ def _compute_hae_advantages(
                 raise ValueError(f"hae logical turn {key} is truncated; truncation bootstrap is not enabled")
             if turn.switch not in {"KEEP", "SWITCH"}:
                 raise ValueError(f"hae logical turn {key} requires switch KEEP or SWITCH")
-            if not turn.role_spans.get("action") or not turn.role_spans.get("subgoal"):
-                raise ValueError(f"hae logical turn {key} requires action and subgoal spans")
+            if policy_mode == "reference":
+                if turn.hierarchy is not None:
+                    raise ValueError(f"reference HAE turn {key} must not carry DTAP hierarchy state")
+                if not turn.role_spans.get("action") or not turn.role_spans.get("subgoal"):
+                    raise ValueError(f"reference HAE turn {key} requires action and subgoal spans")
+            else:
+                hierarchy = turn.hierarchy
+                if hierarchy is None or hierarchy.get("policy_mode") != "dtap":
+                    raise ValueError(f"DTAP HAE turn {key} requires structured hierarchy state")
+                dtap_roles = ("switch", "high_subgoal", "low_subgoal", "action")
+                if turn.role_spans.get("subgoal") or any(
+                    len(turn.role_spans.get(role, ())) != 1 for role in dtap_roles
+                ):
+                    raise ValueError(f"DTAP HAE turn {key} requires distinct hierarchy role spans")
+                ordered_spans = [turn.role_spans[role][0] for role in dtap_roles]
+                if any(left[1] > right[0] for left, right in zip(ordered_spans, ordered_spans[1:], strict=False)):
+                    raise ValueError(f"DTAP HAE turn {key} has overlapping or out-of-order hierarchy spans")
+                if turn.low_value_position != turn.role_spans["low_subgoal"][0][1]:
+                    raise ValueError(f"DTAP HAE turn {key} has an invalid low value position")
+                option_id = hierarchy["option_id"]
+                previous_option_id = hierarchy["previous_option_id"]
+                high_subgoal = hierarchy["high_subgoal"]
+                if turn.turn_idx == 0 and turn.switch != "SWITCH":
+                    raise ValueError(f"DTAP HAE rollout {rollout_id} must initialize with SWITCH")
+                if previous_option_id != active_option_id:
+                    raise ValueError(f"DTAP HAE turn {key} has inconsistent previous option identity")
+                if turn.switch == "SWITCH":
+                    if option_id in seen_option_ids:
+                        raise ValueError(f"DTAP HAE boundary turn {key} must create a new option identity")
+                    active_option_id = option_id
+                    active_high_subgoal = high_subgoal
+                    seen_option_ids.add(option_id)
+                elif option_id != active_option_id or high_subgoal != active_high_subgoal:
+                    raise ValueError(f"DTAP HAE KEEP turn {key} drifted from its active option")
             if turn.low_value_position is None:
                 raise ValueError(f"hae logical turn {key} requires a low value position")
 
@@ -920,6 +958,8 @@ def _compute_hae_advantages(
             key = (rollout_id, turn.turn_idx)
             if is_boundary and turn.high_value_position is None:
                 raise ValueError(f"hae boundary turn {key} requires a high value position")
+            if is_boundary and turn.high_value_position != turn.response_start:
+                raise ValueError(f"hae boundary turn {key} high value must use the first response token")
             if not is_boundary and turn.high_value_position is not None:
                 raise ValueError(f"hae non-boundary turn {key} must not define a high value position")
 
@@ -976,12 +1016,28 @@ def _compute_hae_advantages(
         )
         projected_high = dict(zip(high_keys, high_normalized, strict=True))
 
-    full_low_advantages, _ = project_role_values(
-        response_lengths, turns, projected_low, role="action", reference_tensors=full_values
-    )
+    low_roles = ("action",) if policy_mode == "reference" else ("low_subgoal", "action")
+    full_low_advantages = [
+        value.new_zeros(length) for value, length in zip(full_values, response_lengths, strict=True)
+    ]
+    for role in low_roles:
+        role_advantages, _ = project_role_values(
+            response_lengths, turns, projected_low, role=role, reference_tensors=full_values
+        )
+        full_low_advantages = [
+            combined + projected for combined, projected in zip(full_low_advantages, role_advantages, strict=True)
+        ]
+    high_role = "subgoal" if policy_mode == "reference" else "high_subgoal"
     full_high_advantages, _ = project_role_values(
-        response_lengths, boundary_turns, projected_high, role="subgoal", reference_tensors=full_values
+        response_lengths, boundary_turns, projected_high, role=high_role, reference_tensors=full_values
     )
+    if policy_mode == "dtap" and getattr(args, "hae_dtap_switch_credit", False):
+        switch_advantages, _ = project_role_values(
+            response_lengths, boundary_turns, projected_high, role="switch", reference_tensors=full_values
+        )
+        full_high_advantages = [
+            high + switch for high, switch in zip(full_high_advantages, switch_advantages, strict=True)
+        ]
     full_advantages = [low + high for low, high in zip(full_low_advantages, full_high_advantages, strict=True)]
     full_low_returns, low_value_masks = project_head_values(
         response_lengths, turns, low_returns, head="low", reference_tensors=full_values

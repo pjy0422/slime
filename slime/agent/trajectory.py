@@ -17,7 +17,11 @@ from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import Any
 
-from slime.utils.multi_turn import MULTI_TURN_METADATA_VERSION, validate_multi_turn_training_samples
+from slime.utils.multi_turn import (
+    MULTI_TURN_METADATA_VERSION,
+    normalize_hierarchy_record,
+    validate_multi_turn_training_samples,
+)
 from slime.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -34,6 +38,7 @@ _TURN_ANNOTATION_KEYS = {
     "role_spans",
     "value_positions",
     "format_valid",
+    "hierarchy",
 }
 
 
@@ -126,6 +131,7 @@ def _normalize_turn_annotation(metadata: Mapping[str, Any] | None, response_leng
         "role_spans": role_spans,
         "value_positions": value_positions,
         "format_valid": format_valid,
+        "hierarchy": normalize_hierarchy_record(raw.get("hierarchy")),
     }
 
 
@@ -356,6 +362,7 @@ class _SampleBuilder:
                         for head, position in annotation["value_positions"].items()
                     },
                     "format_valid": annotation["format_valid"],
+                    "hierarchy": deepcopy(annotation["hierarchy"]),
                 }
             )
         elif trained and turn.finish_reason == "length":

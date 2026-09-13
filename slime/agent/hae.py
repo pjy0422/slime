@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -18,6 +19,15 @@ _TAGS = {
     "subgoal": ("<subgoal>", "</subgoal>"),
     "action": ("<action>", "</action>"),
 }
+
+
+@dataclass(frozen=True)
+class TaggedField:
+    """One exact tagged field mapped to a tag-inclusive token span."""
+
+    content: str
+    token_span: tuple[int, int]
+    char_end: int
 
 
 def _decode_pieces(tokenizer: Any, output_ids: Sequence[int]) -> list[str]:
@@ -37,11 +47,57 @@ def _decode_pieces(tokenizer: Any, output_ids: Sequence[int]) -> list[str]:
         return pieces
 
 
-def _token_span(offsets: Sequence[tuple[int, int]], start: int, end: int) -> list[int] | None:
+def _token_span(offsets: Sequence[tuple[int, int]], start: int, end: int) -> tuple[int, int] | None:
     overlapping = [index for index, (left, right) in enumerate(offsets) if right > start and left < end]
     if not overlapping:
         return None
-    return [overlapping[0], overlapping[-1] + 1]
+    return overlapping[0], overlapping[-1] + 1
+
+
+def parse_tagged_fields(
+    output_ids: Sequence[int],
+    tokenizer: Any,
+    tags: Sequence[tuple[str, str, str]],
+) -> tuple[dict[str, TaggedField], tuple[tuple[int, int], ...]] | None:
+    """Parse exactly one occurrence of each ordered XML-like field."""
+
+    if not output_ids:
+        return None
+    pieces = _decode_pieces(tokenizer, output_ids)
+    offsets: list[tuple[int, int]] = []
+    cursor = 0
+    for piece in pieces:
+        offsets.append((cursor, cursor + len(piece)))
+        cursor += len(piece)
+    text = "".join(pieces)
+
+    fields: dict[str, TaggedField] = {}
+    previous_end = 0
+    for role, opening, closing in tags:
+        if text.count(opening) != 1 or text.count(closing) != 1:
+            return None
+        start = text.find(opening)
+        content_start = start + len(opening)
+        close_start = text.find(closing, content_start)
+        end = close_start + len(closing)
+        if start < previous_end or close_start < content_start:
+            return None
+        token_span = _token_span(offsets, start, end)
+        if token_span is None:
+            return None
+        fields[role] = TaggedField(
+            content=text[content_start:close_start].strip(),
+            token_span=token_span,
+            char_end=end,
+        )
+        previous_end = end
+    return fields, tuple(offsets)
+
+
+def token_position_after(offsets: Sequence[tuple[int, int]], char_end: int) -> int | None:
+    """Return the first token beginning after a parsed closing tag."""
+
+    return next((index for index, (start, _) in enumerate(offsets) if start >= char_end), None)
 
 
 def _invalid_annotation() -> dict[str, Any]:
@@ -75,53 +131,31 @@ def parse_reference_hae_response(
     if isinstance(turn_idx, bool) or not isinstance(turn_idx, int) or turn_idx < 0 or not output_ids:
         return {"multi_turn": _invalid_annotation()}
 
-    pieces = _decode_pieces(tokenizer, output_ids)
-    offsets: list[tuple[int, int]] = []
-    cursor = 0
-    for piece in pieces:
-        offsets.append((cursor, cursor + len(piece)))
-        cursor += len(piece)
-    text = "".join(pieces)
-
-    char_spans: dict[str, tuple[int, int]] = {}
-    contents: dict[str, str] = {}
-    previous_end = 0
-    for role in ("switch", "subgoal", "action"):
-        opening, closing = _TAGS[role]
-        if text.count(opening) != 1 or text.count(closing) != 1:
-            return {"multi_turn": _invalid_annotation()}
-        start = text.find(opening)
-        content_start = start + len(opening)
-        close_start = text.find(closing, content_start)
-        end = close_start + len(closing)
-        if start < previous_end or close_start < content_start:
-            return {"multi_turn": _invalid_annotation()}
-        char_spans[role] = (start, end)
-        contents[role] = text[content_start:close_start].strip()
-        previous_end = end
-
-    switch = contents["switch"]
+    parsed = parse_tagged_fields(
+        output_ids,
+        tokenizer,
+        [(role, *_TAGS[role]) for role in ("switch", "subgoal", "action")],
+    )
+    if parsed is None:
+        return {"multi_turn": _invalid_annotation()}
+    fields, offsets = parsed
+    switch = fields["switch"].content
     if switch not in {"KEEP", "SWITCH"}:
         return {"multi_turn": _invalid_annotation()}
-    token_spans = {role: _token_span(offsets, start, end) for role, (start, end) in char_spans.items()}
-    if any(span is None for span in token_spans.values()):
-        return {"multi_turn": _invalid_annotation()}
 
-    subgoal_close = char_spans["subgoal"][1]
-    switch_close = char_spans["switch"][1]
-    low_position = next((index for index, (start, _) in enumerate(offsets) if start >= subgoal_close), None)
+    low_position = token_position_after(offsets, fields["subgoal"].char_end)
     if low_position is None:
-        low_position = next((index for index, (start, _) in enumerate(offsets) if start >= switch_close), 0)
+        low_position = token_position_after(offsets, fields["switch"].char_end) or 0
     high_position = 0 if turn_idx == 0 or switch == "SWITCH" else None
-    subgoal_span = token_spans["subgoal"]
+    subgoal_span = list(fields["subgoal"].token_span)
     annotation = {
         "switch": switch,
         "role_spans": {
-            "switch": [token_spans["switch"]],
+            "switch": [list(fields["switch"].token_span)],
             "subgoal": [subgoal_span],
             "high_subgoal": [subgoal_span],
             "low_subgoal": [],
-            "action": [token_spans["action"]],
+            "action": [list(fields["action"].token_span)],
         },
         "value_positions": {"high": high_position, "low": low_position},
         "format_valid": True,
@@ -129,4 +163,10 @@ def parse_reference_hae_response(
     return {"multi_turn": annotation}
 
 
-__all__ = ["REFERENCE_HAE_PROMPT", "parse_reference_hae_response"]
+__all__ = [
+    "REFERENCE_HAE_PROMPT",
+    "TaggedField",
+    "parse_reference_hae_response",
+    "parse_tagged_fields",
+    "token_position_after",
+]

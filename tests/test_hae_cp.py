@@ -1,4 +1,4 @@
-"""Distributed CPU parity for reference HAE projection and two-head targets."""
+"""Distributed CPU parity for reference and DTAP HAE projections."""
 
 from __future__ import annotations
 
@@ -13,9 +13,35 @@ from _cp_dist_helpers import free_port, stub_megatron_in_worker
 NUM_GPUS = 0
 
 
-def _metadata() -> dict:
+def _metadata(policy_mode: str) -> dict:
     def turn(turn_idx, start, switch, reward, done):
         boundary = turn_idx == 0 or switch == "SWITCH"
+        if policy_mode == "dtap":
+            roles = {
+                "switch": [[start, start + 1]],
+                "subgoal": [],
+                "high_subgoal": [[start + 1, start + 3]],
+                "low_subgoal": [[start + 3, start + 5]],
+                "action": [[start + 5, start + 8]],
+            }
+            hierarchy = {
+                "version": 1,
+                "policy_mode": "dtap",
+                "option_id": f"option-{turn_idx}",
+                "previous_option_id": None if turn_idx == 0 else "option-0",
+                "high_subgoal": f"goal-{turn_idx}",
+                "low_subgoal": f"step-{turn_idx}",
+                "feedback_ref": None,
+            }
+        else:
+            roles = {
+                "switch": [[start, start + 1]],
+                "subgoal": [[start + 1, start + 4]],
+                "high_subgoal": [[start + 1, start + 4]],
+                "low_subgoal": [],
+                "action": [[start + 5, start + 8]],
+            }
+            hierarchy = None
         return {
             "turn_idx": turn_idx,
             "response_span": [start, start + 8],
@@ -24,15 +50,13 @@ def _metadata() -> dict:
             "truncated": False,
             "anchor_key": None,
             "switch": switch,
-            "role_spans": {
-                "switch": [[start, start + 1]],
-                "subgoal": [[start + 1, start + 4]],
-                "high_subgoal": [[start + 1, start + 4]],
-                "low_subgoal": [],
-                "action": [[start + 5, start + 8]],
+            "role_spans": roles,
+            "value_positions": {
+                "high": start if boundary else None,
+                "low": start + (5 if policy_mode == "dtap" else 4),
             },
-            "value_positions": {"high": start if boundary else None, "low": start + 4},
             "format_valid": True,
+            "hierarchy": hierarchy,
         }
 
     return {
@@ -40,14 +64,14 @@ def _metadata() -> dict:
             "version": 1,
             "context_revision": 0,
             "turns": [
-                turn(0, 0, "KEEP", 1.0, False),
+                turn(0, 0, "SWITCH", 1.0, False),
                 turn(1, 8, "SWITCH", 3.0, True),
             ],
         }
     }
 
 
-def _worker(rank: int, cp_size: int, master_port: int, result_path: str) -> None:
+def _worker(rank: int, cp_size: int, master_port: int, result_path: str, policy_mode: str) -> None:
     import torch
     import torch.distributed as dist
 
@@ -72,8 +96,9 @@ def _worker(rank: int, cp_size: int, master_port: int, result_path: str) -> None
         total_length = 24
         response_length = 16
         full_values = torch.zeros(response_length, 2)
-        full_values[4, 0] = 0.2
-        full_values[12, 0] = 0.5
+        low_offset = 5 if policy_mode == "dtap" else 4
+        full_values[low_offset, 0] = 0.2
+        full_values[8 + low_offset, 0] = 0.5
         full_values[0, 1] = 1.0
         full_values[8, 1] = 1.5
         full_kl = torch.linspace(0.01, 0.16, response_length)
@@ -81,7 +106,7 @@ def _worker(rank: int, cp_size: int, master_port: int, result_path: str) -> None
         local_kl = slice_log_prob_with_cp(full_kl, total_length, response_length)
         rollout_data = {
             "values": [local_values],
-            "metadata": [_metadata()],
+            "metadata": [_metadata(policy_mode)],
             "rollout_ids": [31],
             "total_lengths": [total_length],
             "response_lengths": [response_length],
@@ -93,6 +118,8 @@ def _worker(rank: int, cp_size: int, master_port: int, result_path: str) -> None
             lambd=0.8,
             hae_high_lambd=0.7,
             normalize_advantages=True,
+            hae_policy_mode=policy_mode,
+            hae_dtap_switch_credit=False,
         )
         advantages, _ = _compute_hae_advantages(args, rollout_data, [local_kl])
         reconstructed = {
@@ -113,20 +140,21 @@ def _worker(rank: int, cp_size: int, master_port: int, result_path: str) -> None
         dist.destroy_process_group()
 
 
-def _run(cp_size: int, tmp_path) -> dict:
+def _run(cp_size: int, tmp_path, policy_mode: str) -> dict:
     import torch.multiprocessing as mp
 
-    result_path = str(tmp_path / f"hae_cp{cp_size}.json")
-    mp.spawn(_worker, args=(cp_size, free_port(), result_path), nprocs=cp_size, join=True)
+    result_path = str(tmp_path / f"hae_{policy_mode}_cp{cp_size}.json")
+    mp.spawn(_worker, args=(cp_size, free_port(), result_path, policy_mode), nprocs=cp_size, join=True)
     with open(result_path) as data:
         return json.load(data)
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("cp_size", [1, 2, 4])
-def test_hae_projection_is_context_parallel_invariant(cp_size, tmp_path) -> None:
-    baseline = _run(1, tmp_path)
-    actual = _run(cp_size, tmp_path)
+@pytest.mark.parametrize("policy_mode", ["reference", "dtap"])
+def test_hae_projection_is_context_parallel_invariant(cp_size, policy_mode, tmp_path) -> None:
+    baseline = _run(1, tmp_path, policy_mode)
+    actual = _run(cp_size, tmp_path, policy_mode)
     for field in ("advantages", "low_returns", "high_returns"):
         assert actual[field] == pytest.approx(baseline[field], abs=1e-6)
     assert actual["low_masks"] == baseline["low_masks"]

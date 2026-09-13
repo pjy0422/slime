@@ -263,6 +263,8 @@ def make_slime_validate_args(**overrides):
         gamma=1.0,
         lambd=1.0,
         hae_high_lambd=1.0,
+        hae_policy_mode="reference",
+        hae_dtap_switch_credit=False,
         dcgrpo_mode="dw",
         dcgrpo_alpha=1.0,
         gigpo_step_advantage_weight=1.0,
@@ -351,6 +353,36 @@ def test_hae_enables_two_head_critic_with_rollout_affinity(monkeypatch):
     module.slime_validate_args(args)
 
     assert args.use_critic is True
+
+
+@pytest.mark.unit
+def test_dtap_hae_mode_and_explicit_switch_credit_are_valid(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(
+        advantage_estimator="hae",
+        critic_value_heads=2,
+        rollout_dp_affinity=True,
+        hae_policy_mode="dtap",
+        hae_dtap_switch_credit=True,
+    )
+
+    module.slime_validate_args(args)
+
+    assert args.use_critic is True
+
+
+@pytest.mark.unit
+def test_switch_credit_cannot_be_enabled_in_reference_mode(monkeypatch):
+    module = load_slime_arguments_module(monkeypatch)
+    args = make_slime_validate_args(
+        advantage_estimator="hae",
+        critic_value_heads=2,
+        rollout_dp_affinity=True,
+        hae_dtap_switch_credit=True,
+    )
+
+    with pytest.raises(ValueError, match="requires --hae-policy-mode=dtap"):
+        module.slime_validate_args(args)
 
 
 @pytest.mark.unit
@@ -527,6 +559,8 @@ def test_hae_arguments_are_parseable_with_reference_defaults(monkeypatch):
 
     assert parsed.advantage_estimator == "hae"
     assert parsed.hae_high_lambd == 1.0
+    assert parsed.hae_policy_mode == "reference"
+    assert parsed.hae_dtap_switch_credit is False
 
 
 @pytest.mark.unit

@@ -877,6 +877,16 @@ Keep this prompt separate from the reference HiPER prompt. Add an explicit selec
 
 Do not infer the mode from dataset names or tag presence.
 
+The F8 implementation keeps the contracts in separate modules:
+
+```text
+slime/agent/hae.py
+    reference prompt/parser and shared exact tagged-field tokenizer mapping
+
+examples/dtap_agent_rl/hierarchy.py
+    DTAP prompt/parser, deterministic KEEP drift validation, stable option state
+```
+
 ### 9.3 DTAP semantic spans and credit
 
 Record four distinct spans:
@@ -897,6 +907,10 @@ Canonical DTAP-HAE projection:
 
 If M8 experiments need trainable switch tokens, add one explicit DTAP adaptation that assigns high-level/boundary credit to the switch span together with the boundary high-subgoal span. Report this as a **DTAP adaptation**, not exact paper switch-advantage parity.
 
+F8 exposes that opt-in adaptation as `--hae-dtap-switch-credit`. It defaults
+off, is rejected outside `--hae-policy-mode=dtap`, and does not claim to
+implement the paper's probability-dependent switch advantage.
+
 A later exact switch-advantage implementation may use `beta_t = pi(q_t=SWITCH | ...)` once switch-probability plumbing is implemented and tested.
 
 ### 9.4 Hierarchy state under compaction
@@ -911,6 +925,11 @@ Structured metadata must retain:
 - logical turn index and context revision.
 
 Do not recover active options by searching compaction-summary text.
+
+Each owned turn may carry a versioned `hierarchy` subrecord containing
+`policy_mode`, `option_id`, `previous_option_id`, normalized `high_subgoal`,
+the per-turn `low_subgoal`, and an optional M7 `feedback_ref`. This remains
+separate from GiGPO's pre-action environment `anchor_key`.
 
 ### 9.5 DTAP-HiPER tests
 
@@ -1021,6 +1040,7 @@ examples/dtap_agent_rl/... hierarchy prompt/parser/runtime integration
 --advantage-estimator hae
 --hae-high-lambd FLOAT
 --hae-policy-mode {reference,dtap}
+--hae-dtap-switch-credit
 --critic-value-heads {1,2}
 --critic-high-value-loss-coef FLOAT
 --rollout-dp-affinity
