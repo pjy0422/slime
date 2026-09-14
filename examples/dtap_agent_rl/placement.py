@@ -10,6 +10,7 @@ import signal
 import stat
 import sys
 from collections.abc import Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from typing import Any
 from .candidate_config import materialize_attempt_dir
 from .integrity import BenchmarkManifest
 from .policy_contract import PolicyContract, canonical_policy_json
-from .scheduler import AttemptScheduler, SchedulerSaturated
+from .scheduler import AttemptScheduler, PortRangePool, SchedulerSaturated
 from .security_policy import M4SecurityPolicy, PolicyInputLimitError
 from .validation import ValidationContext, validate_attack_step
 
@@ -45,6 +46,7 @@ class DtapPlacementRunner:
         python_executable: str | None = None,
         timeout_seconds: float = 300.0,
         extra_env: Mapping[str, str] | None = None,
+        port_pool: PortRangePool | None = None,
     ) -> None:
         self.dtap_root = Path(dtap_root).resolve()
         self.security_policy = security_policy
@@ -52,6 +54,12 @@ class DtapPlacementRunner:
         self.python_executable = python_executable or sys.executable
         self.timeout_seconds = timeout_seconds
         self.extra_env = dict(extra_env or {})
+        self.port_pool = port_pool or PortRangePool(
+            start=20_000,
+            slots=security_policy.max_parallel_attempts,
+        )
+        if self.port_pool.slots != security_policy.max_parallel_attempts or self.port_pool.width != 512:
+            raise ValueError("port pool does not match the M4 parallel worker policy")
         if (
             scheduler.max_parallel != security_policy.max_parallel_attempts
             or scheduler.max_queued != security_policy.max_queued_attempts
@@ -115,39 +123,44 @@ class DtapPlacementRunner:
         workspace.output_root.mkdir(parents=True, exist_ok=True)
         result_path = workspace.output_root / ".m6-placement.json"
         helper = Path(__file__).resolve().parent / "scripts" / "run_dtap_placement_probe.py"
-        env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
-        env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
-        command = [
-            self.python_executable,
-            str(helper),
-            "--task-dir",
-            str(workspace.task_dir),
-            "--result-path",
-            str(result_path),
-        ]
-        process = None
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                cwd=str(self.dtap_root),
-                env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            await asyncio.wait_for(process.communicate(), timeout=self.timeout_seconds)
-        except asyncio.TimeoutError:
-            if process is not None:
-                await self._kill(process)
-            return PlacementRunResult(False)
-        except asyncio.CancelledError:
-            if process is not None:
-                await self._kill(process)
-            raise
-        except Exception:
-            if process is not None:
-                await self._kill(process)
-            return PlacementRunResult(False)
+        async with AsyncExitStack() as stack:
+            env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
+            port_start, port_end = await stack.enter_async_context(self.port_pool.lease())
+            env["DT_DISABLE_DEFAULT_PORTS"] = "1"
+            env["DT_PORT_RANGE_START"] = str(port_start)
+            env["DT_PORT_RANGE_END"] = str(port_end)
+            env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
+            command = [
+                self.python_executable,
+                str(helper),
+                "--task-dir",
+                str(workspace.task_dir),
+                "--result-path",
+                str(result_path),
+            ]
+            process = None
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command,
+                    cwd=str(self.dtap_root),
+                    env=env,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                await asyncio.wait_for(process.communicate(), timeout=self.timeout_seconds)
+            except asyncio.TimeoutError:
+                if process is not None:
+                    await self._kill(process)
+                return PlacementRunResult(False)
+            except asyncio.CancelledError:
+                if process is not None:
+                    await self._kill(process)
+                raise
+            except Exception:
+                if process is not None:
+                    await self._kill(process)
+                return PlacementRunResult(False)
         if process.returncode != 0:
             return PlacementRunResult(False)
         return self._read(result_path, workspace.output_root)

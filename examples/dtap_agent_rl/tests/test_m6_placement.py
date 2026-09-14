@@ -9,7 +9,7 @@ from examples.dtap_agent_rl.authority import EpisodeAuthority, EpisodeAuthorityR
 from examples.dtap_agent_rl.mcp_server import M4EpisodeService, create_m6_mcp_server
 from examples.dtap_agent_rl.placement import DtapPlacementRunner, PlacementCoordinator, PlacementRunResult
 from examples.dtap_agent_rl.policy_contract import PolicyContract
-from examples.dtap_agent_rl.scheduler import AttemptScheduler
+from examples.dtap_agent_rl.scheduler import AttemptScheduler, PortRangePool
 from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 from examples.dtap_agent_rl.service import EpisodeView
 from examples.dtap_agent_rl.task_projection import PolicyTaskSpec
@@ -251,3 +251,38 @@ def test_placement_result_firewall_rejects_symlinks_and_unknown_fields(tmp_path)
     link = root / "link.json"
     link.symlink_to(real)
     assert runner._read(link, root).available is False
+
+
+@pytest.mark.asyncio
+async def test_placement_runner_uses_the_worker_port_lease(tmp_path):
+    executable = tmp_path / "placement-fake"
+    executable.write_text(
+        """#!/bin/sh
+set -eu
+test "$DT_DISABLE_DEFAULT_PORTS" = "1"
+test "$DT_PORT_RANGE_START" = "41000"
+test "$DT_PORT_RANGE_END" = "41511"
+result=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--result-path" ]; then result="$2"; shift 2; else shift; fi
+done
+mkdir -p "$(dirname "$result")"
+printf '%s\n' '{"schema":"m6-placement-v1","applied":true,"valid":true,"status":"verified","locator":"filesystem:/tmp/a","code":"PLACEMENT_VERIFIED","repair_fields":[]}' > "$result"
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    policy = M4SecurityPolicy(max_submit_calls=1, max_parallel_attempts=1, max_queued_attempts=1)
+    runner = DtapPlacementRunner(
+        dtap_root=tmp_path,
+        security_policy=policy,
+        scheduler=AttemptScheduler(max_parallel=1, max_queued=1, wait_timeout=1),
+        python_executable=str(executable),
+        port_pool=PortRangePool(start=41_000, slots=1),
+    )
+    workspace = SimpleNamespace(task_dir=tmp_path, output_root=tmp_path / "placement-results")
+
+    result = await runner.run(workspace)
+
+    assert result.available is True
+    assert result.valid is True

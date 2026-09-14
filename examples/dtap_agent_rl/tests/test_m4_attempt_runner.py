@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,8 +9,8 @@ from examples.dtap_agent_rl.scheduler import AttemptScheduler
 from examples.dtap_agent_rl.security_policy import M4SecurityPolicy
 
 
-def _workspace(tmp_path: Path) -> AttemptWorkspace:
-    attempt = tmp_path / "attempt"
+def _workspace(tmp_path: Path, name: str = "attempt") -> AttemptWorkspace:
+    attempt = tmp_path / name
     task = attempt / "dataset" / "workflow" / "task"
     task.mkdir(parents=True)
     return AttemptWorkspace(1, attempt, task, task / "config.yaml", attempt / "results")
@@ -106,3 +107,33 @@ printf '%s\n' '{"attack_success":false}' > "$EVAL_RESULTS_ROOT/.m4-verdict.json"
 
     assert result.evaluation_started is True
     assert result.attack_success is False
+
+
+@pytest.mark.asyncio
+async def test_m4_runner_leases_distinct_ranges_to_concurrent_children(tmp_path):
+    executable = _executable(
+        tmp_path,
+        """
+mkdir -p "$EVAL_RESULTS_ROOT"
+printf '%s\n' "$DT_PORT_RANGE_START-$DT_PORT_RANGE_END" > "$EVAL_RESULTS_ROOT/port-range"
+sleep 0.1
+printf 1 > "$EVAL_RESULTS_ROOT/.m4-started"
+printf '%s\n' '{"attack_success":false}' > "$EVAL_RESULTS_ROOT/.m4-verdict.json"
+""",
+    )
+    policy = M4SecurityPolicy(max_submit_calls=1, max_parallel_attempts=2, max_queued_attempts=2)
+    runner = DtapAttemptRunner(
+        python_executable=str(executable),
+        model="fake",
+        security_policy=policy,
+        scheduler=AttemptScheduler(max_parallel=2, max_queued=2, wait_timeout=30),
+    )
+    workspaces = [_workspace(tmp_path, f"attempt-{index}") for index in range(2)]
+
+    results = await asyncio.gather(*(runner.run(workspace) for workspace in workspaces))
+
+    assert all(result.attack_success is False for result in results)
+    assert {workspace.output_root.joinpath("port-range").read_text().strip() for workspace in workspaces} == {
+        "20000-20511",
+        "20512-21023",
+    }

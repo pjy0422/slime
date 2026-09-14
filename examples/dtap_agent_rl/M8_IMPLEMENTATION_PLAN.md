@@ -1073,6 +1073,22 @@ Eligibility:
 
 Verify credential, receipt, port, sandbox, workspace, and artifact isolation under parallel workers.
 
+The production constructor owns one scheduler and one fixed-width port lease
+pool shared by victim and placement subprocesses. Same-host workers receive
+disjoint port blocks and separate ephemeral workspace and retained-artifact
+namespaces. Authority registries remain worker-local, while immutable training
+records share a collision-safe run store. The launcher continues to own the
+adapter HTTP service, policy-MCP transport, and attested sandbox backend because
+their lifecycle is deployment-specific.
+
+Artifact references supplied by that launcher are content-free descriptors:
+kind, worker-scoped relative reference, SHA-256, byte size, and optional media
+type/attempt index. Absolute paths, cross-worker references, receipt/action IDs,
+and plaintext content are rejected. The record also includes a bounded MCP tool
+name sequence/count summary without arguments or results. Raw policy/victim
+artifacts remain outside the training record and under the launcher's retention
+and access policy.
+
 The milestone-wide E2E path is:
 
 ```text

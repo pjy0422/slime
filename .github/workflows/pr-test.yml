@@ -673,6 +673,10 @@ jobs:
             },
             {
               "num_gpus": 0,
+              "test_file": "test_dtap_worker_runtime.py"
+            },
+            {
+              "num_gpus": 0,
               "test_file": "test_dcgrpo.py"
             },
             {

@@ -252,6 +252,47 @@ restores the completed token-level sample without running the victim again.
 Training records intentionally omit plaintext prompts/responses, credentials,
 absolute task paths, placement locators, and opaque action IDs.
 
+Construct each production worker as one isolation unit:
+
+```python
+from examples.dtap_agent_rl.generate_m4 import configure_runtime
+from examples.dtap_agent_rl.worker_runtime import ProductionWorkerSpec, build_production_worker
+
+worker = build_production_worker(
+    ProductionWorkerSpec(
+        training_run_id="dtap-train-001",
+        worker_id="worker-03",
+        worker_index=3,
+        workers_per_host=8,
+        workspace_root="/ephemeral/dtap-workers",
+        artifact_root="/artifacts/dtap",
+        dtap_root="/opt/DecodingTrust-Agent",
+        max_submissions=2,
+    ),
+    adapter=adapter,
+    adapter_url=adapter_url,
+    policy_mcp_url=policy_mcp_url,
+    catalog_provider=catalog_provider,
+    sandbox_factory=sandbox_factory,
+    security_policy=policy,
+    feedback_builder=feedback_builder,
+)
+configure_runtime(worker.runtime)
+```
+
+The constructor shares one scheduler and port lease pool between victim and
+placement subprocesses, assigns non-overlapping same-host worker port blocks,
+and separates ephemeral workspaces, retained artifacts, and episode authority
+registries. The launcher still owns the adapter HTTP service, MCP transport, and
+attested sandbox because those lifecycles are deployment-specific.
+
+When the launcher retains policy, MCP, victim, or judge files, its
+`artifact_reference_provider` can use `worker.artifact_reference(...)`. Only a
+worker-relative reference, digest, size, kind, and optional media type/attempt
+index enter the record. Private adapter session IDs and absolute host paths do
+not. Raw trajectory artifacts may contain sensitive text and remain governed by
+the launcher's access and retention policy.
+
 The small DTAP-side compatibility changes required by this harness are versioned
 with slime under `dtap_integration/`. Apply them to the external checkout before
 running a real DTAP gate:

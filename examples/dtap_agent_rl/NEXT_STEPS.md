@@ -309,7 +309,7 @@ owned generated-token spans.
   record carrying task/rollout identity, logical turns, feedback and hierarchy
   modes, trusted submission/placement summaries, reward/failure classification,
   `tuning_trial_id`, and `runtime_setup_digest`.
-- [ ] Complete production worker construction and enrich the training record
+- [x] Complete production worker construction and enrich the training record
   with stable policy/MCP/victim artifact references where the launcher provides
   them. The record must continue to exclude prompt/response plaintext.
 - [x] Exclude infrastructure-invalid and unsupported-placement episodes from
@@ -317,11 +317,11 @@ owned generated-token spans.
   samples.
 - [x] Store eligible and excluded terminal records atomically and make collection
   resumable by stable run/task/rollout identity.
-- [ ] Verify credential/receipt/port/workspace/artifact isolation under parallel
+- [x] Verify credential/receipt/port/workspace/artifact isolation under parallel
   production rollout workers.
 - [x] Add deterministic seeds and capture bounded non-secret sampling/runtime
   metadata needed for reproduction.
-- [ ] Add deterministic algorithm fixtures, compaction/DP/CP regressions,
+- [x] Add deterministic algorithm fixtures, compaction/DP/CP regressions,
   HiPER reference parity tests, and separate DTAP hierarchical prompt/parser
   tests.
 - [ ] Build a tiny single-task overfit test that generates multiple rollouts,
@@ -384,6 +384,7 @@ owned generated-token spans.
 - [x] PR F8: M8.5 DTAP-HiPER hierarchy and credit projection.
 - [x] PR F9a: pre-M8.6 Performance Preflight + Tuning Registry (CPU contract and
   viewer complete; real-GPU calibration deferred).
-- [ ] PR F9b: M8.6 production rollout, optimizer/checkpoint smoke, real-GPU
-  preflight linkage, CI, and docs.
+- [ ] PR F9b: M8.6 GPU execution: optimizer/checkpoint smoke, real-GPU
+  preflight linkage, CI, and docs. The production worker, resumable record, and
+  parallel CPU isolation contracts are complete.
 - [ ] PR G: M9 evaluation harness and ablation report.

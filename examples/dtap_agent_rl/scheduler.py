@@ -13,6 +13,34 @@ class SchedulerSaturated(RuntimeError):
     pass
 
 
+class PortRangePool:
+    """Lease disjoint fixed-width localhost port ranges within one worker."""
+
+    def __init__(self, *, start: int, slots: int, width: int = 512) -> None:
+        for name, value in (("start", start), ("slots", slots), ("width", width)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        end = start + slots * width - 1
+        if start < 1024 or end > 65535:
+            raise ValueError("port pool must fit within the user port range")
+        self.start = start
+        self.slots = slots
+        self.width = width
+        self.end = end
+        self._available: asyncio.Queue[int] = asyncio.Queue(maxsize=slots)
+        for slot in range(slots):
+            self._available.put_nowait(slot)
+
+    @asynccontextmanager
+    async def lease(self):
+        slot = await self._available.get()
+        port_start = self.start + slot * self.width
+        try:
+            yield port_start, port_start + self.width - 1
+        finally:
+            self._available.put_nowait(slot)
+
+
 class AttemptScheduler:
     def __init__(self, *, max_parallel: int, max_queued: int, wait_timeout: float) -> None:
         if isinstance(max_parallel, bool) or max_parallel < 1:
