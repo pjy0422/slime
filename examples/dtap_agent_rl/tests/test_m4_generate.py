@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -182,6 +183,101 @@ async def test_m4_generate_persists_and_resumes_reward_zero_training_samples(mon
     second_results = await generate_module.generate(None, resumed, {"temperature": 1.0})
     assert second_results[0].tokens == [1, 2]
     assert len(adapter.opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_m4_generate_records_only_validated_worker_artifact_references(monkeypatch, tmp_path):
+    adapter = Adapter()
+    runtime = _runtime(adapter)
+    runtime.training_record_store = TrainingRecordStore(tmp_path / "records")
+    runtime.training_run_id = "m8-artifacts"
+    runtime.worker_id = "worker-03"
+    requests = []
+
+    def artifact_references(request):
+        requests.append(request)
+        return [
+            {
+                "kind": "policy_trajectory",
+                "ref": "workers/worker-03/episodes/public/policy.jsonl",
+                "sha256": "a" * 64,
+                "size_bytes": 123,
+                "media_type": "application/jsonl",
+            },
+            {
+                "kind": "victim_trajectory",
+                "ref": "workers/worker-03/episodes/public/attempt-0001/victim.json",
+                "sha256": "b" * 64,
+                "size_bytes": 456,
+                "attempt_index": 1,
+            },
+        ]
+
+    runtime.artifact_reference_provider = artifact_references
+    state = EpisodeRuntimeState(max_submissions=1, max_submit_calls=1)
+    state.begin_submit_call()
+    attempt = state.mark_evaluation_started()
+    state.record_attack_result(attempt_index=attempt, attack_success=True)
+    monkeypatch.setattr(generate_module, "_RUNTIME", runtime)
+    monkeypatch.setattr(
+        generate_module,
+        "run_m4_episode",
+        lambda **_kwargs: _value(
+            SimpleNamespace(
+                runtime=state,
+                public_episode_id="public",
+                harness_return_code=0,
+                record_summary={"mcp": {"total_calls": 1}},
+            )
+        ),
+    )
+
+    await generate_module.generate(None, Sample(), {})
+
+    record_path = next((tmp_path / "records" / "eligible").glob("*.json"))
+    payload = record_path.read_text()
+    record = json.loads(payload)
+    assert record["context"]["worker_id"] == "worker-03"
+    assert [item["kind"] for item in record["episode"]["artifacts"]] == [
+        "policy_trajectory",
+        "victim_trajectory",
+    ]
+    assert requests[0].private_adapter_session_id == adapter.opened[0][0]
+    assert requests[0].private_adapter_session_id not in payload
+
+
+@pytest.mark.asyncio
+async def test_malformed_launcher_artifact_reference_fails_closed(monkeypatch, tmp_path):
+    adapter = Adapter()
+    runtime = _runtime(adapter)
+    runtime.training_record_store = TrainingRecordStore(tmp_path / "records")
+    runtime.training_run_id = "m8-bad-artifact"
+    runtime.worker_id = "worker-0"
+    runtime.artifact_reference_provider = lambda _request: [
+        {
+            "kind": "policy_trajectory",
+            "ref": "/host/private/policy.jsonl",
+            "sha256": "a" * 64,
+            "size_bytes": 10,
+        }
+    ]
+    state = EpisodeRuntimeState(max_submissions=1, max_submit_calls=1)
+    state.begin_submit_call()
+    attempt = state.mark_evaluation_started()
+    state.record_attack_result(attempt_index=attempt, attack_success=True)
+    monkeypatch.setattr(generate_module, "_RUNTIME", runtime)
+    monkeypatch.setattr(
+        generate_module,
+        "run_m4_episode",
+        lambda **_kwargs: _value(SimpleNamespace(runtime=state, public_episode_id="public", record_summary={})),
+    )
+
+    results = await generate_module.generate(None, Sample(), {})
+
+    payload = next((tmp_path / "records" / "excluded").glob("*.json")).read_text()
+    assert results[0].remove_sample is True
+    assert '"failure_class":"evaluation_unavailable"' in payload
+    assert "/host/private" not in payload
 
 
 def test_m4_runtime_configuration_rejects_non_hardened_runner():

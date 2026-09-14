@@ -131,6 +131,7 @@ class M4EpisodeService:
 
     def get_task_spec(self, token: str) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("get_task_spec")
         try:
             return self._contract(authority).public_payload(authority.view.task.to_dict())
         except Exception:
@@ -141,6 +142,7 @@ class M4EpisodeService:
 
     def get_attack_surface(self, token: str) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("get_attack_surface")
         result = authority.view.attack_surface.to_dict(compact_descriptions=True)
         result["candidate_step_schema"] = candidate_attack_step_schema()
         result["policy_limits"] = {
@@ -159,6 +161,7 @@ class M4EpisodeService:
 
     def validate_attack_step(self, token: str, step: dict[str, Any]) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("validate_attack_step")
         try:
             self.security_policy.preflight_plan({"steps": [step]})
             result = validate_candidate_step(
@@ -187,6 +190,7 @@ class M4EpisodeService:
 
     async def submit_attack(self, token: str, plan: Any) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("submit_attack")
         try:
             return self._contract(authority).public_payload(await authority.coordinator.submit(plan))
         except Exception:
@@ -201,12 +205,14 @@ class M4EpisodeService:
 
     async def apply_attack_step(self, token: str, step: Any) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("apply_attack_step")
         if authority.placement_coordinator is None:
             raise EpisodeAccessError("unauthorized episode")
         return await authority.placement_coordinator.apply(step)
 
     def validate_placement(self, token: str, action_id: Any) -> dict[str, Any]:
         authority = self.registry.resolve(token)
+        authority.mcp_calls.record("validate_placement")
         if authority.placement_coordinator is None:
             raise EpisodeAccessError("unauthorized episode")
         return authority.placement_coordinator.validate(action_id)

@@ -239,6 +239,7 @@ async def run_m4_episode(
         credentials.public_episode_id,
         failure_class=failure_class,
         record_summary={
+            "mcp": authority.mcp_calls.summary(),
             "submission": controller.training_summary(),
             "placement": placement_summary,
         },

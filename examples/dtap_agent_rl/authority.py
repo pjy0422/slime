@@ -12,6 +12,49 @@ from typing import Any
 
 from .service import EpisodeAccessError, EpisodeView
 
+_M4_TOOLS = frozenset(
+    {
+        "get_task_spec",
+        "get_attack_surface",
+        "validate_attack_step",
+        "apply_attack_step",
+        "validate_placement",
+        "submit_attack",
+    }
+)
+
+
+class McpCallLedger:
+    """Bounded, content-free per-episode MCP call history."""
+
+    def __init__(self, *, sequence_limit: int = 512) -> None:
+        if isinstance(sequence_limit, bool) or not isinstance(sequence_limit, int) or sequence_limit < 1:
+            raise ValueError("MCP sequence limit must be positive")
+        self.sequence_limit = sequence_limit
+        self._lock = threading.RLock()
+        self._counts: dict[str, int] = {}
+        self._sequence: list[str] = []
+        self._dropped = 0
+
+    def record(self, tool_name: str) -> None:
+        if tool_name not in _M4_TOOLS:
+            raise ValueError("unknown M4 MCP tool")
+        with self._lock:
+            self._counts[tool_name] = self._counts.get(tool_name, 0) + 1
+            if len(self._sequence) < self.sequence_limit:
+                self._sequence.append(tool_name)
+            else:
+                self._dropped += 1
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "total_calls": sum(self._counts.values()),
+                "tool_counts": dict(sorted(self._counts.items())),
+                "tool_sequence": list(self._sequence),
+                "dropped_sequence_calls": self._dropped,
+            }
+
 
 @dataclass(frozen=True)
 class EpisodeCredentials:
@@ -37,6 +80,7 @@ class EpisodeAuthority:
     terminal_event: Any
     policy_contract: Any = None
     placement_coordinator: Any = None
+    mcp_calls: McpCallLedger = field(default_factory=McpCallLedger)
 
 
 class EpisodeAuthorityRegistry:

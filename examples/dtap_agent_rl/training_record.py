@@ -6,17 +6,29 @@ import errno
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 SCHEMA = "dtap-training-record"
 VERSION = 1
 ELIGIBLE_STATUSES = frozenset({"succeeded", "exhausted", "policy_limit"})
 INELIGIBLE_STATUSES = frozenset({"infra_error", "security_abort"})
+ARTIFACT_KINDS = frozenset(
+    {
+        "policy_prompt",
+        "policy_response",
+        "policy_trajectory",
+        "mcp_trajectory",
+        "victim_trajectory",
+        "judge_result",
+    }
+)
+_SAFE_WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SAFE_METADATA_KEYS = frozenset(
     {
         "m4_schema",
@@ -104,12 +116,83 @@ class TrainingRecordContext:
     runtime_setup_digest: str | None = None
     feedback_mode: str | None = None
     hierarchy_mode: str | None = None
+    worker_id: str | None = None
 
     def __post_init__(self) -> None:
-        for field in ("training_run_id", "task_ref", "public_episode_id"):
-            value = getattr(self, field)
+        for field_name in ("training_run_id", "task_ref", "public_episode_id"):
+            value = getattr(self, field_name)
             if not isinstance(value, str) or not value or Path(value).is_absolute():
-                raise ValueError(f"{field} must be a non-empty, non-absolute reference")
+                raise ValueError(f"{field_name} must be a non-empty, non-absolute reference")
+        if self.worker_id is not None and (
+            not _SAFE_WORKER_ID.fullmatch(self.worker_id) or self.worker_id in {".", ".."}
+        ):
+            raise ValueError("worker_id must be one safe path component")
+
+
+@dataclass(frozen=True)
+class ArtifactReferenceRequest:
+    """Trusted lookup key passed to a launcher-owned artifact provider."""
+
+    training_run_id: str
+    worker_id: str
+    record_id: str
+    public_episode_id: str
+    private_adapter_session_id: str = field(repr=False)
+
+
+def validate_artifact_references(raw: Any, *, worker_id: str | None) -> list[dict[str, Any]]:
+    """Validate content-free, worker-scoped references supplied by a launcher."""
+
+    if raw is None:
+        return []
+    if worker_id is None:
+        raise ValueError("artifact references require a worker_id")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)) or len(raw) > 32:
+        raise ValueError("artifact references must be a bounded sequence")
+    prefix = ("workers", worker_id)
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    allowed = {"kind", "ref", "sha256", "size_bytes", "media_type", "attempt_index"}
+    for item in raw:
+        if not isinstance(item, Mapping) or set(item) - allowed:
+            raise ValueError("invalid artifact reference fields")
+        kind = item.get("kind")
+        ref = item.get("ref")
+        digest = item.get("sha256")
+        size = item.get("size_bytes")
+        if kind not in ARTIFACT_KINDS:
+            raise ValueError("unknown artifact reference kind")
+        if not isinstance(ref, str) or not ref or len(ref.encode("utf-8")) > 1024 or "\\" in ref:
+            raise ValueError("invalid artifact reference")
+        path = PurePosixPath(ref)
+        if path.is_absolute() or path.parts[:2] != prefix or any(part in {"", ".", ".."} for part in path.parts):
+            raise ValueError("artifact reference escapes its worker namespace")
+        if not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise ValueError("artifact reference sha256 is invalid")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("artifact reference size is invalid")
+        key = (str(kind), ref)
+        if key in seen:
+            raise ValueError("duplicate artifact reference")
+        seen.add(key)
+        output: dict[str, Any] = {"kind": kind, "ref": ref, "sha256": digest, "size_bytes": size}
+        media_type = item.get("media_type")
+        if media_type is not None:
+            if (
+                not isinstance(media_type, str)
+                or len(media_type) > 127
+                or "/" not in media_type
+                or any(char.isspace() for char in media_type)
+            ):
+                raise ValueError("artifact reference media_type is invalid")
+            output["media_type"] = media_type
+        attempt_index = item.get("attempt_index")
+        if attempt_index is not None:
+            if isinstance(attempt_index, bool) or not isinstance(attempt_index, int) or attempt_index < 1:
+                raise ValueError("artifact reference attempt_index is invalid")
+            output["attempt_index"] = attempt_index
+        normalized.append(output)
+    return sorted(normalized, key=lambda item: (item["kind"], item["ref"]))
 
 
 def sample_payload(sample: Any) -> dict[str, Any]:
@@ -236,6 +319,8 @@ def restore_samples(record: Mapping[str, Any]) -> list[Any]:
 
 
 __all__ = [
+    "ARTIFACT_KINDS",
+    "ArtifactReferenceRequest",
     "SCHEMA",
     "VERSION",
     "TrainingRecordContext",
@@ -245,4 +330,5 @@ __all__ = [
     "restore_samples",
     "sample_payload",
     "task_reference",
+    "validate_artifact_references",
 ]

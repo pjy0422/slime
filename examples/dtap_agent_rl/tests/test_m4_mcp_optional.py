@@ -50,6 +50,12 @@ async def test_m4_service_routes_one_atomic_authority_and_rejects_adapter_id():
     assert service.get_task_spec(credentials.mcp_bearer_token)["task_id"] == "task"
     receipt = await service.submit_attack(credentials.mcp_bearer_token, {"steps": []})
     assert receipt["accepted"] is True
+    assert authority.mcp_calls.summary() == {
+        "total_calls": 2,
+        "tool_counts": {"get_task_spec": 1, "submit_attack": 1},
+        "tool_sequence": ["get_task_spec", "submit_attack"],
+        "dropped_sequence_calls": 0,
+    }
     with pytest.raises(EpisodeAccessError):
         service.get_task_spec(credentials.adapter_session_id)
 

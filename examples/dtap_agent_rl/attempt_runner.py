@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import json
 import os
 import re
 import signal
 import sys
 from collections.abc import Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .candidate_config import AttemptWorkspace
 from .reward_firewall import JudgeVerdictReader, VerdictError, find_single_judge_result
-from .scheduler import AttemptScheduler, SchedulerSaturated
+from .scheduler import AttemptScheduler, PortRangePool, SchedulerSaturated
 from .security_policy import M4SecurityPolicy
 
 
@@ -78,6 +78,7 @@ class DtapAttemptRunner:
         security_policy: M4SecurityPolicy | None = None,
         scheduler: AttemptScheduler | None = None,
         port_range_start: int = 20_000,
+        port_pool: PortRangePool | None = None,
     ) -> None:
         if isinstance(max_parallel, bool) or max_parallel < 1:
             raise ValueError("max_parallel must be positive")
@@ -91,7 +92,6 @@ class DtapAttemptRunner:
         self.python_executable = python_executable or sys.executable
         self.dtap_root = Path(dtap_root).resolve() if dtap_root is not None else None
         self.extra_env = dict(extra_env or {})
-        self._m4_launch_slots = itertools.count()
         self.security_policy = security_policy
         self.m4_hardened = security_policy is not None
         self.scheduler = scheduler
@@ -109,8 +109,17 @@ class DtapAttemptRunner:
             ):
                 raise ValueError("scheduler limits do not match the M4 security policy")
             self.verdict_reader = JudgeVerdictReader(security_policy)
+            self.port_pool = port_pool or PortRangePool(
+                start=port_range_start,
+                slots=security_policy.max_parallel_attempts,
+            )
+            if self.port_pool.slots != security_policy.max_parallel_attempts or self.port_pool.width != 512:
+                raise ValueError("port pool does not match the M4 parallel worker policy")
         else:
             self.verdict_reader = None
+            if port_pool is not None:
+                raise ValueError("port_pool requires an M4 security policy")
+            self.port_pool = None
 
     def _command(self, workspace: AttemptWorkspace) -> list[str]:
         helper = Path(__file__).resolve().parent / "scripts" / "run_dtap_attempt.py"
@@ -167,66 +176,59 @@ class DtapAttemptRunner:
 
     async def _run_once(self, workspace: AttemptWorkspace) -> AttemptResult:
         workspace.output_root.mkdir(parents=True, exist_ok=True)
-        if self.security_policy is None:
-            env = os.environ.copy()
-            env.update(self.extra_env)
-        else:
-            env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
-            # DTAP's resource manager is process-local. Parallel M4 children
-            # therefore receive disjoint trusted port ranges and are told not
-            # to race for each environment's shared default ports.
-            slot = next(self._m4_launch_slots) % 80
-            port_start = self.port_range_start + slot * 512
-            if port_start + 511 > 65535:
-                return AttemptResult.infrastructure_failure(
-                    stage="port_range",
-                    evaluation_started=False,
-                )
-            env["DT_DISABLE_DEFAULT_PORTS"] = "1"
-            env["DT_PORT_RANGE_START"] = str(port_start)
-            env["DT_PORT_RANGE_END"] = str(port_start + 511)
-        env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
-        env["DTAP_M4_ATTEMPT_INDEX"] = str(workspace.attempt_index)
-        process = None
-        runtime_identity = None
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *self._command(workspace),
-                cwd=str(self.dtap_root) if self.dtap_root is not None else None,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            runtime_identity = str(process.pid)
-            communicate = process.communicate()
-            if self.timeout_seconds is None:
-                stdout, stderr = await communicate
+        async with AsyncExitStack() as stack:
+            if self.security_policy is None:
+                env = os.environ.copy()
+                env.update(self.extra_env)
             else:
-                stdout, stderr = await asyncio.wait_for(communicate, timeout=self.timeout_seconds)
-        except asyncio.TimeoutError:
-            if process is not None:
-                await self._kill_process_group(process)
-            return AttemptResult.infrastructure_failure(
-                stage="timeout",
-                evaluation_started=False,
-                runtime_identity=runtime_identity,
-            )
-        except asyncio.CancelledError:
-            if process is not None:
-                await self._kill_process_group(process)
-            raise
-        except Exception:
-            if process is not None:
-                await self._kill_process_group(process)
-            return AttemptResult.infrastructure_failure(
-                stage="process_start",
-                evaluation_started=False,
-                runtime_identity=runtime_identity,
-            )
+                env = self.security_policy.build_dtap_child_env(explicit_env=self.extra_env)
+                assert self.port_pool is not None
+                port_start, port_end = await stack.enter_async_context(self.port_pool.lease())
+                env["DT_DISABLE_DEFAULT_PORTS"] = "1"
+                env["DT_PORT_RANGE_START"] = str(port_start)
+                env["DT_PORT_RANGE_END"] = str(port_end)
+            env["EVAL_RESULTS_ROOT"] = str(workspace.output_root)
+            env["DTAP_M4_ATTEMPT_INDEX"] = str(workspace.attempt_index)
+            process = None
+            runtime_identity = None
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self._command(workspace),
+                    cwd=str(self.dtap_root) if self.dtap_root is not None else None,
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,
+                )
+                runtime_identity = str(process.pid)
+                communicate = process.communicate()
+                if self.timeout_seconds is None:
+                    stdout, stderr = await communicate
+                else:
+                    stdout, stderr = await asyncio.wait_for(communicate, timeout=self.timeout_seconds)
+            except asyncio.TimeoutError:
+                if process is not None:
+                    await self._kill_process_group(process)
+                return AttemptResult.infrastructure_failure(
+                    stage="timeout",
+                    evaluation_started=False,
+                    runtime_identity=runtime_identity,
+                )
+            except asyncio.CancelledError:
+                if process is not None:
+                    await self._kill_process_group(process)
+                raise
+            except Exception:
+                if process is not None:
+                    await self._kill_process_group(process)
+                return AttemptResult.infrastructure_failure(
+                    stage="process_start",
+                    evaluation_started=False,
+                    runtime_identity=runtime_identity,
+                )
 
-        output = stdout.decode("utf-8", errors="replace")
-        self._retain_stderr_diagnostic(workspace, stderr, env)
+            output = stdout.decode("utf-8", errors="replace")
+            self._retain_stderr_diagnostic(workspace, stderr, env)
         if self.security_policy is None:
             evaluation_started = "[DTAP_STATUS] phase=running" in output
             try:

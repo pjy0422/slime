@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from examples.dtap_agent_rl.training_record import (
     classify_eligibility,
     restore_samples,
     task_reference,
+    validate_artifact_references,
 )
 from slime.utils.types import Sample
 
@@ -163,6 +165,42 @@ def test_task_reference_never_persists_an_absolute_host_path() -> None:
     value = task_reference({"task_dir": "/home/user/private/dataset/task"})
     assert value.startswith("task-sha256:")
     assert "/home/" not in value
+
+
+def test_artifact_references_are_content_free_and_worker_scoped() -> None:
+    value = validate_artifact_references(
+        [
+            {
+                "kind": "mcp_trajectory",
+                "ref": "workers/worker-7/episode/mcp.jsonl",
+                "sha256": "c" * 64,
+                "size_bytes": 17,
+            }
+        ],
+        worker_id="worker-7",
+    )
+    assert value[0]["ref"] == "workers/worker-7/episode/mcp.jsonl"
+    with pytest.raises(ValueError, match="namespace"):
+        validate_artifact_references(
+            [
+                {
+                    "kind": "mcp_trajectory",
+                    "ref": "workers/worker-8/episode/mcp.jsonl",
+                    "sha256": "c" * 64,
+                    "size_bytes": 17,
+                }
+            ],
+            worker_id="worker-7",
+        )
+
+
+def test_record_identity_survives_worker_replacement(tmp_path) -> None:
+    store = TrainingRecordStore(tmp_path)
+    sample = training_sample()
+    first = replace(context(), worker_id="worker-1")
+    replacement = replace(context(), worker_id="worker-9")
+
+    assert store.record_id(first, sample) == store.record_id(replacement, sample)
 
 
 if __name__ == "__main__":
